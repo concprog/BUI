@@ -114,7 +114,9 @@ is the same thing: `git tag v0.3.0 && git push origin v0.3.0`.
 | `release.yml` | the Rust crates to crates.io, `@blender-ui/native` and `@blender-ui/react` to npm, and a GitHub Release |
 
 `release.yml` first checks that the tag matches the Python and Rust versions
-(`python tools/check_versions.py v0.2.0` runs the same check by hand), then runs the whole
+(`python tools/check_versions.py v0.2.0` runs the same check by hand; the C header's
+`BUI_KIT_VERSION_*` macros are part of it) and that `THIRD_PARTY_NOTICES.md` is up to date
+(`python tools/gen_notices.py` regenerates it when a dependency changes), then runs the whole
 `ci.yml` suite on every platform, then publishes. A version that is already on a registry is
 skipped (crates.io, npm and PyPI alike: `wheels.yml` builds nothing when PyPI already has the
 version), so only what is missing runs: a run that failed halfway (say, crates.io timing out on the big
@@ -129,6 +131,13 @@ One-time setup:
   > Settings > Trusted Publisher > GitHub Actions, and enter the owner `ppmpreetham`, the
   repository `BUI` and the workflow filename `release.yml` (leave the environment empty).
   The workflow publishes with OIDC and npm adds provenance by itself.
+- **A new npm package** (a new framework binding, such as `@blender-ui/svelte`) can't have a trusted
+  publisher before it exists, and a first `npm publish` from CI has no permission yet (the 404
+  "could not be found or you do not have permission"). Publish it once by hand, after
+  `@blender-ui/native` is out (it depends on it): `cd bindings/svelte && npm publish --access public`,
+  logged in as a member of the `@blender-ui` organization. Then add the trusted publisher (the same
+  form as above). Until then `release.yml` skips it with a warning and `tools/release.py` shows it
+  as MANUAL, not as a failure.
 - **PyPI:** no secret, see above.
 
 Try it without publishing: Actions > release > Run workflow, enter the tag and leave
@@ -149,8 +158,8 @@ Try it without publishing: Actions > release > Run workflow, enter the tag and l
   before-all` installs the X11 headers (`libX11-devel` / `libx11-dev`), and
   libX11 itself is loaded at run time, so the wheels still import on servers
   without it. (This used to be a gap; it's fixed.)
-- macOS: the native Cocoa window host is new and has been tried by hand on one
-  Apple Silicon Mac so far. With `BUI_HOST=tk` the wheels use the stdlib Tk window instead, which
+- macOS: the native Cocoa window host is new and has been tried by hand on two
+  Apple Silicon Macs so far. With `BUI_HOST=tk` the wheels use the stdlib Tk window instead, which
   needs `tkinter` (for example from python.org or `brew install python-tk`).
 - MSVC builds work (the Rust crate and the CMake build use Visual Studio's
   toolchain), but the published Windows wheels are built with MinGW.
