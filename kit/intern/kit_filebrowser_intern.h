@@ -57,8 +57,15 @@ typedef enum FBCategory {
   FB_CAT_SYSTEM,
   FB_CAT_BOOKMARKS,
   FB_CAT_RECENT,
+  FB_CAT_OTHER, /* not shown: known paths that give places their icons and names */
   FB_CAT_NUM
 } FBCategory;
+/* FSMenuInsert, without FS_INSERT_SAVE */
+typedef enum FBInsert {
+  FB_INSERT_SORTED = 1 << 0,
+  FB_INSERT_FIRST = 1 << 2,
+  FB_INSERT_LAST = 1 << 3
+} FBInsert;
 
 /* FileDirEntry, reduced to a plain directory listing. */
 typedef struct FBEntry {
@@ -124,7 +131,7 @@ typedef struct FBData {
 
   /* parts; b_hidden's value is the show-hidden setting */
   BKNode *b_prev, *b_next, *b_parent, *b_refresh, *b_newdir, *path, *search_f, *b_hidden;
-  BKNode *side, *panels[FB_CAT_NUM], *lists[FB_CAT_NUM];
+  BKNode *side, *panels[FB_CAT_OTHER], *lists[FB_CAT_OTHER];
   BKNode *list;
   BKNode *fname, *filter_dd, *b_cancel, *b_exec;
 
@@ -199,7 +206,7 @@ void fb_rename_begin(FBData *f, int i);
 BKNode *fb_places_view_new(FBData *f, FBCategory cat, BKNode *parent);
 void fb_places_read(FBData *f); /* system places, then bookmarks.txt */
 void fb_place_add(FBData *f, FBCategory cat, const char *path, const char *label,
-                  const char *icon, bool sorted);
+                  const char *icon, FBInsert flag);
 void fb_places_free(FBData *f);
 void fb_read_bookmarks(FBData *f);
 void fb_write_bookmarks(FBData *f);

@@ -6,6 +6,9 @@ All notable changes to **blenderui** (BUI). The format follows
 
 ## [Unreleased]
 
+### Changed
+- **File browser, System and Volumes:** Blender's own `fsmenu_system_unix.cc`, `fsmenu_system_win32.cc` and `fsmenu_system_macos.mm`, copied into `kit/intern/blender/` with `BUI:` edits. This adds gvfs network shares on Linux, known folders, drive icons and Quick Access on Windows, and volumes, iCloud Drive and Finder favourites on macOS.
+
 ## [0.4.0] - 2026-11-06
 
 ### Added

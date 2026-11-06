@@ -1,6 +1,6 @@
-/* File browser platform parts for Linux, BSD and macOS: directory reading, system folders
- * (fsmenu_system_unix.cc / fsmenu_system_macos.mm), home, time and sleep.
- * Compiles to nothing on Windows (kit_filebrowser_win32.c).
+/* File browser platform parts for Linux, BSD and macOS: directory reading, home, time and
+ * sleep. System folders are Blender's fsmenu_system_unix.cc / fsmenu_system_macos.mm
+ * (blender/). Compiles to nothing on Windows (kit_filebrowser_win32.c).
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
@@ -12,9 +12,6 @@
 #  include <string.h>
 #  include <sys/stat.h>
 #  include <unistd.h>
-#  ifdef __linux__
-#    include <mntent.h>
-#  endif
 
 #  include "kit_filebrowser_intern.h"
 
@@ -107,133 +104,6 @@ bool fb_os_read_dir(FBData *f)
   }
   closedir(d);
   return true;
-}
-
-/* The six user folders, by their names in $HOME (and XDG keys on Linux). */
-static const struct {
-  const char *xdg_key, *name, *icon;
-} g_user_dirs[] = {
-    {"XDG_DESKTOP_DIR", "Desktop", "DESKTOP"},
-    {"XDG_DOCUMENTS_DIR", "Documents", "DOCUMENTS"},
-    {"XDG_DOWNLOAD_DIR", "Downloads", "IMPORT"},
-#  ifdef __APPLE__
-    {NULL, "Movies", "FILE_MOVIE"},
-#  else
-    {"XDG_VIDEOS_DIR", "Videos", "FILE_MOVIE"},
-#  endif
-    {"XDG_PICTURES_DIR", "Pictures", "FILE_IMAGE"},
-    {"XDG_MUSIC_DIR", "Music", "FILE_SOUND"},
-};
-
-/* fsmenu_xdg_user_dirs_parse: the KEY="value" line of user-dirs.dirs, "$HOME/" expanded. */
-static bool xdg_lookup(const char *home, const char *key, char *out, size_t size)
-{
-  char cfg[FB_PATH], line[FB_PATH + 128];
-  const char *xch = getenv("XDG_CONFIG_HOME");
-  if (xch && xch[0]) {
-    fb_path_join(cfg, sizeof(cfg), xch, "user-dirs.dirs");
-  }
-  else {
-    snprintf(cfg, sizeof(cfg), "%s/.config/user-dirs.dirs", home);
-  }
-  FILE *fp = key ? fopen(cfg, "r") : NULL;
-  bool found = false;
-  const size_t klen = key ? strlen(key) : 0;
-  while (fp && !found && fgets(line, sizeof(line), fp)) {
-    if (strncmp(line, key, klen) != 0 || line[klen] != '=') {
-      continue;
-    }
-    char *v = line + klen + 1;
-    v[strcspn(v, "\r\n")] = '\0';
-    const size_t vl = strlen(v);
-    if (vl < 2 || v[0] != '"' || v[vl - 1] != '"') {
-      continue;
-    }
-    v[vl - 1] = '\0';
-    v++;
-    if (strncmp(v, "$HOME/", 6) == 0) {
-      snprintf(out, size, "%s/%s", home, v + 6);
-    }
-    else {
-      snprintf(out, size, "%s", v);
-    }
-    found = true;
-  }
-  if (fp) {
-    fclose(fp);
-  }
-  return found;
-}
-
-static void read_user_dirs(FBData *f, const char *home)
-{
-  fb_place_add(f, FB_CAT_SYSTEM, home, "Home", "HOME", false);
-  for (size_t i = 0; i < sizeof(g_user_dirs) / sizeof(g_user_dirs[0]); i++) {
-    char p[FB_PATH];
-    if (!xdg_lookup(home, g_user_dirs[i].xdg_key, p, sizeof(p))) {
-      fb_path_join(p, sizeof(p), home, g_user_dirs[i].name);
-    }
-    if (fb_path_is_dir(p)) {
-      fb_place_add(f, FB_CAT_SYSTEM, p, g_user_dirs[i].name, g_user_dirs[i].icon, false);
-    }
-  }
-}
-
-/* Same as STRPREFIX, but only at a separator or the end. */
-static bool dir_prefix(const char *a, const char *b)
-{
-  const size_t n = strlen(b);
-  return strncmp(a, b, n) == 0 && (a[n] == '\0' || a[n] == '/');
-}
-
-static bool read_volumes(FBData *f)
-{
-  bool found = false;
-#  ifdef __linux__
-  /* Mount points of /dev devices, without /boot, /efi and snap loop devices. */
-  FILE *fp = setmntent("/proc/mounts", "r");
-  struct mntent *mnt;
-  while (fp && (mnt = getmntent(fp)) != NULL) {
-    if (dir_prefix(mnt->mnt_dir, "/boot") || dir_prefix(mnt->mnt_dir, "/efi") ||
-        !dir_prefix(mnt->mnt_fsname, "/dev") || strncmp(mnt->mnt_fsname, "/dev/loop", 9) == 0)
-    {
-      continue;
-    }
-    fb_place_add(f, FB_CAT_VOLUMES, mnt->mnt_dir, NULL, "DISK_DRIVE", true);
-    found = true;
-  }
-  if (fp) {
-    endmntent(fp);
-  }
-#  elif defined(__APPLE__)
-  DIR *d = opendir("/Volumes");
-  struct dirent *de;
-  while (d && (de = readdir(d)) != NULL) {
-    char p[FB_PATH];
-    fb_path_join(p, sizeof(p), "/Volumes", de->d_name);
-    if (de->d_name[0] != '.') {
-      fb_place_add(f, FB_CAT_VOLUMES, p, de->d_name, "DISK_DRIVE", true);
-      found = true; /* the boot volume is listed here too: no extra "/" entry */
-    }
-  }
-  if (d) {
-    closedir(d);
-  }
-#  else
-  (void)dir_prefix;
-#  endif
-  return found;
-}
-
-/* fsmenu_read_system */
-void fb_os_read_system(FBData *f)
-{
-  if (fb_os_home()) {
-    read_user_dirs(f, fb_os_home());
-  }
-  if (!read_volumes(f)) {
-    fb_place_add(f, FB_CAT_VOLUMES, "/", NULL, "DISK_DRIVE", true);
-  }
 }
 
 #endif /* !_WIN32 */

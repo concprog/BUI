@@ -32,7 +32,7 @@ static int place_find(const FBData *f, FBCategory cat, const char *path)
 }
 
 static void place_insert(FBData *f, FBCategory cat, int at, const char *path, const char *label,
-                         const char *icon)
+                         int icon)
 {
   char base[256];
   f->places[cat] = (FBPlace *)realloc(f->places[cat],
@@ -44,7 +44,7 @@ static void place_insert(FBData *f, FBCategory cat, int at, const char *path, co
   pl->label = bk_strdup(label                    ? label :
                         fb_os_path_is_root(path) ? path :
                                                    fb_path_basename(path, base, sizeof(base)));
-  pl->icon = bk_icons_lookup(icon);
+  pl->icon = icon;
   f->nplaces[cat]++;
 }
 
@@ -64,21 +64,43 @@ static void places_clear(FBData *f, FBCategory cat)
   }
 }
 
-/* FS_INSERT_LAST or FS_INSERT_SORTED; a path that is listed already is not added again. */
+/* fsmenu_insert_entry; a path that is listed already is not added again. */
 void fb_place_add(FBData *f, FBCategory cat, const char *path, const char *label,
-                  const char *icon, bool sorted)
+                  const char *icon, FBInsert flag)
 {
   char p[FB_PATH];
   snprintf(p, sizeof(p), "%s", path);
   fb_path_slash_ensure(p, sizeof(p));
-  if (place_find(f, cat, p) >= 0) {
+  const int old = place_find(f, cat, p);
+  if (old >= 0) {
+    if ((flag & FB_INSERT_FIRST) && old > 0) { /* move it to the front */
+      const FBPlace pl = f->places[cat][old];
+      memmove(&f->places[cat][1], &f->places[cat][0], sizeof(FBPlace) * (size_t)old);
+      f->places[cat][0] = pl;
+    }
     return;
   }
   int at = f->nplaces[cat];
-  while (sorted && at > 0 && BLI_strcasecmp_natural(f->places[cat][at - 1].path, p) > 0) {
+  while ((flag & FB_INSERT_SORTED) && at > 0 &&
+         BLI_strcasecmp_natural(f->places[cat][at - 1].path, p) > 0)
+  {
     at--;
   }
-  place_insert(f, cat, at, p, label, icon);
+  /* If entry is also in another list, use that icon and maybe name. */
+  int icon_id = bk_icons_lookup(icon);
+  if (cat == FB_CAT_SYSTEM || cat == FB_CAT_BOOKMARKS || cat == FB_CAT_RECENT) {
+    static const FBCategory cats[] = {FB_CAT_OTHER, FB_CAT_VOLUMES, FB_CAT_SYSTEM,
+                                      FB_CAT_BOOKMARKS};
+    for (int i = (int)(sizeof(cats) / sizeof(cats[0])) - (cat == FB_CAT_BOOKMARKS); i--;) {
+      const int j = place_find(f, cats[i], p);
+      if (j >= 0) {
+        icon_id = f->places[cats[i]][j].icon;
+        label = (label && label[0]) ? label : f->places[cats[i]][j].label;
+        break;
+      }
+    }
+  }
+  place_insert(f, cat, at, p, label, icon_id);
 }
 
 void fb_places_free(FBData *f)
@@ -115,7 +137,7 @@ void fb_read_bookmarks(FBData *f)
     if (!bookmarks && !recent && cat >= 0 && line[0] && strncmp(line, "!#!", 3) != 0 &&
         fb_path_is_dir(line))
     {
-      fb_place_add(f, (FBCategory)cat, line, NULL, g_icons[cat], false);
+      fb_place_add(f, (FBCategory)cat, line, NULL, g_icons[cat], FB_INSERT_LAST);
     }
   }
   if (fp) {
@@ -163,7 +185,7 @@ void fb_add_recent(FBData *f, const char *dir)
   if (old >= 0) {
     place_remove(f, FB_CAT_RECENT, old);
   }
-  place_insert(f, FB_CAT_RECENT, 0, dir, NULL, g_icons[FB_CAT_RECENT]);
+  place_insert(f, FB_CAT_RECENT, 0, dir, NULL, bk_icons_lookup(g_icons[FB_CAT_RECENT]));
   while (f->nplaces[FB_CAT_RECENT] > FB_RECENT_MAX) {
     place_remove(f, FB_CAT_RECENT, f->nplaces[FB_CAT_RECENT] - 1);
   }
@@ -172,7 +194,7 @@ void fb_add_recent(FBData *f, const char *dir)
 /* file.bookmark_add */
 void fb_bookmark_dir(FBData *f)
 {
-  fb_place_add(f, FB_CAT_BOOKMARKS, f->dir, NULL, g_icons[FB_CAT_BOOKMARKS], false);
+  fb_place_add(f, FB_CAT_BOOKMARKS, f->dir, NULL, g_icons[FB_CAT_BOOKMARKS], FB_INSERT_LAST);
   fb_write_bookmarks(f);
   bk_relayout(f->self);
   bk_invalidate(f->side);

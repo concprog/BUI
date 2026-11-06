@@ -101,8 +101,9 @@ PYTHONPATH=bindings/python python3.12 -m bui.tksyntax examples/tk_unchanged_app.
 
 Compare with the real Tk: `python3.12 examples/tk_unchanged_app.py`. Also open
 the app's file dialog: it is Blender's File Browser in a BUI window. Check that
-the Volumes list on the left shows your disks (from `/Volumes`) and that the
-Home, Desktop, Documents, Downloads, Movies, Pictures and Music folders are listed.
+the Volumes list on the left shows your mounted disks (network and removable
+ones with their own icons) and iCloud Drive, and that the System list shows
+the favourites of Finder's sidebar, as in Blender (`fsmenu_system_macos.mm`).
 
 **Rust**
 

@@ -1,6 +1,6 @@
-/* File browser platform parts for Windows: directory reading, system folders and drives
- * (fsmenu_system_win32.cc), home, time and sleep. Compiles to nothing elsewhere
- * (kit_filebrowser_posix.c).
+/* File browser platform parts for Windows: directory reading, home, time and sleep.
+ * System folders and drives are Blender's fsmenu_system_win32.cc (blender/).
+ * Compiles to nothing elsewhere (kit_filebrowser_posix.c).
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
@@ -111,46 +111,6 @@ bool fb_os_read_dir(FBData *f)
   } while (FindNextFileW(h, &fd));
   FindClose(h);
   return true;
-}
-
-static const struct {
-  const char *name, *icon;
-} g_user_dirs[] = {
-    {"Desktop", "DESKTOP"},     {"Documents", "DOCUMENTS"},   {"Downloads", "IMPORT"},
-    {"Music", "FILE_SOUND"},    {"Pictures", "FILE_IMAGE"},   {"Videos", "FILE_MOVIE"},
-};
-
-static const char *drive_icon(UINT type)
-{
-  switch (type) {
-    case DRIVE_REMOTE:
-      return "NETWORK_DRIVE";
-    case DRIVE_REMOVABLE:
-      return "EXTERNAL_DRIVE";
-    default:
-      return "DISK_DRIVE";
-  }
-}
-
-/* fsmenu_read_system */
-void fb_os_read_system(FBData *f)
-{
-  const char *home = fb_os_home();
-  if (home) {
-    fb_place_add(f, FB_CAT_SYSTEM, home, "Home", "HOME", false);
-    for (size_t i = 0; i < sizeof(g_user_dirs) / sizeof(g_user_dirs[0]); i++) {
-      char p[FB_PATH];
-      fb_path_join(p, sizeof(p), home, g_user_dirs[i].name);
-      if (fb_path_is_dir(p)) {
-        fb_place_add(f, FB_CAT_SYSTEM, p, g_user_dirs[i].name, g_user_dirs[i].icon, false);
-      }
-    }
-  }
-  char drives[512];
-  const DWORD n = GetLogicalDriveStringsA(sizeof(drives), drives);
-  for (const char *d = drives; n && *d; d += strlen(d) + 1) {
-    fb_place_add(f, FB_CAT_VOLUMES, d, d, drive_icon(GetDriveTypeA(d)), false);
-  }
 }
 
 #endif /* _WIN32 */

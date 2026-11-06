@@ -58,6 +58,16 @@ if(BUI_FILEBROWSER) # Blender's File Browser (editors/space_file)
     intern/kit_filelist_view.c
     intern/kit_fileops.c
     intern/kit_fsmenu.c)
+  # Blender's fsmenu_system_*: the System and Volumes lists
+  if(WIN32) # known folders, drives, Quick Access (COM), network drives
+    target_sources(bui_kit PRIVATE intern/blender/fsmenu_system_win32.cc)
+    target_link_libraries(bui_kit PRIVATE ole32 oleaut32 shell32 shlwapi mpr uuid)
+  elseif(APPLE) # Objective-C++ (enable_language(OBJCXX) is in the top-level CMakeLists.txt)
+    target_sources(bui_kit PRIVATE intern/blender/fsmenu_system_macos.mm)
+    set_source_files_properties(intern/blender/fsmenu_system_macos.mm PROPERTIES COMPILE_OPTIONS "-fno-objc-arc")
+  else()
+    target_sources(bui_kit PRIVATE intern/blender/fsmenu_system_unix.cc)
+  endif()
 endif()
 
 # -- image decoders (third party, decoder parts only; see extern/*/README.bui) --

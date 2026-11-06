@@ -92,6 +92,13 @@ fn main() {
         for lib in ["user32", "gdi32"] {
             println!("cargo:rustc-link-lib={lib}");
         }
+        // the file browser's fsmenu_system_win32.cc (static libraries don't carry
+        // CMake's link libraries to rustc)
+        if std::env::var_os("CARGO_FEATURE_FILEBROWSER").is_some() {
+            for lib in ["ole32", "oleaut32", "shell32", "shlwapi", "mpr", "uuid"] {
+                println!("cargo:rustc-link-lib={lib}");
+            }
+        }
     } else {
         // No libX11 / libGL link: the X11 window host (kit_window_x11.c) and the
         // OpenGL renderer (gpu_gl.c) dlopen() them at run time, so programs start

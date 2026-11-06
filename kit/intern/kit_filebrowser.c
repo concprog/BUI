@@ -324,11 +324,11 @@ static void build_header(FBData *f)
 
 static void build_side(FBData *f)
 {
-  static const char *const titles[FB_CAT_NUM] = {"Volumes", "System", "Bookmarks", "Recent"};
+  static const char *const titles[FB_CAT_OTHER] = {"Volumes", "System", "Bookmarks", "Recent"};
   f->side = part(f->self, &bk_cls_column);
   f->side->padding = (int)(FB_MARGIN * u());
   f->side->spacing = (int)(0.2f * u());
-  for (int c = 0; c < FB_CAT_NUM; c++) {
+  for (int c = 0; c < FB_CAT_OTHER; c++) {
     f->panels[c] = part(f->side, &bk_cls_panel);
     bk_set_text(&f->panels[c]->text, titles[c]);
     f->lists[c] = fb_places_view_new(f, (FBCategory)c, (BKNode *)f->panels[c]->ext); /* body */
