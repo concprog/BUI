@@ -206,6 +206,19 @@ void bk_icons_draw(int id, float x, float y, float s, const float color[4]);
 /* -------------------------------------------------------------------- */
 /* Text editing (Blender's text button behavior) */
 
+/* Input method composition (Blender's wmIMEData): the text an IME is composing at the
+ * caret, drawn underlined and not yet part of the field. Embedded in every editable
+ * node's state (BKTextEdit, the textarea) so one set of functions serves all of them. */
+typedef struct BKImeComp {
+  char *text; /* composite string (UTF-8), "" = none */
+  int len, cap;
+  int cursor;               /* IME caret as a byte offset in text, -1 = none */
+  int sel_start, sel_end;   /* the clause being converted, bytes in text, -1 = none */
+  bool composing;           /* between WM_IME_STARTCOMPOSITION and ..END */
+  int cand_x, cand_y;       /* where the last draw wants the candidate window (window px) */
+  bool cand_valid;
+} BKImeComp;
+
 typedef struct BKTextEdit {
   char *text;
   int len, cap;
@@ -213,6 +226,9 @@ typedef struct BKTextEdit {
   float scroll;
   char mask[8]; /* shown instead of each character (password fields), "" = none */
   struct BKTextUndo *undo; /* Blender's interface_undo.cc text stack (Ctrl+Z while typing) */
+  BKImeComp ime;
+  double blink_t0;           /* when the caret last moved or the text last changed (bk_time) */
+  int blink_caret, blink_len; /* what blink_t0 was taken at */
 } BKTextEdit;
 
 enum { TE_NONE = 0, TE_CHANGED, TE_CONFIRM, TE_CANCEL, TE_NEXT, TE_PREV };
@@ -225,6 +241,35 @@ void bk_te_click(BKTextEdit *te, float px, bool extend);
 void bk_te_drag(BKTextEdit *te, float px);
 void bk_te_select_word(BKTextEdit *te, int index);
 void bk_te_draw(BKTextEdit *te, const BKRect *rect, const uchar color[4]);
+bool bk_te_delete_selection(BKTextEdit *te);
+/* The caret blinks (about every 530 ms, as in browsers): solid right after it moves or the text
+ * changes, then on and off. The draw code asks; the context's frame timer wakes the window at
+ * the next change while a field is edited (bk_ctx_arm_timer). */
+bool bk_te_caret_visible(BKTextEdit *te);
+double bk_te_next_toggle(BKTextEdit *te); /* in bk_time() seconds */
+
+/* -------------------------------------------------------------------- */
+/* Input methods (kit_ime.c). Blender: GHOST_ImeWin32 + the wm/ui IME handlers. */
+
+void bk_ime_comp_free(BKImeComp *c);
+/* Stores a composition event's text, cursor and target clause. */
+void bk_ime_comp_set(BKImeComp *c, const BKImeEvent *e);
+/* The caret's x in the text the draw code lays out, composite included: `before` is the width
+ * of the field text left of the caret, `to_caret` the composite's width up to the IME caret. */
+float bk_ime_caret_offset(const BKImeComp *c, bool bold);
+/* Blender's widget_draw_text_ime_underline: a 1px underline under the composite from `x`, a 2px
+ * one under the clause being converted; `bottom` is the widget's lower edge, `clip_w` its width. */
+void bk_ime_draw_underline(const BKImeComp *c, float x, float bottom, float clip_w,
+                           const uchar color[4], bool bold);
+/* Records where the candidate window goes, in window pixels (the draw code calls it every frame,
+ * like button_ime_reposition). A text field: 5px right of the caret, 1px below the field. */
+void bk_ime_set_candidate(BKImeComp *c, int x, int y);
+/* The composition of the node being edited, NULL when it takes no IME (number fields, passwords). */
+BKImeComp *bk_ime_comp(BKNode *n);
+/* An edit that ends while composing keeps the composite (Blender inserts it on a click outside). */
+void bk_ime_commit(BKContext *ctx);
+/* While composing, typed text and Escape belong to the IME. */
+bool bk_ime_swallow_key(BKContext *ctx, const char *text, const char *keysym);
 
 /* -------------------------------------------------------------------- */
 /* Nodes */
@@ -332,6 +377,7 @@ enum {
   NF_HTML = 1 << 25,        /* "html": Chrome's default form-control look and interaction */
   NF_ACTIVE_DEFAULT = 1 << 26, /* buttons: UI_BUT_ACTIVE_DEFAULT (drawn with the select colors) */
   NF_DEFAULT_SET = 1 << 27, /* `defval` was set: by "default", or by the first "value" a widget got */
+  NF_BARE = 1 << 28,        /* "bare": an HTML text field with no frame (CSS `border-style: none`) */
 };
 
 #define BK_HTML(n) (((n)->flags & NF_HTML) != 0)
@@ -379,6 +425,7 @@ struct BKNode {
   int scroll_x;       /* horizontal view offset (canvas) */
   int cursor_override; /* hover cursor + 1 (0 = the class's) */
   float font_scale;    /* text size relative to the UI font (0 = 1) */
+  uchar text_color[4]; /* browser-look text fields: the CSS color (alpha 0: Chrome's FieldText) */
   int selmode; /* list/tree: 0 single, 1 multiple (toggle), 2 extended (Ctrl/Shift),
                 * 3 single shown with marks (clearable) */
   unsigned char *marks;   /* list: selected rows when selmode != 0 */
@@ -499,6 +546,11 @@ struct BKContext {
   BKNode *root, *header;
   BKHost host;
   BKNode *hover, *grab, *focus, *modal;
+  /* what BK_ime_state last reported: the edited node and the candidate window position */
+  struct {
+    BKNode *node;
+    int enabled, x, y;
+  } ime;
   BKNode *popups[BK_MAX_POPUPS];
   int npopups;
   /* tooltip */
@@ -631,6 +683,7 @@ extern const BKClass bk_cls_column, bk_cls_row, bk_cls_split, bk_cls_grid, bk_cl
  * own measure/draw; they return false for classes without a browser look. */
 #define BK_HTML_FONT (40.0f / 33.0f) /* 13.333px text over the 11px UI text */
 extern float bk_html_text_scale;
+extern int bk_text_shadow; /* 0 none, 1 drop shadow (Blender UI text), 3 blurred; browser-look controls draw none */
 bool bk_html_measure(BKNode *n, int *r_w, int *r_h);
 bool bk_html_draw(BKNode *n);
 /* CSS px -> device px */
@@ -639,6 +692,8 @@ float bk_hpx(float css);
 void bk_html_te_draw(BKTextEdit *te, const BKRect *content, const uchar color[4]);
 extern const BKClass bk_cls_meter;
 extern const BKClass bk_cls_filebrowser; /* kit_filebrowser.c */
+BKImeComp *bk_textarea_ime(BKNode *n);          /* kit_textarea.c */
+bool bk_textarea_delete_selection(BKNode *n);
 bool bk_textarea_html_measure(BKNode *n, int *r_w, int *r_h); /* kit_textarea.c */
 void bk_textarea_html_draw(BKNode *n);
 

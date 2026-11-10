@@ -89,7 +89,7 @@ fn main() {
         println!("cargo:rustc-link-lib={}", if target == "macos" { "c++" } else { "stdc++" });
     }
     if target == "windows" {
-        for lib in ["user32", "gdi32"] {
+        for lib in ["user32", "gdi32", "imm32"] {
             println!("cargo:rustc-link-lib={lib}");
         }
         // the file browser's fsmenu_system_win32.cc (static libraries don't carry

@@ -27,6 +27,9 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(BUI_BUILD_TESTS "Build BUI test executables" ON)
 option(BUI_BUILD_EXAMPLES "Build BUI example applications" OFF)
 option(BUI_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(BUI_BUILD_LUA_BINDINGS "Build the bui-lua host executable (bundles Lua 5.4)" OFF)
+# Python is on by default (ctest, the wheels and the guides build it); it is skipped with a message
+# without the Python dev files, and -DBUI_BUILD_PYTHON_BINDINGS=OFF turns it off.
 option(BUI_BUILD_PYTHON_BINDINGS "Build the buipy CPython bindings (needs Python3 dev files)" ON)
 option(BUI_BUILD_QT_BACKEND "Build the Qt/QPainter backend (needs Qt5/Qt6 with Widgets)" OFF)
 # The optional parts (image formats, video, GPU renderers, file browser, Dear
@@ -83,7 +86,28 @@ if(BUI_BUILD_TESTS)
   target_link_libraries(bui_window_smoke PRIVATE bui::kit)
   add_test(NAME bui_window_smoke COMMAND bui_window_smoke)
   set_tests_properties(bui_window_smoke PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+  # GPU start on a worker thread, the idle switch, and a window closed by its frame callback
+  add_executable(bui_gpu_start_test tests/gpu_start_test.c)
+  target_link_libraries(bui_gpu_start_test PRIVATE bui::kit)
+  add_test(NAME bui_gpu_start_test COMMAND bui_gpu_start_test)
+  set_tests_properties(bui_gpu_start_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60
+                       FAIL_REGULAR_EXPRESSION "failed to create drawable")
   # themes: Blender's Dark / Light presets (BK_set_theme), dark stays pixel-identical
+  # input methods: composition events drive the text fields (Blender's IME handling)
+  add_executable(bui_ime_test tests/ime_test.c)
+  target_link_libraries(bui_ime_test PRIVATE bui::kit)
+  add_test(NAME bui_ime_test COMMAND bui_ime_test)
+  # ... and the Windows host's port of GHOST_ImeWin32 against a real window
+  add_executable(bui_ime_win32_test tests/ime_win32_test.c)
+  target_link_libraries(bui_ime_win32_test PRIVATE bui::kit)
+  add_test(NAME bui_ime_win32_test COMMAND bui_ime_win32_test)
+  set_tests_properties(bui_ime_win32_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+  # what the IME support costs (bench/ime_bench.c); BUI_BENCH_NO_IME builds it for a kit without it
+  add_executable(bui_ime_bench bench/ime_bench.c)
+  target_link_libraries(bui_ime_bench PRIVATE bui::kit)
+  if(BUI_BENCH_NO_IME)
+    target_compile_definitions(bui_ime_bench PRIVATE BENCH_NO_IME)
+  endif()
   add_executable(bui_theme_test tests/theme_test.c)
   target_link_libraries(bui_theme_test PRIVATE bui::kit)
   add_test(NAME bui_theme_test COMMAND bui_theme_test)
@@ -124,6 +148,15 @@ endif()
 
 if(BUI_BUILD_PYTHON_BINDINGS)
   add_subdirectory(bindings/python)
+endif()
+
+if(BUI_BUILD_LUA_BINDINGS)
+  # the crates.io copy of the C sources (bindings/rust/scripts/vendor_c.py) has no bindings/lua
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/bindings/lua/CMakeLists.txt)
+    add_subdirectory(bindings/lua)
+  else()
+    message(STATUS "BUI: bindings/lua not in this source tree; no Lua host")
+  endif()
 endif()
 
 if(BUI_BUILD_QT_BACKEND)

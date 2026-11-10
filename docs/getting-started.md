@@ -27,6 +27,7 @@ cmake --build build
 | Option | Default | Effect |
 |---|---|---|
 | `BUI_BUILD_PYTHON_BINDINGS` | `ON` | Build the `buipy` CPython extension. It is skipped with a message if the Python dev files are missing. |
+| `BUI_BUILD_LUA_BINDINGS` | `OFF` | The Lua 5.4 host (`bui-lua` and the `bui` module). Lua is fetched at configure time when the system has no Lua 5.4. |
 | `BUI_BUILD_TESTS` | `ON` | C test executables and the ctest suites |
 | `BUI_BUILD_EXAMPLES` | `OFF` | C examples (`bui_kit_hello`, `bui_svg_demo`, the site screenshot programs) |
 | `BUI_BUILD_UI` | `OFF` | Compile Blender's original `ui/` sources as well (not needed for the kit) |
@@ -100,12 +101,12 @@ shared (`bui.host`).
 `bui.host.Window` puts a kit context in a top-level window.
 
 - **Native (Windows and Linux).** A window written in C: BUI's own Win32 host on Windows,
-  X11 on Linux (Wayland sessions run it through XWayland). Input goes
+  X11 on Linux (and an experimental native Wayland host; X11 also runs through XWayland). Input goes
   straight into the kit, and frames are presented by blitting only the
   changed tiles. It follows the display's DPI (per-monitor on Windows,
   `Xft.dpi` on X11) and paces animations to the display's refresh rate.
-- **Native (macOS, experimental).** A Cocoa window (a port of Blender's GHOST
-  code; new, checked by CI and tried by hand on two Apple Silicon Macs) with Retina scaling. It needs the main
+- **Native (macOS).** A Cocoa window (a port of Blender's GHOST
+  code; checked by CI and tried by hand on three Macs (two Apple Silicon, one Intel)) with Retina scaling. It needs the main
   thread. See [macos-testing.md](macos-testing.md).
 - **Tk (with `BUI_HOST=tk`, or where no native host works).** A stdlib `tkinter` window that
   shows the kit's frame buffer and forwards input to it. The UI and the API

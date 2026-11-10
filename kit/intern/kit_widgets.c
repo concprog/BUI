@@ -774,7 +774,6 @@ static void panel_draw(BKNode *n)
   /* title: paneltitle style (soft shadow) for panels, widget style for sub-panels;
    * its rect reaches 2 px below the header (title_rect.ymin - 2) */
   BKRect tr = {(int)tx - bk_pad(), n->y, n->x + n->w - (sub ? 0 : (int)uu), n->y + hh + 2};
-  extern int bk_text_shadow;
   const int shadow = bk_text_shadow;
   bk_text_shadow = sub ? 1 : 3;
   bk_text_in(&tr, n->text, bk_theme.text, BK_ALIGN_LEFT, false);
@@ -3454,7 +3453,9 @@ static void html_text(const BKRect *cr, const char *s, int len, const uchar c[4]
 void bk_html_te_draw(BKTextEdit *te, const BKRect *cr, const uchar color[4])
 {
   const float inner = BK_MAX(1.0f, (float)bk_rw(cr) - 1.0f);
-  const float caret_px = bk_masked_width(te->text, te->caret, te->mask, false);
+  const BKImeComp *ime = &te->ime;
+  const float text_px = bk_masked_width(te->text, te->caret, te->mask, false);
+  const float caret_px = text_px + bk_ime_caret_offset(ime, false);
   if (caret_px - te->scroll > inner) {
     te->scroll = caret_px - inner;
   }
@@ -3472,7 +3473,17 @@ void bk_html_te_draw(BKTextEdit *te, const BKRect *cr, const uchar color[4])
   }
   const float base = bk_text_baseline(cr);
   bk_clip_push(cr->xmin, cr->ymin - m, bk_rw(cr) + 1, h + 2 * m);
-  bk_text(tx, base, s, len, color, false);
+  if (ime->len) { /* an IME composition: before the caret, the composite, after it */
+    const float cx = tx + text_px;
+    bk_text(tx, base, s, te->caret, color, false);
+    bk_text(cx, base, ime->text, ime->len, color, false);
+    bk_text(cx + bk_text_width(ime->text, ime->len, false), base, s + te->caret,
+            len - te->caret, color, false);
+    bk_ime_draw_underline(ime, cx, (float)cr->ymax, (float)bk_rw(cr), color, false);
+  }
+  else {
+    bk_text(tx, base, s, len, color, false);
+  }
   if (te->anchor >= 0 && te->anchor != te->caret) {
     const int a = BK_MIN(te->anchor, te->caret), b = BK_MAX(te->anchor, te->caret);
     const float sx = tx + bk_masked_width(te->text, a, te->mask, false);
@@ -3486,10 +3497,11 @@ void bk_html_te_draw(BKTextEdit *te, const BKRect *cr, const uchar color[4])
     bk_text(tx, base, s, len, white, false);
     bk_clip_pop();
   }
-  else { /* Chrome hides the caret over a range selection */
+  else if (bk_te_caret_visible(te)) { /* Chrome hides the caret over a range selection, and blinks it */
     bk_fill(floorf(tx + caret_px), (float)cr->ymin, html_bw(), (float)h, color);
   }
   bk_clip_pop();
+  bk_ime_set_candidate(&te->ime, (int)floorf(tx + caret_px) + 5, cr->ymax + 1);
 }
 
 /* -- buttons (push buttons, toggles, color input frame) -- */
@@ -3633,9 +3645,11 @@ static void html_text_draw(BKNode *n)
 {
   const BKRect r = bk_node_rect(n);
   const int hs = html_state(n);
-  html_field_frame(&r, hs, n->edit != NULL);
+  if (!(n->flags & NF_BARE)) { /* `border: none`: no frame and no focus ring, as in Chrome */
+    html_field_frame(&r, hs, n->edit != NULL);
+  }
   const BKRect cr = html_inset(&r, 4, 3, 4, 3);
-  const uchar *tc = hs == HS_DISABLED ? kHtmlFieldTextDisabled : kHtmlText;
+  const uchar *tc = hs == HS_DISABLED ? kHtmlFieldTextDisabled : n->text_color[3] ? n->text_color : kHtmlText;
   if (n->edit) {
     bk_html_te_draw(n->edit, &cr, tc);
     return;

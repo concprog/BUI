@@ -236,7 +236,9 @@ in a browser.
 Every element has `.child(..)`, `.children(..)`, `.id(..)`, `.class(..)`,
 `.attr(name, value)` and typed attributes: `.href`, `.value`, `.placeholder`,
 `.input_type`, `.name`, `.checked`, `.disabled`, `.selected`, `.open`, `.min`,
-`.max`, `.step`, `.src`, `.alt`, `.title`, `.colspan`. `FluentBuilder` adds
+`.max`, `.step`, `.src`, `.alt`, `.title`, `.colspan`. A text field with the
+`live` attribute (`<input live>`) reports every keystroke to `on_input` and
+`on_change`, not only on Enter or blur. `FluentBuilder` adds
 `.when(cond, |el| ..)`, `.when_some(opt, |el, v| ..)` and `.map(..)`.
 Text children are `&'static str`, `String` or `SharedString`.
 
@@ -720,7 +722,7 @@ The `gdi-text` feature uses Windows' GDI engine and system fonts.
   transforms) shows its first frame. `video`, `audio`,
   `iframe` show a placeholder.
 - **Windows** are native on Windows (Win32), Linux (X11) and macOS (Cocoa,
-  new, tried by hand so far on two Apple Silicon Macs; it needs the main thread). The GPU
+  new, tried by hand so far on three Macs (two Apple Silicon, one Intel); it needs the main thread). The GPU
   renderer runs on Windows and Linux.
 - `text-align: justify` aligns left. Table columns are sized from their
   widest single-line content, a simpler version of browsers' auto layout.
