@@ -84,6 +84,16 @@ pub(crate) struct WidgetSpec {
     /// A browser-look text field with its own CSS `color` / `font-size` (they differ from the parent's):
     /// 0xAARRGGBB and CSS px. None: Chrome's field text (black, 13.33px).
     pub text_color: Option<u32>,
+    /// Its CSS `background-color` (0xAARRGGBB); None: the browser's white.
+    pub field_bg: Option<u32>,
+    /// A browser-look textarea with `field-sizing: content`: wraps at its width, and its height follows its lines.
+    pub grow: bool,
+    /// A textarea's `rows` attribute: the lines it shows at least (None: the browser's two).
+    pub rows: Option<u32>,
+    /// A growing textarea's CSS padding (top, right, bottom, left) in CSS px: the text sits inside it.
+    pub pad: [f32; 4],
+    /// Its CSS `max-height` in CSS px (None: unbounded): the box shows whole lines up to it.
+    pub max_h: Option<f32>,
     pub font_px: Option<f32>,
     /// `<optgroup>` labels: (index of the option they come before, label).
     pub groups: Vec<(usize, String)>,
@@ -166,6 +176,11 @@ impl WidgetSpec {
             html: false,
             bare: false,
             text_color: None,
+            field_bg: None,
+            grow: false,
+            rows: None,
+            pad: [0.0; 4],
+            max_h: None,
             font_px: None,
             groups: Vec::new(),
             meter: [None; 3],
@@ -269,6 +284,7 @@ impl WidgetSpec {
             }
             "textarea" => {
                 s = WidgetSpec::new(WKind::TextArea, attrs);
+                s.rows = num("rows").map(|r| r.max(1.0) as u32);
                 s.text = Some(attr(attrs, "value").map(str::to_owned)
                     .unwrap_or_else(|| d.children.iter().filter_map(|c| match c {
                         AnyElement::Text(t) => Some(t.as_ref()),
@@ -313,6 +329,16 @@ pub(crate) struct WidgetNode {
     pub node: *mut sys::BKNode,
     pub spec: WidgetSpec,
     seen: bool,
+    /// the canvas it is on (see `Painter`)
+    seg: u32,
+    /// the part of it that shows (device pixels), when something clips it
+    clip: Option<[i32; 4]>,
+}
+
+/// What layout asks the widgets: the natural size of a spec, or a growing textarea's height at a width.
+pub(crate) enum WidgetAsk<'a> {
+    Ensure(&'a WidgetSpec),
+    Height(f32),
 }
 
 /// The kit widgets of one window, keyed by element key.
@@ -344,7 +370,7 @@ impl Widgets {
                 sys::BK_node_add(parent, node, -1);
                 sys::BK_geom_set_manager(node, sys::BK_GEOM_PLACE);
             }
-            let w = WidgetNode { node, spec: spec.clone(), seen: true };
+            let w = WidgetNode { node, spec: spec.clone(), seen: true, seg: 0, clip: None };
             sync(node, None, spec);
             w
         });
@@ -362,9 +388,30 @@ impl Widgets {
         ((nat[0] as f32 / scale).max(mw), (nat[1] as f32 / scale).max(mh))
     }
 
+    /// The height in logical pixels a growing textarea needs when it is `width` wide.
+    pub(crate) fn height_for(&mut self, key: Key, width: f32, scale: f32) -> f32 {
+        let Some(w) = self.nodes.get(&key) else { return 0.0 };
+        let mut nat = [0i32; 2];
+        // SAFETY: our node; the width is a hint for the one natural-size query that follows.
+        unsafe {
+            sys::BK_set_num(w.node, c"measure_w".as_ptr(), f64::from((width * scale).round() as i32));
+            sys::BK_node_natural(w.node, nat.as_mut_ptr());
+            sys::BK_set_num(w.node, c"measure_w".as_ptr(), 0.0);
+        }
+        nat[1] as f32 / scale
+    }
+
+    /// A frame without layout (a redraw of Motion's values) keeps the widgets
+    /// of the last one: none was asked for again, none is gone.
+    pub(crate) fn keep(&mut self) {
+        for w in self.nodes.values_mut() {
+            w.seen = true;
+        }
+    }
+
     /// Place every widget at its laid-out bounds; free those not rendered.
-    pub(crate) fn place(&mut self, at: &HashMap<Key, (Bounds<f32>, Option<Bounds<f32>>, bool)>,
-                        scale: f32) {
+    pub(crate) fn place(&mut self, at: &HashMap<Key, (Bounds<f32>, Option<Bounds<f32>>, bool, u32, u32)>,
+                        canvases: &[*mut sys::BKNode], scale: f32) {
         self.nodes.retain(|key, w| {
             if !w.seen || !at.contains_key(key) {
                 // SAFETY: frees our node (detaching it from the canvas).
@@ -372,11 +419,40 @@ impl Widgets {
                 return false;
             }
             w.seen = false;
-            let (b, clip, visible) = at[key];
+            let (b, clip, visible, seg, _) = at[key];
+            // on the canvas its paint order puts it on (above what comes before, below what overlaps it)
+            let seg = seg.min(canvases.len() as u32 - 1);
+            if w.seg != seg {
+                // SAFETY: our node, moved to another of the window's canvases.
+                unsafe { sys::BK_node_add(canvases[seg as usize], w.node, -1) };
+                w.seg = seg;
+            }
             let shown = visible && clip.is_none_or(|c| {
                 let i = c.intersect(&b);
                 i.size.width > 0.0 && i.size.height > 0.0
             });
+            // cut where an ancestor's `overflow` clips it (nothing set when all of it shows)
+            let cut = clip.filter(|c| c.intersect(&b) != b).map(|c| {
+                let c = c.intersect(&b);
+                let (x0, y0) = ((c.origin.x * scale).floor(), (c.origin.y * scale).floor());
+                let (x1, y1) = (((c.origin.x + c.size.width) * scale).ceil(), ((c.origin.y + c.size.height) * scale).ceil());
+                [x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32]
+            });
+            if cut != w.clip {
+                w.clip = cut;
+                // SAFETY: our live node; plain numbers.
+                unsafe {
+                    match cut {
+                        Some(c) => {
+                            sys::BK_geom_set(w.node, c"clipx".as_ptr(), f64::from(c[0]));
+                            sys::BK_geom_set(w.node, c"clipy".as_ptr(), f64::from(c[1]));
+                            sys::BK_geom_set(w.node, c"clipw".as_ptr(), f64::from(c[2]));
+                            sys::BK_geom_set(w.node, c"cliph".as_ptr(), f64::from(c[3]));
+                        }
+                        None => sys::BK_geom_set(w.node, c"noclip".as_ptr(), 1.0),
+                    }
+                }
+            }
             unsafe {
                 sys::BK_geom_set(w.node, c"x".as_ptr(), (b.origin.x * scale).round() as f64);
                 sys::BK_geom_set(w.node, c"y".as_ptr(), (b.origin.y * scale).round() as f64);
@@ -386,6 +462,29 @@ impl Widgets {
             }
             true
         });
+        self.order(at, canvases);
+    }
+
+    /// The kit draws a canvas's widgets in the order they are its children, and the topmost child gets
+    /// the pointer: each canvas's widgets are put in paint order (`z-index` among widgets, later
+    /// siblings over earlier ones), not in the order they were made.
+    fn order(&self, at: &HashMap<Key, (Bounds<f32>, Option<Bounds<f32>>, bool, u32, u32)>,
+             canvases: &[*mut sys::BKNode]) {
+        let mut want: Vec<(u32, *mut sys::BKNode)> = Vec::new();
+        for (k, &canvas) in canvases.iter().enumerate() {
+            want.clear();
+            want.extend(self.nodes.iter().filter(|(_, w)| w.seg as usize == k)
+                .map(|(key, w)| (at[key].4, w.node)));
+            want.sort_unstable_by_key(|&(rank, _)| rank);
+            for (i, &(_, node)) in want.iter().enumerate() {
+                // SAFETY: our canvas and widget nodes; moving a node within its parent
+                unsafe {
+                    if sys::BK_node_child(canvas, i as i32) != node {
+                        sys::BK_node_add(canvas, node, i as i32);
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn key_of(&self, node: *mut sys::BKNode) -> Option<Key> {
@@ -463,6 +562,23 @@ fn sync(n: *mut sys::BKNode, old: Option<&WidgetSpec>, spec: &WidgetSpec) {
         }
         if old.is_none_or(|o| o.bare != spec.bare) {
             set_num(c"bare", spec.bare as i32 as f64);
+        }
+        if let Some(rows) = spec.rows.filter(|_| old.is_none_or(|o| o.rows != spec.rows)) {
+            set_num(c"rows", f64::from(rows));
+        }
+        if old.is_none_or(|o| o.pad != spec.pad) {
+            for (k, v) in [c"pad_t", c"pad_r", c"pad_b", c"pad_l"].into_iter().zip(spec.pad) {
+                set_num(k, f64::from(v));
+            }
+        }
+        if old.is_none_or(|o| o.max_h != spec.max_h) {
+            set_num(c"max_h", f64::from(spec.max_h.unwrap_or(0.0)));
+        }
+        if old.is_none_or(|o| o.grow != spec.grow) {
+            set_num(c"grow", f64::from(u8::from(spec.grow)));
+        }
+        if old.is_none_or(|o| o.field_bg != spec.field_bg) {
+            set_num(c"field_bg", f64::from(spec.field_bg.unwrap_or(0)));
         }
         if old.is_none_or(|o| (o.text_color, o.font_px) != (spec.text_color, spec.font_px)) {
             set_num(c"text_color", f64::from(spec.text_color.unwrap_or(0)));

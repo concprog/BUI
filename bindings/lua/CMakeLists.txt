@@ -4,6 +4,25 @@
 
 include(FetchContent)
 
+# LuaRocks (blenderui-<version>.rockspec) builds only the loadable module, against the Lua that runs
+# the rock: LuaRocks passes LUA_INCLUDE_DIR (and LUA_LIBRARY, which Windows needs), and the rock
+# is installed with LUADIR / LIBDIR. Nothing is fetched, and the bui-lua executable is not built.
+option(BUI_LUA_ROCK "Build only the _bui module for LuaRocks, against the host Lua (LUA_INCLUDE_DIR, LUA_LIBRARY)" OFF)
+
+if(BUI_LUA_ROCK)
+  if(NOT LUA_INCLUDE_DIR)
+    message(FATAL_ERROR "bui-lua: BUI_LUA_ROCK needs LUA_INCLUDE_DIR (LuaRocks passes it)")
+  endif()
+  # LuaRocks on Windows passes these with backslashes, which CMake would read as escapes
+  file(TO_CMAKE_PATH "${LUA_INCLUDE_DIR}" _rock_lua_inc)
+  add_library(bui_lua_sys INTERFACE)
+  target_include_directories(bui_lua_sys INTERFACE "${_rock_lua_inc}")
+  if(LUA_LIBRARY)
+    file(TO_CMAKE_PATH "${LUA_LIBRARY}" _rock_lua_lib)
+    target_link_libraries(bui_lua_sys INTERFACE "${_rock_lua_lib}")
+  endif()
+  set(LUA_TARGET bui_lua_sys)
+else()
 # Try system Lua 5.4 first, then fetch from lua.org
 # Note: find_package(Lua) with "5.4" matches 5.4 or newer (QUIET skips the
 # version check in older CMake). We verify the major.minor ourselves.
@@ -61,6 +80,12 @@ else()
 
   add_library(bui_lua STATIC ${LUA_SRC})
   target_include_directories(bui_lua PUBLIC ${LUA_SRC_DIR})
+  if(NOT WIN32)
+    # lua.org's makefile defines these (LUA_USE_LINUX / LUA_USE_MACOSX): without LUA_USE_DLOPEN
+    # package.loadlib, and so `require` of any C module, is disabled
+    target_compile_definitions(bui_lua PRIVATE LUA_USE_POSIX LUA_USE_DLOPEN)
+    target_link_libraries(bui_lua PUBLIC ${CMAKE_DL_LIBS})
+  endif()
   if(MSVC)
     target_compile_options(bui_lua PRIVATE /W0)
   else()
@@ -68,7 +93,9 @@ else()
   endif()
   set(LUA_TARGET bui_lua)
 endif()
+endif() # BUI_LUA_ROCK
 
+if(NOT BUI_LUA_ROCK)
 # linenoise (vendored, single-file MIT library)
 # (linenoise needs termios.h, so Windows gets a small fgets version of the calls the REPL uses)
 if(WIN32)
@@ -79,6 +106,7 @@ endif()
 add_library(linenoise STATIC ${_linenoise_src})
 target_include_directories(linenoise PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/extern/linenoise)
+endif() # NOT BUI_LUA_ROCK
 
 # Shared BUI binding sources
 set(LUABUI_SRC
@@ -86,14 +114,18 @@ set(LUABUI_SRC
     src/bui_node.c
     src/bui_context.c
     src/bui_window.c
-    src/bui_image.c)
+    src/bui_image.c
+    src/bui_anim.c)
 
-set(LUABUI_LIBS ${LUA_TARGET} linenoise bui::kit bui::gpu bui::core bui_api)
+# the module (its REPL-free code) doesn't use linenoise
+set(LUABUI_LIBS ${LUA_TARGET} bui::kit bui::gpu bui::core bui_api)
 
 # bui-lua executable
-add_executable(bui-lua src/main.c ${LUABUI_SRC})
-target_link_libraries(bui-lua PRIVATE ${LUABUI_LIBS})
-target_include_directories(bui-lua PRIVATE src)
+if(NOT BUI_LUA_ROCK)
+  add_executable(bui-lua src/main.c ${LUABUI_SRC})
+  target_link_libraries(bui-lua PRIVATE ${LUABUI_LIBS} linenoise)
+  target_include_directories(bui-lua PRIVATE src)
+endif()
 
 # Copy the Lua wrapper alongside the C module in the build tree
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/bui.lua ${CMAKE_CURRENT_BINARY_DIR}/bui.lua COPYONLY)
@@ -105,9 +137,12 @@ add_library(_bui MODULE ${LUABUI_SRC})
 target_link_libraries(_bui PRIVATE ${LUABUI_LIBS})
 target_include_directories(_bui PRIVATE src)
 set_target_properties(_bui PROPERTIES MODULE_NAME "_bui")
-if(MSVC)
+if(WIN32) # MSVC and MinGW alike: _bui.dll, not lib_bui.dll
   set_target_properties(_bui PROPERTIES PREFIX "" SUFFIX ".dll")
-  target_compile_definitions(_bui PRIVATE LUA_BUILD_AS_DLL)
+  if(LUA_TARGET STREQUAL "bui_lua_sys")
+    # a system Lua on Windows is a DLL, and its API is imported from it; the Lua built here is static
+    target_compile_definitions(_bui PRIVATE LUA_BUILD_AS_DLL)
+  endif()
 elseif(APPLE)
   set_target_properties(_bui PROPERTIES PREFIX "" SUFFIX ".so")
   target_link_options(_bui PRIVATE -Wl,-undefined,dynamic_lookup)
@@ -115,7 +150,15 @@ else()
   set_target_properties(_bui PROPERTIES PREFIX "" SUFFIX ".so")
 endif()
 
-if(BUI_BUILD_TESTS)
+# LuaRocks installs the module and its wrapper where it says (cmake --install, or `luarocks make`)
+if(BUI_LUA_ROCK)
+  file(TO_CMAKE_PATH "${LIBDIR}" _rock_libdir)
+  file(TO_CMAKE_PATH "${LUADIR}" _rock_luadir)
+  install(TARGETS _bui LIBRARY DESTINATION "${_rock_libdir}" RUNTIME DESTINATION "${_rock_libdir}")
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/bui.lua DESTINATION "${_rock_luadir}")
+endif()
+
+if(BUI_BUILD_TESTS AND NOT BUI_LUA_ROCK)
   add_test(NAME bui_lua_basic
     COMMAND bui-lua ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_basic.lua
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
@@ -145,6 +188,22 @@ if(BUI_BUILD_TESTS)
     COMMAND bui-lua ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_theme.lua
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   set_tests_properties(bui_lua_theme PROPERTIES TIMEOUT 30)
+
+  add_test(NAME bui_lua_anim
+    COMMAND bui-lua ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_anim.lua
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  set_tests_properties(bui_lua_anim PROPERTIES TIMEOUT 30)
+
+  # the loadable module: Lua looks for luaopen__bui in _bui.dll / _bui.so
+  add_test(NAME bui_lua_module
+    COMMAND bui-lua ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_module.lua $<TARGET_FILE:_bui>
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  set_tests_properties(bui_lua_module PROPERTIES TIMEOUT 30)
+
+  add_test(NAME bui_lua_window
+    COMMAND bui-lua ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_window.lua
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  set_tests_properties(bui_lua_window PROPERTIES TIMEOUT 30)
 
   add_test(NAME bui_lua_filebrowser
     COMMAND bui-lua ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_filebrowser.lua

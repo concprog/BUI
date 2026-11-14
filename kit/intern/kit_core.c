@@ -20,6 +20,7 @@
 #  include <windows.h>
 #endif
 
+#include "BUI_anim.h"
 #include "BUI_blender_c.h"
 #include "blender/bk_blender.h"
 #include "kit_intern.h"
@@ -235,6 +236,7 @@ void BK_node_free(BKNode *n)
   if (!n) {
     return;
   }
+  BK_anim_kill_target(n, -1); /* its motions stop: nothing writes to it any more */
   if (n->parent) {
     node_detach(n);
   }
@@ -449,11 +451,25 @@ void bk_arrange(BKNode *n, int x, int y, int w, int h)
   }
 }
 
+static void draw_tree_in(BKNode *n);
+
 void bk_draw_tree(BKNode *n)
 {
   if (!NODE_VISIBLE(n)) {
     return;
   }
+  const BKGeom *g = n->geom;
+  if (g && g->has_clip) { /* a host that clips what it places (a widget under `overflow: hidden`) */
+    bk_clip_push(g->clip[0], g->clip[1], g->clip[2], g->clip[3]);
+    draw_tree_in(n);
+    bk_clip_pop();
+    return;
+  }
+  draw_tree_in(n);
+}
+
+static void draw_tree_in(BKNode *n)
+{
   if (n->cls->draw_tree) {
     n->cls->draw_tree(n);
     return;
@@ -492,6 +508,12 @@ bool bk_contains(const BKNode *n, int x, int y)
 BKNode *bk_hit(BKNode *n, int x, int y)
 {
   if (!NODE_VISIBLE(n) || !bk_contains(n, x, y)) {
+    return NULL;
+  }
+  const BKGeom *g = n->geom;
+  if (g && g->has_clip &&
+      (x < g->clip[0] || y < g->clip[1] || x >= g->clip[0] + g->clip[2] || y >= g->clip[1] + g->clip[3]))
+  {
     return NULL;
   }
   if (n->cls->hit) {
@@ -788,6 +810,7 @@ static const struct {
     {"html", NF_HTML, true}, /* Chrome's form-control look (kit_widgets.c) */
     {"bare", NF_BARE, false},
     {"active_default", NF_ACTIVE_DEFAULT, false},
+    {"select", NF_SELECT, false},
 };
 
 static int g_view_watchers; /* > 0 once any node asked for view events */
@@ -920,6 +943,9 @@ int BK_set_num(BKNode *n, const char *key, double v)
   }
   for (size_t i = 0; i < sizeof(g_flag_props) / sizeof(g_flag_props[0]); i++) {
     if (strcmp(key, g_flag_props[i].key) == 0) {
+      if (((n->flags & g_flag_props[i].flag) != 0) == (v != 0)) {
+        return 1; /* unchanged: no relayout, no redraw */
+      }
       if (v != 0) {
         n->flags |= g_flag_props[i].flag;
       }
@@ -1044,6 +1070,15 @@ int BK_set_num(BKNode *n, const char *key, double v)
   }
   if (strcmp(key, "selmode") == 0) {
     n->selmode = (int)v;
+    bk_invalidate(n);
+    return 1;
+  }
+  if (strcmp(key, "field_bg") == 0) { /* 0xAARRGGBB */
+    const uint32_t argb = (uint32_t)v;
+    n->field_bg[0] = (uchar)(argb >> 16);
+    n->field_bg[1] = (uchar)(argb >> 8);
+    n->field_bg[2] = (uchar)argb;
+    n->field_bg[3] = (uchar)(argb >> 24);
     bk_invalidate(n);
     return 1;
   }
@@ -1323,7 +1358,7 @@ int BK_set_color(BKNode *n, const char *key, const float c[4])
 
 int BK_get_color(BKNode *n, const char *key, float r[4])
 {
-  if (strcmp(key, "color") == 0 || strcmp(key, "value") == 0) {
+  if (strcmp(key, "color") == 0 || strcmp(key, "value") == 0 || strcmp(key, "bg") == 0) {
     memcpy(r, n->color, sizeof(float[4]));
     return 1;
   }
@@ -1400,6 +1435,15 @@ const char *BK_strs_get(BKNode *n, const char *key, int i)
 /** \name Context: damage, popups, services
  * \{ */
 
+/* a motion started: every context draws frames until the motions end (BK_animating) */
+static void anim_wake(void *data)
+{
+  (void)data;
+  for (BKContext *c = g_contexts; c; c = c->next_ctx) {
+    bk_ctx_request(c);
+  }
+}
+
 BKContext *BK_context_new(BKNode *root)
 {
   BKContext *ctx = (BKContext *)calloc(1, sizeof(BKContext));
@@ -1413,8 +1457,12 @@ BKContext *BK_context_new(BKNode *root)
   bk_theme_env_init();
   ctx->next_ctx = g_contexts;
   g_contexts = ctx;
+  BK_anim_set_wake(anim_wake, NULL);
+  BK_anim_set_clock(bk_time); /* frames stop when idle: motions start on the kit's clock */
   return ctx;
 }
+
+static void undo_entry_free(BKUndo *u);
 
 void BK_context_free(BKContext *ctx)
 {
@@ -1422,6 +1470,10 @@ void BK_context_free(BKContext *ctx)
     return;
   }
   BK_close_popups(ctx);
+  for (int i = 0; i < ctx->nundo; i++) {
+    undo_entry_free(&ctx->undo[i]); /* the text steps own their strings */
+  }
+  ctx->nundo = ctx->undo_pos = 0;
   bk_image_forget_context(ctx);
   for (int i = 0; i < ctx->nkeys; i++) {
     bk_release(ctx->keys[i].ref);
@@ -1446,7 +1498,7 @@ void BK_context_free(BKContext *ctx)
 
 static int g_theme_light = 0, g_theme_set = 0;
 
-static int theme_from_name(const char *name)
+int bk_theme_from_name(const char *name)
 {
   /* "dark" / "light", any case; Blender's preset names work too */
   char buf[32];
@@ -1471,10 +1523,26 @@ static int theme_from_name(const char *name)
   return -1;
 }
 
-static void theme_apply(int light)
+/* The preset itself, nothing redrawn yet: bk_theme_changed does that once the theme is complete. */
+void bk_theme_load_preset(int light)
 {
   g_theme_light = light;
   bk_theme = light ? bk_theme_light : bk_theme_dark;
+}
+
+bool bk_theme_is_light(void)
+{
+  return g_theme_light != 0;
+}
+
+void bk_theme_mark_set(void)
+{
+  g_theme_set = 1;
+}
+
+/* bk_theme changed (a preset, a custom theme, one color): every context relayouts and redraws. */
+void bk_theme_changed(void)
+{
   bk_theme_gen++;
   for (BKContext *c = g_contexts; c; c = c->next_ctx) {
     c->layout_dirty = true; /* shadow widths size popups */
@@ -1485,6 +1553,12 @@ static void theme_apply(int light)
   }
 }
 
+static void theme_apply(int light)
+{
+  bk_theme_load_preset(light);
+  bk_theme_changed();
+}
+
 void bk_theme_env_init(void)
 {
   if (g_theme_set) {
@@ -1492,23 +1566,10 @@ void bk_theme_env_init(void)
   }
   g_theme_set = 1;
   const char *env = getenv("BUI_THEME");
-  const int t = env && *env ? theme_from_name(env) : -1;
+  const int t = env && *env ? bk_theme_from_name(env) : -1;
   if (t > 0) {
     theme_apply(t);
   }
-}
-
-int BK_set_theme(const char *name)
-{
-  const int t = theme_from_name(name ? name : "dark");
-  if (t < 0) {
-    return 0;
-  }
-  g_theme_set = 1;
-  if (t != g_theme_light) {
-    theme_apply(t);
-  }
-  return 1;
 }
 
 int BK_version(void)
@@ -1519,12 +1580,6 @@ int BK_version(void)
 const char *BK_version_string(void)
 {
   return BUI_KIT_VERSION_STRING;
-}
-
-const char *BK_theme_name(void)
-{
-  bk_theme_env_init();
-  return g_theme_light ? "light" : "dark";
 }
 
 #define TH_FIELD(f) {#f, offsetof(BKTheme, f)}
@@ -1584,7 +1639,8 @@ int BK_theme_color(const char *key, float r_rgba[4])
     }
   }
   if (!c) {
-    return 0;
+    /* "button.background", "user_interface.wcol_regular.inner", then the theme's own keys */
+    return bk_theme_key_color(key, r_rgba) || bk_theme_custom_color(key, r_rgba);
   }
   if (r_rgba) {
     bk_rgba(c, r_rgba);
@@ -1761,29 +1817,7 @@ void bk_close_popups_after(BKContext *ctx, BKNode *after)
   while (ctx->npopups > keep) {
     BKNode *p = ctx->popups[--ctx->npopups];
     bk_invalidate(p);
-    /* clear references into the popup before freeing it */
-    if (ctx->hover && is_within(ctx->hover, p)) {
-      ctx->hover = NULL;
-    }
-    if (ctx->grab && is_within(ctx->grab, p)) {
-      ctx->grab = NULL;
-    }
-    if (ctx->focus && is_within(ctx->focus, p)) {
-      BKNode *f = ctx->focus;
-      ctx->focus = NULL;
-      bk_te_free(f->edit);
-      f->edit = NULL;
-    }
-    if (ctx->tip_node && is_within(ctx->tip_node, p)) {
-      ctx->tip_node = NULL;
-      ctx->tip_shown = 0;
-    }
-    if (ctx->last_click_node && is_within(ctx->last_click_node, p)) {
-      ctx->last_click_node = NULL;
-    }
-    if (ctx->modal && is_within(ctx->modal, p)) {
-      ctx->modal = NULL;
-    }
+    bk_forget(ctx, p); /* references into the popup, its animations, its undo steps */
     /* The popover panel's body belongs to its owner, not the popup. */
     if (p->cls == &bk_cls_popover_panel && p->nkids) {
       BKNode *body = p->kids[0];
@@ -2187,7 +2221,10 @@ static void draw_region(BKContext *ctx, const BKRect *rect)
   const int w = ctx->win_w, h = ctx->win_h;
   bk_clip_reset(w, h);
   bk_clip_push(rect->xmin, rect->ymin, bk_rw(rect), bk_rh(rect));
-  if (!(ctx->root && (ctx->root->flags & NF_OPAQUE))) {
+  if (BUI_raster_alpha(bk_draw.r)) { /* a transparent window: no region background */
+    BUI_raster_clear(bk_draw.r, rect->xmin, rect->ymin, bk_rw(rect), bk_rh(rect));
+  }
+  else if (!(ctx->root && (ctx->root->flags & NF_OPAQUE))) {
     bk_fill(rect->xmin, rect->ymin, bk_rw(rect), bk_rh(rect), bk_theme.region_bg);
   }
   const int top = ctx->header_h, view_h = h - top;
@@ -2219,18 +2256,33 @@ int BK_needs_render(BKContext *ctx)
 
 static void anim_step(BKContext *ctx);
 
+/* The window's size is `w` x `h`: lays out and reports the new geometry (BK_EV_CONFIGURE), whose
+ * handlers can rebuild the tree before anything is drawn. True when the size changed. */
+int BK_configure(BKContext *ctx, int w, int h)
+{
+  const bool changed = w != ctx->win_w || h != ctx->win_h;
+  if (changed) {
+    ctx->win_w = w;
+    ctx->win_h = h;
+    ctx->layout_dirty = true;
+    layout(ctx);
+    bk_views_check(ctx);
+  }
+  return changed;
+}
+
 int BK_render(BKContext *ctx, BuiRaster *r, int w, int h, int full)
 {
   BK_image_poll(); /* decoded images arrive (and damage where they show) */
   bk_image_tick(); /* animated images whose next frame is due */
   bk_draw.r = r;
   ctx->raster = r;
+  if (!BK_anim_host_clock()) {
+    BK_anim_tick(bk_time()); /* motions write their values (nodes damage themselves) */
+  }
   anim_step(ctx);
-  if (w != ctx->win_w || h != ctx->win_h || BUI_raster_width(r) != w ||
-      BUI_raster_height(r) != h)
-  {
-    ctx->win_w = w;
-    ctx->win_h = h;
+  BK_configure(ctx, w, h);
+  if (BUI_raster_width(r) != w || BUI_raster_height(r) != h) {
     ctx->layout_dirty = true;
   }
   if (full || ctx->layout_dirty) {
@@ -2792,6 +2844,7 @@ static int in_BK_key(BKContext *ctx, const char *text, const char *keysym, int m
   BKEvent e = make_event(ctx, NULL, ctx->pointer_x, ctx->pointer_y, mods);
   e.text = text ? text : "";
   e.keysym = keysym ? keysym : "";
+  snprintf(ctx->key_held, sizeof(ctx->key_held), "%s", e.keysym);
   ctx->interaction++;
   for (BKNode *n = ctx->focus ? ctx->focus : ctx->hover; n; n = n->parent) {
     if (n->flags & NF_EVENTS) { /* Tk/Qt key bindings see the key first */
@@ -3417,6 +3470,13 @@ int BK_key_release(BKContext *ctx, const char *keysym, int mods)
   BKEvent e = make_event(ctx, NULL, ctx->pointer_x, ctx->pointer_y, mods);
   e.text = "";
   e.keysym = keysym ? keysym : "";
+  if (bk_keysym_is(e.keysym, ctx->key_held)) {
+    ctx->key_held[0] = '\0';
+  }
+  BKNode *top = ctx->npopups ? ctx->popups[ctx->npopups - 1] : NULL;
+  if (top && top->cls->key_up && top->cls->key_up(top, &e)) {
+    return 1;
+  }
   for (BKNode *n = ctx->focus ? ctx->focus : ctx->hover; n; n = n->parent) {
     if (BK_IS_CUSTOM(n) && NODE_ENABLED(n)) {
       BKCustomEvent ce;
@@ -3660,6 +3720,7 @@ static int g_animations = 1;
 void BK_set_animations(int enabled)
 {
   g_animations = enabled != 0;
+  BK_anim_set_reduced_motion(!g_animations);
 }
 
 bool bk_animations_enabled(void)
@@ -3669,7 +3730,8 @@ bool bk_animations_enabled(void)
 
 int BK_animating(BKContext *ctx)
 {
-  return ctx->nanim > 0 || bk_custom_animating(ctx);
+  /* motions need frames from the kit only when it runs their clock (else the host draws them) */
+  return ctx->nanim > 0 || bk_custom_animating(ctx) || (!BK_anim_host_clock() && BK_anim_active());
 }
 
 void bk_anim_start(BKNode *n)
@@ -3710,9 +3772,10 @@ static void anim_step(BKContext *ctx)
   for (int i = ctx->nanim - 1; i >= 0; i--) {
     BKNode *n = ctx->anim[i];
     const float target = (n->flags & NF_COLLAPSED) ? 0.0f : 1.0f;
+    const double time = n->cls->anim_time;
     /* do_animate: fac = (now - starttime) / ANIMATION_TIME; fac = min(sqrt(fac), 1) */
-    float fac = (float)((now - ctx->anim_start[i]) / ANIMATION_TIME);
-    fac = BK_MIN(sqrtf(BK_MAX(fac, 0.0f)), 1.0f);
+    float fac = (float)((now - ctx->anim_start[i]) / (time > 0.0 ? time : ANIMATION_TIME));
+    fac = BK_MIN(time > 0.0 ? BK_MAX(fac, 0.0f) : sqrtf(BK_MAX(fac, 0.0f)), 1.0f);
     n->anim = fac >= 1.0f ? target : ctx->anim_from[i] + (target - ctx->anim_from[i]) * fac;
     if (n->anim == target) {
       const int last = --ctx->nanim;
@@ -3769,7 +3832,21 @@ BKNode *bk_next_editable(BKNode *from, int dir)
   return list[(at + dir + count) % count];
 }
 
-BKNode *bk_hit_at(BKContext *ctx, int x, int y)
+void bk_window_focus(BKContext *ctx, BKWindow *win, const BKWindowCallbacks *cb, int active)
+{
+  if (!active) {
+    /* pie_handler WINDEACTIVATE: the pie key may be released outside, so cancel the pie */
+    ctx->key_held[0] = '\0';
+    if (ctx->npopups && ctx->popups[ctx->npopups - 1]->cls == &bk_cls_pie) {
+      BK_close_popups(ctx);
+    }
+  }
+  if (cb->on_focus) {
+    cb->on_focus(cb->data, win, active);
+  }
+}
+
+BKNode *BK_hit_at(BKContext *ctx, int x, int y)
 {
   return hit_all(ctx, x, y);
 }

@@ -48,6 +48,11 @@ typedef struct BKWCol {
   uchar shaded;
   short shadetop, shadedown;
   float roundness;
+  /* What BUI adds to Blender's widget colors (kit_theme.c, "border.width" and friends in a theme
+   * file). All zero is Blender's own drawing, so the presets need not mention them. */
+  float border_extra;   /* the outline is 1 + border_extra pixels wide; -1 or less: no outline */
+  uchar square_corners; /* CNR_* corners drawn square whatever the layout asks */
+  uchar no_emboss;      /* nonzero: no emboss line under the widget */
 } BKWCol;
 
 typedef struct BKTheme {
@@ -73,6 +78,15 @@ typedef struct BKTheme {
 extern BKTheme bk_theme;
 extern const BKTheme bk_theme_dark, bk_theme_light;
 extern int bk_theme_gen;
+/* The theme machinery (kit_core.c: the presets; kit_theme.c: custom themes and keys). */
+int bk_theme_from_name(const char *name); /* 0 dark, 1 light, -1 unknown */
+void bk_theme_load_preset(int light);     /* into bk_theme, nothing redrawn yet */
+bool bk_theme_is_light(void);
+void bk_theme_mark_set(void);             /* a theme was chosen: BUI_THEME no longer applies */
+void bk_theme_changed(void);              /* bk_theme changed: every context redraws */
+int bk_theme_key_color(const char *key, float r_rgba[4]);
+int bk_theme_custom_color(const char *key, float r_rgba[4]); /* kit_theme.c: the theme's own keys */
+int bk_theme_custom_num(const char *key, double *r_value);
 
 /* Metrics (U.widget_unit, U.pixelsize, UI text size). */
 extern float bk_scale_fac;
@@ -166,6 +180,8 @@ void bk_text(float x, float baseline, const char *s, int len, const uchar color[
 void bk_text_f(float x, float baseline, const char *s, int len, const float c[4], bool bold);
 /* Draw `s` inside rect with alignment; returns drawn width. Ellipsizes. */
 float bk_text_in(const BKRect *rect, const char *s, const uchar color[4], int align, bool bold);
+/* Underline byte `index` of the text the next bk_text_in calls draw (-1: none). */
+void bk_text_underline(int index);
 float bk_text_in_pad(const BKRect *rect, const char *s, const uchar color[4], int align, bool bold,
                      int pad);
 /* Text + optional icon in rect (Blender's widget_draw_text_icon). */
@@ -295,6 +311,9 @@ typedef struct BKClass {
   unsigned flags;  /* CLS_* */
   int cursor;      /* hover cursor */
   int drag_cursor; /* while dragged (BK_CURSOR_NONE = continuous grab) */
+  /* bk_anim_start: seconds to animate n->anim to its target, linearly; 0: a panel's
+   * ANIMATION_TIME, eased (do_animate) */
+  double anim_time;
   int drag_group;  /* drag-toggle group (0 = none) */
   void (*init)(BKNode *n);
   void (*free_ext)(BKNode *n);
@@ -311,6 +330,8 @@ typedef struct BKClass {
   int (*move)(BKNode *n, BKEvent *e);
   int (*leave)(BKNode *n);
   int (*key)(BKNode *n, BKEvent *e);
+  int (*key_up)(BKNode *n, BKEvent *e); /* a key release, sent to the top popup */
+  void (*popup_pick)(BKNode *n, void *data); /* a menu this node opened: the picked item's `data` */
   int (*wheel)(BKNode *n, BKEvent *e);
   int (*cursor_at)(BKNode *n, int x, int y);
   void (*finish_edit)(BKNode *n, bool confirm);
@@ -378,6 +399,7 @@ enum {
   NF_ACTIVE_DEFAULT = 1 << 26, /* buttons: UI_BUT_ACTIVE_DEFAULT (drawn with the select colors) */
   NF_DEFAULT_SET = 1 << 27, /* `defval` was set: by "default", or by the first "value" a widget got */
   NF_BARE = 1 << 28,        /* "bare": an HTML text field with no frame (CSS `border-style: none`) */
+  NF_SELECT = 1 << 29,      /* "select": held selected by the host (UI_SELECT: a checked push button) */
 };
 
 #define BK_HTML(n) (((n)->flags & NF_HTML) != 0)
@@ -426,6 +448,7 @@ struct BKNode {
   int cursor_override; /* hover cursor + 1 (0 = the class's) */
   float font_scale;    /* text size relative to the UI font (0 = 1) */
   uchar text_color[4]; /* browser-look text fields: the CSS color (alpha 0: Chrome's FieldText) */
+  uchar field_bg[4];   /* browser-look text fields: the CSS background-color (alpha 0: Chrome's Field) */
   int selmode; /* list/tree: 0 single, 1 multiple (toggle), 2 extended (Ctrl/Shift),
                 * 3 single shown with marks (clearable) */
   unsigned char *marks;   /* list: selected rows when selmode != 0 */
@@ -472,6 +495,8 @@ void bk_natural(BKNode *n, int *r_w, int *r_h);
 void bk_arrange(BKNode *n, int x, int y, int w, int h);
 void bk_draw_tree(BKNode *n);
 BKNode *bk_hit(BKNode *n, int x, int y);
+/* Window hosts: the window got or lost the keyboard focus. Calls cb->on_focus. */
+void bk_window_focus(BKContext *ctx, BKWindow *win, const BKWindowCallbacks *cb, int active);
 bool bk_contains(const BKNode *n, int x, int y);
 BKRect bk_node_rect(const BKNode *n);
 bool bk_hovered(const BKNode *n);
@@ -519,6 +544,8 @@ typedef struct BKGeom {
   float x, y, relx, rely, width, height, relwidth, relheight;
   unsigned has; /* place: which of width/height/relwidth/relheight were given */
   int reqw, reqh;
+  bool has_clip; /* draw (and take the pointer) only inside `clip` (x, y, w, h), whatever the parent */
+  int clip[4];
 } BKGeom;
 
 /* Node images (image/draw.c): intrinsic size, and drawn at it centered in `r`. */
@@ -565,6 +592,7 @@ struct BKContext {
   int press_x, press_y, off_x, off_y, skip_x, skip_y;
   int ungrab_x, ungrab_y; /* where a continuous drag puts the pointer back */
   int press_button;       /* the button that started the grab (1, 2, 3) */
+  char key_held[32];      /* wmWindow.pie_event_type_last: the key down now, "" = none */
   bool has_ungrab;
   bool has_skip;
   int pointer_x, pointer_y;
@@ -626,7 +654,6 @@ void bk_undo_record(BKNode *n, int kind);
 void bk_anim_start(BKNode *n);
 BKNode *bk_next_editable(BKNode *from, int dir);
 void bk_event(BKNode *n, int kind, int mods, const BKEvent *e);
-BKNode *bk_hit_at(BKContext *ctx, int x, int y);
 bool bk_anim_running(const BKNode *n);
 void bk_edit_next(BKNode *from, int dir);
 int bk_textarea_set_text(BKNode *n, const char *s);
@@ -682,6 +709,8 @@ extern const BKClass bk_cls_column, bk_cls_row, bk_cls_split, bk_cls_grid, bk_cl
  * (Windows, light). The core calls these for NF_HTML nodes before the class's
  * own measure/draw; they return false for classes without a browser look. */
 #define BK_HTML_FONT (40.0f / 33.0f) /* 13.333px text over the 11px UI text */
+/* the same, whatever size the theme gives the UI text (BK_set_font_size) */
+#define BK_HTML_SCALE() (BK_HTML_FONT * (11.0f / BK_font_size_points()))
 extern float bk_html_text_scale;
 extern int bk_text_shadow; /* 0 none, 1 drop shadow (Blender UI text), 3 blurred; browser-look controls draw none */
 bool bk_html_measure(BKNode *n, int *r_w, int *r_h);

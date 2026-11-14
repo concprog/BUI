@@ -99,22 +99,31 @@ VIDEO_ENDED = 3  # buipy.Video.state
 class Video(Component):
     """A video file (MP4, WebM, MOV, ... whatever the OS decodes: Media
     Foundation, AVFoundation, GStreamer), fitted like CSS ``object-fit``.
-    Muted autoplay unless ``autoplay=False``; it decodes at the size drawn
-    and only while it shows. ``controls=True`` draws Blender's play/pause
-    button and a scrubber with the time. ``player`` is the
-    :class:`bui.Video` (play, pause, seek, rate, time, duration, on_state)."""
+    Autoplays with its sound unless ``autoplay=False`` (``muted=True`` for
+    a silent one; ``volume`` 0 .. 1; ``audio_effects=True`` keeps the system's
+    audio effects, which Windows otherwise skips for a faster start); the frames follow the sound, which
+    plays on off screen, and are decoded at the size drawn only while it
+    shows. ``controls=True`` draws Blender's play/pause button, a scrubber
+    with the time and, with sound, a mute button. ``player`` is the
+    :class:`bui.Video` (play, pause, seek, rate, muted, volume, time,
+    duration, on_state)."""
 
     TYPE = "video"
     FITS = Image.FITS
 
     def __init__(self, src: str, *, autoplay: bool = True, loop: bool = False,
-                 controls: bool = False, poster: Optional[str] = None, fit: str = "contain",
+                 muted: bool = False, volume: float = 1.0, audio_effects: bool = False,
+                 controls: bool = False,
+                 poster: Optional[str] = None, fit: str = "contain",
                  on_ended: Optional[Callable[[], None]] = None, **kw):
         super().__init__(**kw)
         if fit not in self.FITS:
             raise ValueError(f"fit must be one of {sorted(self.FITS)}, not {fit!r}")
         self.player = buipy.Video(str(src))  # kept by the node: it borrows the player
         self.player.loop = loop
+        self.player.muted = muted
+        self.player.volume = volume
+        self.player.audio_effects = audio_effects
         self.player.controls = controls
         if poster:
             self.player.poster = str(poster)
@@ -287,7 +296,7 @@ class NumberField(ValueComponent):
             integer = isinstance(value, int) and not isinstance(value, bool)
         self._integer = integer
         Component.__init__(self, **{k: v for k, v in kw.items()
-                                    if k in ("description", "enabled", "visible", "weight", "fill")})
+                                    if k in Component.KWARGS})
         if integer:
             self.set("integer", True)
         if min is not None:
@@ -299,7 +308,7 @@ class NumberField(ValueComponent):
         if suffix:
             self.set("suffix", suffix)
         rest = {k: v for k, v in kw.items()
-                if k not in ("description", "enabled", "visible", "weight", "fill")}
+                if k not in Component.KWARGS}
         self.on_change = rest.pop("on_change", None)
         default = rest.pop("default", None)
         if label:
@@ -342,7 +351,7 @@ class TextField(ValueComponent):
     def __init__(self, label: str = "", value: str = "", *, placeholder: str = "",
                  icon: str = None, live: bool = False, **kw):
         Component.__init__(self, **{k: v for k, v in kw.items()
-                                    if k in ("description", "enabled", "visible", "weight", "fill")})
+                                    if k in Component.KWARGS})
         self.on_change = kw.get("on_change")
         if label:
             self.set("label", label)
@@ -366,6 +375,35 @@ class TextField(ValueComponent):
     @property
     def editing(self) -> bool:
         return bool(self.get("editing"))
+
+
+class TextArea(ValueComponent):
+    """Multi-line text (the kit's ``textarea``: Blender's text editing over
+    several lines, wheel scrolling, clipboard, undo). ``rows`` sets the
+    natural height in lines; ``on_change`` gets the text on every edit. The
+    node's ``ta_insert`` / ``ta_delete`` / ``ta_caret`` / ``ta_selection`` /
+    ``ta_see`` edit it by byte offset."""
+
+    TYPE = "textarea"
+
+    def __init__(self, value: str = "", *, rows: int = None, **kw):
+        super().__init__("", value or "", **kw)
+        if rows:
+            self.set("rows", int(rows))
+
+    def _store(self, v, notify):
+        text = "" if v is None else str(v)
+        changed = text != self._load()
+        if changed:  # setting it again would clear the selection and the spans
+            self.set("value", text)  # the kit's textarea has no "set_value": it notifies here
+        if notify and changed and self.on_change is not None:
+            self.on_change(text)
+
+    def _load(self):
+        return self.get_str("value")
+
+    def _default(self):
+        return ""
 
 
 class SearchField(TextField):
@@ -408,7 +446,7 @@ class _Choice(ValueComponent):
     def __init__(self, label: str = "", items: Sequence[str] = (), value=None, *,
                  icons=None, **kw):
         Component.__init__(self, **{k: v for k, v in kw.items()
-                                    if k in ("description", "enabled", "visible", "weight", "fill")})
+                                    if k in Component.KWARGS})
         self.on_change = kw.get("on_change")
         if label:
             self.set("label", label)
@@ -490,7 +528,7 @@ class ColorSwatch(ValueComponent):
     def __init__(self, label: str = "", value=(1.0, 1.0, 1.0, 1.0), *,
                  picker: str = "circle", alpha: bool = True, **kw):
         Component.__init__(self, **{k: v for k, v in kw.items()
-                                    if k in ("description", "enabled", "visible", "weight", "fill")})
+                                    if k in Component.KWARGS})
         self.on_change = kw.get("on_change")
         if label:
             self.set("label", label)

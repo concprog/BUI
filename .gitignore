@@ -1,3 +1,5 @@
+addons/bui-panels
+addons/bui-components
 build*/
 build-ui/
 *.obj

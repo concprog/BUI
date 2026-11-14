@@ -111,11 +111,11 @@
     get headless () { return host.headless() }
     openWindow (id, c) {
       c = c || {}
-      host.openWindow(id, c.title ?? null, c.width ?? 800, c.height ?? 600, c.resizable ?? null,
-        c.gpu ?? this._options.gpu ?? null)
+      host.openWindow(id, { ...c, width: c.width ?? 800, height: c.height ?? 600,
+        gpu: c.gpu ?? this._options.gpu })
     }
 
-    commit (window, ops, strings, animated) { host.commit(window, ops, strings, !!animated) }
+    commit (window, ops, strings, animated, motion) { host.commit(window, ops, strings, !!animated, motion) }
     requestFrame (window) { host.requestFrame(window) }
     closeWindow (window) { host.closeWindow(window) }
     setSlug (on) { host.setSlug(!!on) }

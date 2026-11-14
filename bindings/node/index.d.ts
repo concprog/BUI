@@ -1,4 +1,7 @@
 // Types for @blender-ui/native.
+import type { MotionProps, MotionValue } from './motion'
+export type { MotionProps } from './motion'
+
 export interface AppOptions {
   /** Draw on the GPU: Direct3D 11 on Windows, OpenGL 3.3 on Linux. */
   gpu?: boolean
@@ -18,6 +21,26 @@ export interface WindowOptions {
   height?: number
   resizable?: boolean
   gpu?: boolean
+  /** Per-pixel alpha: only the elements show (no frame on Windows). */
+  transparent?: boolean
+  /** Stay above other windows: Windows, macOS and X11. A Wayland toplevel cannot; use `layerShell`. */
+  alwaysOnTop?: boolean
+  /** `false`: no frame (Electron's `frame`). */
+  frame?: boolean
+  /** A wlr-layer-shell surface (Wayland compositors with layer shell: KDE Plasma, wlroots);
+   *  a normal window elsewhere. */
+  layerShell?: LayerShellOptions
+}
+
+export interface LayerShellOptions {
+  /** Default `'overlay'`. */
+  layer?: 'background' | 'bottom' | 'top' | 'overlay'
+  /** Edges the surface sticks to; both edges of an axis fill it. */
+  anchor?: Array<'top' | 'bottom' | 'left' | 'right'>
+  /** Space the compositor keeps free for the surface (a panel), in pixels. */
+  exclusiveZone?: number
+  /** Default `'none'`. */
+  keyboard?: 'none' | 'exclusive' | 'on-demand'
 }
 
 export type EventType = 'click' | 'mousedown' | 'mouseup' | 'mousemove' | 'mouseenter' | 'mouseleave' |
@@ -105,8 +128,94 @@ export class Comment extends Node {
 /** Nodes inserted together: inserting the fragment moves its children. */
 export class DocumentFragment extends Node {}
 
+/** The CSS properties `el.style` reads and writes in camelCase (`backgroundColor` is `background-color`).
+ *  Any other property works through `getPropertyValue` / `setProperty`, and any camelCase key works at
+ *  run time; these are the common ones, typed. */
+export interface CssProperties {
+  alignContent?: string
+  alignItems?: string
+  alignSelf?: string
+  background?: string
+  backgroundColor?: string
+  backgroundImage?: string
+  border?: string
+  borderBottom?: string
+  borderColor?: string
+  borderLeft?: string
+  borderRadius?: string
+  borderRight?: string
+  borderStyle?: string
+  borderTop?: string
+  borderWidth?: string
+  bottom?: string
+  boxShadow?: string
+  boxSizing?: string
+  color?: string
+  columnGap?: string
+  cursor?: string
+  display?: string
+  flex?: string
+  flexBasis?: string
+  flexDirection?: string
+  flexFlow?: string
+  flexGrow?: string
+  flexShrink?: string
+  flexWrap?: string
+  font?: string
+  fontFamily?: string
+  fontSize?: string
+  fontStyle?: string
+  fontWeight?: string
+  gap?: string
+  gridColumn?: string
+  gridRow?: string
+  gridTemplateColumns?: string
+  gridTemplateRows?: string
+  height?: string
+  justifyContent?: string
+  justifyItems?: string
+  left?: string
+  letterSpacing?: string
+  lineHeight?: string
+  margin?: string
+  marginBottom?: string
+  marginLeft?: string
+  marginRight?: string
+  marginTop?: string
+  maxHeight?: string
+  maxWidth?: string
+  minHeight?: string
+  minWidth?: string
+  opacity?: string
+  outline?: string
+  overflow?: string
+  overflowX?: string
+  overflowY?: string
+  padding?: string
+  paddingBottom?: string
+  paddingLeft?: string
+  paddingRight?: string
+  paddingTop?: string
+  pointerEvents?: string
+  position?: string
+  right?: string
+  rowGap?: string
+  textAlign?: string
+  textDecoration?: string
+  textOverflow?: string
+  textTransform?: string
+  top?: string
+  transform?: string
+  userSelect?: string
+  verticalAlign?: string
+  visibility?: string
+  whiteSpace?: string
+  width?: string
+  zIndex?: string
+}
+
 /** `el.style`: the inline style. */
-export interface Style {
+export interface Style extends CssProperties {
   cssText: string
   getPropertyValue (name: string): string
   setProperty (name: string, value: string | null, priority?: string): void
@@ -122,7 +231,40 @@ export interface ClassList {
   contains (name: string): boolean
 }
 
-type StyleValue = string | Record<string, string | number | null | undefined>
+/** A style object's values; motion values (`{ x: mv }`) are read by the engine each frame. */
+type StyleValue = string | Record<string, string | number | MotionValue<any> | null | undefined>
+
+/** A Web Animations keyframe: property values, `offset` (0..1) and `easing`. */
+export interface Keyframe { offset?: number | null, easing?: string, [property: string]: string | number | null | undefined }
+export interface KeyframeAnimationOptions {
+  /** ms */
+  duration?: number
+  /** ms */
+  delay?: number
+  /** any ease name (CSS, GSAP, Motion, Blender) */
+  easing?: string
+  iterations?: number
+  direction?: 'normal' | 'reverse' | 'alternate' | 'alternate-reverse'
+  fill?: 'none' | 'forwards' | 'backwards' | 'both' | 'auto'
+  playbackRate?: number
+}
+/** A Web Animations `Animation`, run by the engine. */
+export interface Animation {
+  readonly playState: 'running' | 'paused' | 'finished' | 'idle'
+  readonly pending: boolean
+  /** ms */
+  currentTime: number
+  playbackRate: number
+  readonly finished: Promise<Animation>
+  onfinish: ((event: { type: 'finish', target: Animation }) => void) | null
+  oncancel: ((event: { type: 'cancel', target: Animation }) => void) | null
+  play (): void
+  pause (): void
+  reverse (): void
+  finish (): void
+  cancel (): void
+  updatePlaybackRate (rate: number): void
+}
 
 export class Element extends Node {
   readonly tagName: string
@@ -147,8 +289,11 @@ export class Element extends Node {
   removeEventListener (type: EventType | (string & {}), listener: (event: BuiEvent) => void, options?: unknown): void
   /** Run the listeners for `event.type` here (and up, if it bubbles). */
   dispatchEvent (event: { type: string, bubbles?: boolean }): boolean
-  /** Web Animations aren't run: the animation finishes at once. */
-  animate (keyframes?: unknown, options?: unknown): { onfinish: (() => void) | null, cancel (): void, finished: Promise<unknown> }
+  /** Web Animations, run by the engine: `animate([{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: 'ease-out' })`.
+   *  The values stay where it ends (as `fill: 'forwards'`). */
+  animate (keyframes: Keyframe[] | Record<string, unknown> | null, options?: number | KeyframeAnimationOptions): Animation
+  /** One of Motion's props (`MotionProps`); null removes it. */
+  setMotion<K extends keyof MotionProps> (name: K, value: MotionProps[K] | null): void
   getBoundingClientRect (): Promise<{ x: number, y: number, width: number, height: number } | null>
 }
 
@@ -198,8 +343,15 @@ export class Window {
   cancelAnimationFrame (id: number): void
   screenshot (): Promise<{ width: number, height: number, data: Buffer }>
   click (x: number, y: number): void
+  /** Move the pointer (tests): hover, drag and mouse events follow. */
+  mouseMove (x: number, y: number): void
+  /** Press the left button (tests). */
+  mouseDown (x: number, y: number): void
+  /** Let go of the left button (tests). */
+  mouseUp (x: number, y: number): void
   close (): void
-  on (event: 'close', listener: () => void): this
+  /** `focus` / `blur`: the window got or lost the keyboard focus. */
+  on (event: 'close' | 'focus' | 'blur', listener: () => void): this
 }
 
 export class App {
@@ -209,8 +361,21 @@ export class App {
   quitOnLastWindowClosed: boolean
   window (options?: WindowOptions): Window
   setSlug (on: boolean): void
-  /** Blender's 'dark' (default) or 'light' theme; open windows redraw. */
+  /** Blender's 'dark' (default) or 'light' theme, or a theme loaded with `loadTheme` (that returns a promise); open windows redraw. */
   setTheme (name: 'dark' | 'light'): void
+  setTheme (name: string): Promise<void>
+  /** Register the themes of a theme file (a path) or of theme JSON text; resolves with how many were added. */
+  loadTheme (source: string): Promise<number>
+  /** The names of the themes loaded with `loadTheme`. */
+  themes (): Promise<string[]>
+  /** One color of the active theme: a key such as 'button.background', '#rrggbb[aa]' or [r, g, b, a] in 0..1. */
+  setThemeColor (key: string, color: string | [number, number, number, number?]): Promise<void>
+  /** One number of the active theme: 'button.roundness', 'button.border.width', 'button.corners.top_left', ... */
+  setThemeValue (key: string, value: number | boolean): Promise<void>
+  /** Move the animation clock `ms` forward; headless, every window renders that
+   *  frame (tests step animations frame-exactly). Resolves once the step's
+   *  callbacks have run. */
+  advanceClock (ms: number): Promise<void>
   quit (): void
 }
 

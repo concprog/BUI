@@ -87,6 +87,8 @@ pub use blenderui_macros::tw;
 /// become HTML attributes. Components: `<Card title="x">..</Card>` builds
 /// `Card { title: "x".into(), children: vec![..] }`.
 pub use blenderui_macros::rsx;
+/// A GSAP vars / Motion target object (`vars!{ x: 100, duration: 1, ease: "power2.out" }`).
+pub use blenderui_macros::vars;
 /// [`rsx!`] under its zopra / Leptos name.
 pub use blenderui_macros::rsx as view;
 
@@ -95,6 +97,7 @@ pub use blenderui_macros::rsx as view;
 pub use blenderui_macros::Props;
 
 pub mod anim;
+pub mod motion;
 pub mod calc;
 pub mod components;
 pub mod effects;
@@ -112,9 +115,11 @@ pub(crate) mod sink;
 pub mod vlist;
 pub(crate) mod layout;
 pub mod paint;
+pub mod shader;
 pub mod video;
 pub(crate) mod prof;
 mod selector;
+pub(crate) mod selection;
 pub mod hooks;
 pub mod style;
 pub use blenderui_tailwind as tailwind;
@@ -124,6 +129,7 @@ pub mod styled;
 pub(crate) mod text;
 pub(crate) mod widgets;
 pub mod window;
+pub mod window_kind;
 
 pub use blenderui_sys as sys;
 
@@ -133,9 +139,11 @@ pub use list::{uniform_list, UniformList};
 pub use events::*;
 pub use geometry::{point, px, relative, rems, size, Bounds, Length, Pixels, Point, Rems, Size};
 pub use paint::{image_stats, set_image_budget, Animation, Image, Painter};
+pub use shader::{GpuTarget, ShaderEffect};
 pub use video::{Video, VideoState};
 pub use styled::{FontWeight, StyleBlock, Styled};
 pub use window::*;
+pub use window_kind::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions, WindowDecorations, WindowKind};
 
 /// Whether `class` names also work as Tailwind CSS v4 utilities (`p-4`,
 /// `md:hover:bg-sky-500/50` ...), compiled on first use. On by default;
@@ -157,10 +165,12 @@ pub fn add_font(family: &str, bold: bool, italic: bool, data: &[u8]) -> bool {
     unsafe { sys::BUI_text_add_font(fam.as_ptr(), flags, data.as_ptr().cast(), len) != 0 }
 }
 
-/// How the GPU renderer draws text. `true`: Slug, glyph outlines evaluated
-/// in the pixel shader (sharp at any size; the default with the `slug`
-/// feature). `false`: a per-glyph bitmap atlas like Blender's (less GPU
-/// work). Takes effect on the next frame; `BUI_SLUG=1`/`0` overrides.
+/// How the GPU renderer draws all text. `true`: Slug, glyph outlines
+/// evaluated in the pixel shader (sharp at any size). `false`: a per-glyph
+/// bitmap atlas like Blender's (less GPU work). Without a choice, the `slug`
+/// feature draws text of 40 px and up with Slug and smaller text from the
+/// atlas (half the GPU time on UI text; the CPU renderer's exact pixels).
+/// Takes effect on the next frame; `BUI_SLUG=1`/`0` overrides.
 pub fn set_slug(on: bool) {
     // SAFETY: sets a global flag.
     unsafe { sys::BUI_gpu_set_slug(on as std::os::raw::c_int) }
@@ -193,11 +203,93 @@ pub fn reduced_motion() -> bool {
     REDUCED_MOTION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The active theme: `"dark"` or `"light"`.
+/// The built-in theme the active one is based on: `"dark"` or `"light"` (a theme loaded with
+/// [`load_theme`] says which in its `mode`). [`current_theme`] has its own name.
 pub fn theme_name() -> &'static str {
     // SAFETY: the kit returns a static string.
-    let s = unsafe { std::ffi::CStr::from_ptr(sys::BK_theme_name()) };
+    let s = unsafe { std::ffi::CStr::from_ptr(sys::BK_theme_mode()) };
     if s.to_bytes() == b"light" { "light" } else { "dark" }
+}
+
+/// The name of the active theme: `"dark"`, `"light"` or a theme loaded with [`load_theme`].
+pub fn current_theme() -> String {
+    // SAFETY: the kit returns a NUL-terminated string that is valid until the next theme call.
+    unsafe { std::ffi::CStr::from_ptr(sys::BK_theme_name()) }.to_string_lossy().into_owned()
+}
+
+/// A number that changes whenever any value of the theme does (the `styled` sheet is rebuilt by it).
+pub(crate) fn theme_generation() -> i32 {
+    // SAFETY: reads a counter.
+    unsafe { sys::BK_theme_generation() }
+}
+
+fn theme_result(n: i32) -> Result<usize, String> {
+    if n >= 0 {
+        return Ok(n as usize);
+    }
+    // SAFETY: a NUL-terminated message owned by the kit.
+    Err(unsafe { std::ffi::CStr::from_ptr(sys::BK_theme_error()) }.to_string_lossy().into_owned())
+}
+
+/// Register the themes of a theme file's text (gpui-kit's format with Blender's color names; see
+/// `docs/theming.md`) and return how many were added. Choose one with [`set_theme`]. An error says
+/// where the mistake is (`line 3, column 14: ...`); a file with one adds no themes. Keys BUI has no
+/// use for are ignored.
+pub fn load_theme(json: &str) -> Result<usize, String> {
+    let c = std::ffi::CString::new(json).map_err(|_| "theme text contains a NUL".to_string())?;
+    // SAFETY: a NUL-terminated string; the kit copies what it keeps.
+    theme_result(unsafe { sys::BK_theme_load_json(c.as_ptr()) })
+}
+
+/// [`load_theme`] for a file.
+pub fn load_theme_file(path: impl AsRef<std::path::Path>) -> Result<usize, String> {
+    let p = path.as_ref().to_str().ok_or("the path is not valid UTF-8")?;
+    let c = std::ffi::CString::new(p).map_err(|_| "the path contains a NUL".to_string())?;
+    // SAFETY: a NUL-terminated string.
+    theme_result(unsafe { sys::BK_theme_load_file(c.as_ptr()) })
+}
+
+/// The names of the themes loaded with [`load_theme`].
+pub fn themes() -> Vec<String> {
+    let mut names = Vec::new();
+    // SAFETY: indexes the kit's list; each name is NUL-terminated.
+    unsafe {
+        let mut i = 0;
+        loop {
+            let p = sys::BK_theme_at(i);
+            if p.is_null() {
+                break;
+            }
+            names.push(std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned());
+            i += 1;
+        }
+    }
+    names
+}
+
+/// Set one color of the active theme until the next [`set_theme`]: `key` is a plain-English key
+/// (`"button.background"`) or Blender's (`"user_interface.wcol_regular.inner"`). `false` for an
+/// unknown key. Open windows redraw.
+pub fn set_theme_color(key: &str, rgba: [f32; 4]) -> bool {
+    let Ok(c) = std::ffi::CString::new(key) else { return false };
+    // SAFETY: a NUL-terminated key and the four floats the kit reads.
+    unsafe { sys::BK_theme_set_color(c.as_ptr(), rgba.as_ptr()) != 0 }
+}
+
+/// Set a number of the active theme: `"button.roundness"`, `"button.border.width"` (pixels),
+/// `"button.corners.top_left"` (0 keeps that corner square), `"button.emboss.enabled"` ...
+pub fn set_theme_value(key: &str, value: f64) -> bool {
+    let Ok(c) = std::ffi::CString::new(key) else { return false };
+    // SAFETY: a NUL-terminated key.
+    unsafe { sys::BK_theme_set_num(c.as_ptr(), value) != 0 }
+}
+
+/// A number of the active theme (booleans are 0 or 1).
+pub fn theme_value(key: &str) -> Option<f64> {
+    let c = std::ffi::CString::new(key).ok()?;
+    let mut out = 0.0;
+    // SAFETY: `out` is the one double the kit writes.
+    (unsafe { sys::BK_theme_num(c.as_ptr(), &mut out) } != 0).then_some(out)
 }
 
 /// A color of the active theme as RGBA 0..1 (`"region_bg"`, `"text"`,
@@ -241,6 +333,8 @@ pub mod prelude {
     pub use crate::geometry::{point, px, relative, rems, size, Bounds, Length, Pixels, Point, Rems, Size};
     pub use crate::html::*;
     pub use crate::paint::{Image, Painter};
+    pub use crate::shader::ShaderEffect;
     pub use crate::styled::{FontWeight, StyleBlock, Styled};
     pub use crate::window::*;
+    pub use crate::window_kind::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions, WindowDecorations, WindowKind};
 }

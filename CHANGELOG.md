@@ -7,20 +7,295 @@ All notable changes to **blenderui** (BUI). The format follows
 ## [Unreleased]
 
 ### Added
+- **Rust: selecting text.** Text in elements is selectable like in a browser: press and drag across words, lines, elements and paragraphs, double-click a word, triple-click a block, `Shift`+click to extend, `Ctrl+A` (Cmd on macOS) for all, `Ctrl+C` to copy, `Esc` or a click elsewhere to clear. The highlight is the theme's `selection` color, drawn behind the text on the CPU and GPU renderers (while something is selected each text line holds one rectangle slot, so a change damages only the lines that changed; with nothing selected there is no extra work), the pointer is the I-beam over selectable text, and a drag that selected text does not click. `user-select` (`none`, `auto`, `text`, `all`, with `-webkit-user-select` / `-moz-user-select` and Tailwind `select-none` / `select-auto` / `select-text` / `select-all`) is implemented and no longer in the accepted-but-ignored list: `auto` follows the parent as in CSS UI 4. Text fields and other widgets keep their own selection; painted lists (`vlist`, `chat_list`) and canvases are not selectable and there is no autoscroll. `Window::selected_text`, `select_all`, `clear_selection`, `on_selection_change` and `read_clipboard` expose it; `examples/selectable.rs` and `tests/selection.rs` show and test it.
+- **Editor extensions** (`addons/`): `bui-vscode` (a TextMate injection grammar for `rsx!` / `view!` bodies in Rust files, with Tailwind-aware `class` strings, snippets and class completion) and `bui-zed` (a BUI RSX language for `.rsx` files and snippets; Zed cannot extend its built-in Rust macro injections, so `rsx!` inside `.rs` files is not highlighted there). Both GPL-3.0-or-later.
+- **GPU effects: run your own shader.** A canvas item (`BK_ITEM_EFFECT`, Rust `Painter::effect`) runs a pixel shader of the app's over its box on the GPU renderers, in paint order, clipped and premultiplied like the rest. The source is one portable dialect, GLSL with a small compat set (`vec4 effect(vec2 p)`, `box_size`, `U[i]` floats, `input_color(i, texel)` over up to 8 BUI textures); Direct3D 11 compiles it at run time through `d3dcompiler_47.dll` loaded dynamically (nothing to link, no SDK), OpenGL through the driver, and the compile/link log is returned by `BK_effect_error` / `ShaderEffect::error`. Where the GPU cannot run it (software raster, no compiler, a compile error) the item's image is drawn instead, so an effect has a CPU path too (the distortion wave, `bui-wave`, renders the same frames on the CPU, over every core, and on the GPU through this item; the two agree to within 1/255). `BK_effect_create` / `BK_effect_free` (= `BUI_effect_*`), `BUI_raster_effect`, Rust `ShaderEffect`, `Painter::effect`, `Painter::is_gpu` and `GpuTarget` (off-screen GPU frames). The macOS renderer has no effects yet (it draws the fallback).
+- **Rust: the virtualized list takes your own items.** `blenderui::vlist` is presented and re-exported as a general variable-height view (feeds, logs, cards, chats): a `Record` carries opaque `data` bytes, `ItemPainter::hit` and `VariableList::on_item_hit` tell you which part of an item was pressed, `Measurer::estimator` has a default, and `examples/vlist_cards.rs` is a non-chat list of task cards, with the chat as one shipped look.
+- **Rust: the pointer over plain content renders nothing.** Moving over, pressing and releasing on elements nothing answers to (no listeners, `.hover()` / `.active()` / `.focus()` refinements or Motion props on them, no `:hover` / `:active` / `:focus` rule in the sheet; the user-agent sheet's `a:hover` counts) no longer renders the whole window: each hover change and each press and release used to rebuild, cascade and lay out everything. Clearing a selection with a click on a page of 12,000 words takes 3 ms instead of 31, a drag-select across it 11 ms instead of 61 to 108. A selection change is drawn on the next frame as a redraw is (it did not reach a native window by itself: the hover renders hid that).
+- **Windows: an animated window can be dragged.** A window that asked for a frame every frame left its title-bar drag (and a resize) without a mouse to follow: posted frames come before input, and the frame loop took the move loop's own mouse messages. Frames asked for inside the user's move or resize loop now come on a timer, which is served after input, and the loop's messages are left to it.
+- **Themes carry keys of your own.** A color or a number in a theme's `colors` that BUI has no field for (`"muted.foreground": "#8696A0"`, `"bubble.radius": 14`) is kept as the theme's own and read back by that key with `theme_color` / `BK_theme_color` and `theme_value` / `BK_theme_num` while the theme is in use, so an app's colors live in the same file. They are not drawn by BUI and `BK_theme_ignored()` still counts them.
+- **Textareas that grow, and fields that take their CSS colors.** `field-sizing: content` (`field-sizing-content`) makes a browser-look `<textarea>` wrap at its width and be as tall as its lines (at least `rows`, at most `max-height`), so a message box starts as one line and grows. Browser-look `<input>` and `<textarea>` take their own CSS `color` (a `text-white` equal to the parent's was dropped before) and `background-color`; a textarea with `border-style: none` draws no frame, as an input does. A growing textarea shows whole lines up to its `max-height` (no half-drawn line at the edge, no gap under the last one). A growing textarea's CSS padding is the inset of its text (the box was the lines plus the padding, with the text drawn at the top, leaving a gap below). The textarea's `rows` attribute now applies (it was ignored in markup), and a growing textarea that reaches `max-height` shows Blender's text-box scroller (drag it, or use the wheel). Textareas without `field-sizing: content` are unchanged.
+- **Rust: props as a struct.** `#[component] fn chat(ChatProps { title, .. }: ChatProps)` uses a `#[derive(Props)]` struct as the component's props (the builder and its missing-prop errors come from the derive), so props are declared once; `<chat ... />` is the tag.
+- **Rust: optional component props take an `Option`.** `<C x={maybe} />` passes an `Option<T>` through and `x={None}` leaves the prop out, next to the plain `x="lit"`. A missing required prop is now reported on the tag (`<Card />`) as ``missing required prop: `title` `` instead of on the whole `rsx!` with the builder's type name.
+- **Rust: `Option<T>` is an element.** `None` renders nothing (siblings stay in place) and `Some(x)` renders `x`, in the builder API (`.child(cond.then(|| div()))`) and in `rsx!` (`{ cond.then(|| <p>"hi"</p>) }`, `{ maybe_title }`), so conditionals are one-liners and an `else { div() }` placeholder is not needed.
+- **Controls inside node-editor nodes** (issue #38): a node can hold a push button, a checkbox and a dropdown in its body,
+  between the outputs and the inputs, as Blender's node buttons do (`node_update_basis_buttons`, `draw_buttons`). The kit's
+  node items take `"b|Label"`, `"c|Label|0 or 1"` and `"d|Label|index|Option;Option"`; a press or change is a node
+  `BK_EV_CHANGE` with `a = 5` and `b` the control's index. Python: `Node(..., controls=[("button", "Run"),
+  ("checkbox", "Wireframe", True), ("dropdown", "Mode", ["Fast", "Exact"], 0)])`, `node.control_value(i)` and
+  `on_change(node, "control", (i, value))`. A class can now take the item picked from a menu it opened (`popup_pick`).
+  Arbitrary child layouts in a node are not done yet.
+- **Python components:** `TextArea(value="", *, rows=None)` puts the kit's multi-line `textarea` in `bui.components`
+  (`value`, `set_value`, `on_change` on every edit; the node's `ta_*` methods edit by byte offset), and
+  `FileBrowser(directory, *, file, mode, multiple, filters, button, on_change, on_submit)` embeds Blender's File
+  Browser in any layout (`directory`, `file`, `hidden`, `state`, `result`, `execute()`, `cancel()`, `refresh()`);
+  `bui.filebrowser.ask` now builds its window from the same component. Every component can edit its children after
+  it is built: `insert(index, child)`, `remove(child)`, `replace(old, new)` and `clear()`, working where `add` does
+  (a `Panel` or `Popover` edits its body). This is what a renderer that keeps a live tree in sync with a changing
+  description (for example an A2UI surface) needs.
+- **Node editor height:** the `nodeeditor` node's natural height follows its `"height"` (units; 14 when unset)
+  instead of always 14 units, and `NodeEditor(height=...)` sets it.
+- **JavaScript: `@blender-ui/vue`**, Vue 3 in native windows. A custom renderer (Vue's `createRenderer`) over `@blender-ui/native`, so Vue's own runtime and compiler run unchanged: `.vue` single-file components (`<script setup>`, TypeScript, scoped `<style>`), refs, `v-model` (inputs, checkboxes, radios, selects and the Blender widgets), `v-if` / `v-for`, slots, `provide` / `inject`, plugins through `createApp(...).use()`, `Teleport`, and Blender's widgets as components. `node --import @blender-ui/vue/register`, Bun and `bui build` (a Bun plugin) compile `.vue` files, cached in `node_modules/.cache/@blender-ui/vue` (a cached start never loads Vue's compiler: Node.js reaches its first frame in 125 ms, not 209); `require()` and `import` both work. Benchmarks (`bench/cells.js --vue`, `bench/startup.js --vue`) and a Vue task-list screenshot are in the docs. `<Transition>`, `v-html` and DOM-based component libraries don't work; bindings/vue/README.md lists it.
+- **`@blender-ui/native`:** `el.style.display = 'none'` and the other CSS properties as camelCase properties of `el.style`, as in a browser (they were silently ignored); `host.styleRegistry()`, the registry of components' scoped `<style>` blocks that the Svelte and Vue bindings share.
+- **D bindings** (`bindings/d`): a DUB package with raw `extern(C)` declarations for the whole kit, GPU and stable C API, plus idiomatic wrappers for nodes, contexts, windows, menus, rasters, images, video, canvases, trees, text areas, custom nodes and themes. The kit is built through CMake from `preBuildCommands`, ownership follows the Python binding's reference-hook model, and `dub run --config=test` covers the wrappers, raw API, events, menus and host errors end to end. Examples: `hello.d` and `headless.d`.
+- **D HTML, CSS and RSX** (`bindings/d`): `bui.html` adds an `Element` tree and tag constructors, `bui.css` a selector cascade with a practical CSS subset, and `bui.rsx` a compile-time `rsx!` mixin that lowers markup and `{expression}` values to `Element` calls. `Document` realises the styled tree as kit nodes with flex, grid and table layout, widgets, dynamic `:hover`/`:active` states through `Element.setState` and `Document.restyle`, and in-place text updates through `Element.setText`. Tag constructors use `body_`, `template_`, `object_` and `select_` where D or the existing API already uses the name; markup keeps the HTML spelling. `dub run --config=rsx` opens the new example, and `--config=test` covers the cascade, realiser and RSX. The D wrappers also follow the kit's current header: focus callbacks, `Context.hitAt`, custom theme files, text shadows, font size and transparent rasters.
+- **Qt syntax:** containers drawn the Blender way (`QStackedWidget`, `QToolBox` as Blender panels, `QSplitter` with region edges to drag, `QToolBar`, `QDockWidget`, `QTabBar`, and `QMainWindow.addToolBar` / `addDockWidget` / `setStatusBar`); model/view (`QStandardItemModel`, `QStringListModel`, the abstract models, `QListView`, `QTreeView`, `QTableView` in Blender's tree list); real `QMessageBox` and `QInputDialog` dialogs; `QSettings` (an INI file with Qt's groups and arrays), `QKeySequence`, `QShortcut` and `QClipboard`; `blockSignals`, dynamic properties, `findChildren`, point mapping, `showEvent` / `hideEvent` and the descriptive properties on every widget. Actions shared by menus, tool buttons and shortcuts (`QAction` with visibility, data, tips and shortcuts bound on its window, `QActionGroup`, a real `QToolButton`, menu sections and corner widgets, `triggered` up to the menu bar), `QButtonGroup` ids, Qt's full layout API (`QBoxLayout` directions, `insert*`, `takeAt`, `replaceWidget`, `QSpacerItem`, grid cell queries and minimum sizes, `QFormLayout` rows), `QDialogButtonBox` (which `QMessageBox` and `QInputDialog` now use), `QAbstractSpinBox`, validators and `maxLength` on `QLineEdit`, spin box prefix / wrapping / special value text, slider tracking and page steps, combo box icons, models and popups, checkable `QGroupBox`, `QFrame` boxes and lines, a `QStatusBar` with permanent widgets, window states, opacity and size limits through the host, `startTimer`, `QFontMetrics`, `QPalette` from Blender's theme, `QCursor.pos`, `QScreen`, and the context-menu policies. Dates and times: `QDate`, `QTime`, `QDateTime` with Qt's format strings, `QDateTimeEdit` / `QDateEdit` / `QTimeEdit` as Blender's aligned number fields, and `QCalendarWidget`. Measured by the new `tools/qt_coverage.py` against Qt's headers: 57% of the core widget classes' methods (was 21% by the same count), 37% across all 142 classes.
+- **Kit:** a `select` node flag draws a button held in (Blender's `UI_SELECT`, for checked push buttons), and a separator with `vertical` draws its line across a row (`uiButSeparatorLine.is_vertical`).
+- **Sound in video.** A `<video>` plays its audio track on the default output (WASAPI on Windows, CoreAudio on
+  macOS, PulseAudio / PipeWire on Linux, each loaded at run time), decoded by the same OS backend as its frames,
+  and the frames follow the sound as Blender's AV-sync does. The sound plays on while the video is off screen and
+  the picture catches up when it shows again; sound that starts late (an output waking up) moves to where the picture
+  is, never the other way round; on Windows the stream skips the system's audio effects (RAW) so it opens in about half the time
+  (opt in with `audio_effects`: `BK_video_set_audio_effects`, Python `audio_effects=`, Rust `set_audio_effects`,
+  the `audioeffects` attribute, Lua; or `BUI_AUDIO_EFFECTS=1` for every video), and only about 20 ms is queued ahead of the speakers, so pausing is heard
+  almost at once. New `BK_video_set_muted` / `muted`, `BK_video_set_volume` / `volume` and `BK_video_has_audio`, in Rust
+  (`Video::set_muted`, ...; the HTML `muted` attribute), Python (`muted`, `volume`, `has_audio`; the component's
+  `muted=` and `volume=`) and Lua; the Blender-style controls get a mute button. Videos autoplay with sound now
+  (they were silent): mute one with `muted`. Tested on Windows; the macOS and Linux outputs are written against
+  their documented APIs and untried.
+- **Animation: GSAP and Motion on one engine** (feature `anim`, on by default; `BUI_ANIM` in CMake). One C engine
+  in the kit (`kit/intern/anim`, `BUI_anim.h`) runs every animation, so Rust, JavaScript, Python, Lua and C animate
+  the same way and none carries its own. Eases: every name of GSAP, Motion, CSS and Blender, `cubic-bezier()`,
+  `steps()`, `linear()`, SVG paths and registered curves (bezier curves are a 256-point table; the powers and
+  `cos` are polynomials). Springs (stiffness, damping, mass, or `duration` and `bounce`) and inertia are solved in
+  closed form, so a frame reads the value at its time and the result doesn't depend on the frame rate; an
+  interrupted motion hands its position and velocity to the next. Tweens and timelines take GSAP's position strings
+  (`"<"`, `"+=1"`, labels, `"50%"`), stagger, repeat, yoyo, time scale, overwrite and callbacks, and the engine keeps
+  them in one dense array with a per-target index (killing a target's motions touches only those). Reduced motion
+  makes every motion jump to its end.
+  - **Rust:** `<motion.div>` in `rsx!` with `initial`, `animate`, `exit`, `transition`, `variants`, `whileHover`,
+    `whileTap`, `whileFocus`, `whileInView`, `whileDrag`, `drag` (with `dragConstraints`, `dragElastic`,
+    `dragMomentum`) and `layout`; `presence` (AnimatePresence); motion values (`use_motion_value`, `use_spring`,
+    `use_transform`, `use_velocity`, `use_scroll`); `gsap::to / from / from_to / set / timeline` and
+    `motion::animate`. `{{ }}` (and `vars!{}` outside `rsx!`) is an object of values; one made of literals is a
+    `static` read once per call site. A frame that only animates skips the view render, the cascade and layout
+    and repaints only the elements that changed; it is not allocation-free yet (see "What a frame costs" in
+    `docs/animation-api.md`; the Rust side is being tightened). `examples/site_motion.rs`.
+  - **JavaScript and React:** `@blender-ui/native/gsap` and `@blender-ui/native/motion` (`animate`, `motionValue`,
+    `stagger`), Motion's props on every element (`el.setMotion`), `@blender-ui/react/motion` (`motion.div`,
+    `useMotionValue`, `useSpring`, `useTransform`), and `el.animate()` (Web Animations) now runs for real.
+    `app.advanceClock(ms)` steps animations frame-exactly in tests. An element removed while it has an `exit` animates out before it goes (`AnimatePresence`); no `layoutId` yet.
+  - **Python:** `bui.gsap` and `bui.motion`; `QPropertyAnimation`, `QVariantAnimation`, the animation groups and
+    `QEasingCurve` of Qt syntax run on the engine too. Components take `initial`, `animate` and `transition`.
+  - **Lua:** `bui.gsap` and `bui.motion`. **C:** `BK_tween`, `BK_timeline`, `BK_spring_*`, `BK_ease_*`, and
+    `BK_anim_node` for kit widgets.
+  - Docs: the website's Motion and GSAP pages for Rust, JavaScript, Python and Lua (with Svelte transitions in the JavaScript page); `docs/animation-api.md` (status of every entry point, the numbers contract, what a frame costs).
+  - Examples: `examples/animation/` (a hero intro, a card grid, magnetic buttons, a marquee with drag and an equalizer).
+
+### Changed
+- **Breaking default: videos play with sound.** A `<video>` / `BK_video` autoplays with its audio track now (it
+  was silent): set `muted` (HTML attribute, `BK_video_set_muted`, `Video(muted=True)`, `Video::set_muted`) for a
+  silent one. Closing a video no longer waits for its audio device (the stream is released on a thread of its
+  own); a video with no output at the time retries every 5 s; a Rust `<video>` element that leaves the tree stops its
+  sound; platforms without PulseAudio / GStreamer (not Linux or BSD) build with silent video. Only the first
+  audio track plays and each video with sound owns one stream and thread.
+
+### Fixed
+- **Rust: Tailwind `text-sm` / `text-xs` / `text-lg` line heights.** A unitless `calc()` line height (`calc(1.25 / 0.875)`, what the Tailwind theme sets) was read as pixels (1.4 px), so the text sat about 9 px above its box and a parent with `overflow: hidden` (`truncate`) cut it. It is now a factor of the font size, like a number.
+- **Rust: `text-overflow: ellipsis` on a clipping block.** A `nowrap` text in a block with `overflow: hidden` (`truncate`) was laid out as line-box words, so it was clipped without the `…`. A block holding only text now lays it out as one measured run whatever its `overflow` (except scrolling ones), clips it to the content box and ends it with `…`; `text-overflow` takes effect only when `overflow-x` is not `visible`, as in CSS.
+- **Windows window exposure and resizing:** a window dragged back from outside the screen, restored from minimize or uncovered
+  could show black where nothing had been composed (a flip-model swap chain only updates the dirty rects of a present). A move,
+  a show, a restore, a `WM_PAINT` and a dropped (`DXGI_STATUS_OCCLUDED`) present now give the next present the whole frame, before
+  the next refresh; a minimized window is no longer laid out at 0x0. Resizing rendered about 2.5 frames per size (the stale tree at the
+  new size, the app's rebuild, then a `WM_PAINT` render): the size reaches the app first (`BK_configure`, new), `WM_PAINT` only
+  requests a present, and size changes render once per refresh. The GPU target and swap chain grow in 256 px steps (no
+  `ResizeBuffers` and texture re-creation per size) and the software frame buffers are reused. A 200-step drag on the
+  chat-list app went from 513 to 208 renders and 5.3 to 0.6 ms average per render (GPU), 603 to 206 renders (software).
+  `BUI_PROFILE=1` also prints a size/render summary at exit.
+- **Windows smooth resize:** while the user drags a window edge, each size renders and presents from its `WM_SIZE`, so the frame
+  DWM composes for the new window size is already at that size (before, it came up to a refresh later: a stale-sized frame cropped
+  or with black bars, and text that snapped late). With a real mouse drag of the corner of the chat-list app, the frame seen right
+  after a step differed from the settled frame in 19 of 24 steps on the GPU before and 2 of 24 after (software: 1, then 0).
+- **Python components:** `NodeEditor` follows `add`, `insert`, `remove`, `replace` and `clear` (its `nodes` and `links` went stale when
+  children were edited that way, and a link now keeps naming the same nodes when an earlier one is inserted or removed);
+  `replace(old, new)` puts an earlier sibling in `old`'s place, not the slot after it; `FileBrowser.directory = same_folder` no longer
+  navigates (and calls `on_change`) again; a `TextArea` written with the text it already holds keeps its selection and spans.
+- **Node editor height:** an infinite, huge or not-a-number `"height"` no longer overflows the float-to-int conversion (capped at 1000 units; unset or invalid is 14).
+- **D bindings**: `[attr*=x]` no longer crashes on a value shorter than `x`; `onKey` fires once per key press; `grid-template-columns: 1fr 1fr` counts two tracks; `Image.fromRgba` rejects negative strides; `TreeItem.add` rejects cycles and items that already have a parent; a `Window` stays rooted until freed and `Context.free()` throws while a window uses it; in `Document`, radios sharing a `name` are exclusive, number inputs are no longer clamped at 0, column flex containers no longer share a row between buttons, button labels use descendant text, hidden table rows are skipped and `rowspan` reserves its columns.
+- **Qt syntax:** `QStandardItemModel.setRowCount` with a negative count no longer hangs and `setColumnCount` drops the extra cells; closing a `QMessageBox` window now closes it; `QSettings.sync` writes atomically; `setRange` clamps the value (and emits `valueChanged`); `startTimer` ids are never reused; `QGridLayout.addWidget(w, r, c, alignment)` reads the fourth argument as the alignment; `QInputDialog.getText` honours `QLineEdit.Password` (`setEchoMode` works); `QShortcut.setKey` stops the old key firing; `QInputDialog.getItem` survives a bad `current`.
+- **Qt syntax:** `QMessageBox.information` / `question` / ... returned `Ok` or `Yes` without showing anything, and `QStackedWidget` was a plain `QWidget`; `QAbstractButton.setShortcut`, `QWidget.setFocusPolicy` and `QApplication.setApplicationName` did nothing. All work now, as do `setWindowFlags` (stay on top), `setMinimumSize` / `setMaximumSize`, `setFocus`, `setMaxLength`, `setValidator`, `setPageStep`, `setTracking`, `setDefault` / `setFlat`, `setFrameShape` and the scroll area's vertical bar policy, which were accepted and ignored.
+- **Qt syntax:** setting a value from code emitted nothing: `setValue` (sliders, spin boxes), `QComboBox.setCurrentIndex`, `QLineEdit.setText` and `setChecked` on check boxes and radio buttons now emit `valueChanged`, `currentIndexChanged`, `textChanged` and `toggled` / `stateChanged` when the value changes, as Qt does, and a radio button turned off by its sibling says so. A click on the checked button of an exclusive group no longer unchecks it; a button or action removed from a group or menu and added again no longer fires twice; `Ctrl++` showed as `Ctrl` in menus; an integer spin box accepted `3.5`.
+- **Qt syntax:** `QSpinBox` was a `QAbstractSlider`; it is a `QAbstractSpinBox` now. Spin box `suffix()`, `decimals()` and `placeholderText()` read back empty.
+- **tkinter:** a vertical `ttk.Separator` drew a horizontal line in a tall box.
+- **Video sound:** in a looping video whose sound was far ahead of the picture (a long pause, a slow decode), the picture froze until the sound came round; it now seeks to the sound. Two `<video>` elements of one file with different `loop`, `muted`, `poster` or `audioeffects` (Rust) no longer undo each other every render (each has its own player). Python's `Video.player` setters (`volume`, `rate`, `muted`, ...) no longer change the player when the value does not convert.
+- **Rust Motion: gap audit.** Letting go of a drag after a pause no longer throws the element (only the last 100 ms of pointer movement count, over at least 8 ms); a `layout` element under a parent that moves (a drag, an animated `x`) or scrolls no longer animates against it (its box is measured relative to the parent); `use_transform`, `use_velocity` and a `use_spring` of a motion value follow their source without a render (they are read through it, and springs retarget each frame); a selector with combinators or pseudo-classes (`"ul > li"`, `"a:hover"`) is an error from `Targets::selector` instead of silently matching wrongly, and one that matches nothing is counted by `motion::unmatched_selectors()` (and logged in debug builds); a NaN duration or delay is refused and a negative one is zero; made-up property and variant names are bounded (4096) instead of leaking for ever. A redraw of moving values walks only the animated elements and what is under them, not every box of the page.
+- **Animation engine: robustness** (PR #36 audit). A callback that kills a sibling or its own timeline (`onComplete`,
+  `onUpdate`) or starts a motion no longer leaves the render walking freed memory; a killed motion stays killed
+  (`play`, `resume`, `reverse`, `seek` and `add` do nothing to it, and `BK_anim_exit` can't hang on one). One contract
+  for numbers, in C, for every binding: a negative duration, delay or repeat delay is 0 (Python used to raise), NaN and
+  infinity are errors in the binding's idiom (`ValueError`, a Lua error), `repeat` of any size is at most
+  `BK_MOTION_MAX_REPEAT` (1,000,000; `-1` and `math.huge` are for ever; Python's `2**32` is no longer 0), totals don't
+  overflow, and a repeat for ever of a zero-length motion ends instead of keeping the host drawing. Timeline positions
+  are exactly GSAP's grammar (a number, `+=n`, `-=n`, `<`, `>`, `<n`, `>n`, labels with `+=n`, `n%`): anything else, or
+  a label that doesn't exist, is an error instead of a label made at the end. Ease tables are shared by content,
+  capped at 65,535 (a full pool refuses the ease instead of wrapping its id), checked after `BK_anim_exit`, and
+  `expoScale` from 0 or NaN/inf eases are safe. `BK_tween` refuses tracks without values or keys, and non-finite values.
+  Motion's default duration and ease live in one C function (`BK_motion_vars_motion_defaults`) that Rust, Python and
+  Lua call. A spring's settle time is a closed form instead of up to 2,400 `exp`/`sin`/`cos` steps per property (it is
+  the last time outside the rest thresholds: up to about 1.2x later than the old stepping's early stop for slowly
+  oscillating springs); killing a timeline measures it once.
+- **Animation: review fixes.** Adding a timeline to itself or to one of its own children is refused instead of recursing forever; a nested `exiting_scope` restores the outer scope; a canvas item's clip and a line's thickness count in `hititems` hit testing; the JS view frees removed nodes once nothing is leaving; a Motion prop nested too deeply is skipped in the QuickJS host without dropping its commit.
+- **Rust: form widgets and overlays** (issue #35). An element painted after a `<TextArea>`, `<Button>` or other form widget
+  (a dialog with `z-index`, a later sibling) now draws over it and takes the pointer there: widgets sit on the canvas
+  their paint order puts them on, above what comes before and below what overlaps them. A widget partly cut by an
+  ancestor's `overflow: hidden` or a scroller is cut there too (a clip rectangle on the kit node, `clipx` / `clipy` /
+  `clipw` / `cliph` in `BK_geom_set`), and an overlay with `pointer-events: none` lets the pointer through to the widget
+  below it (`BKCanvasItem.no_hit`).
+- **Rust: `whileInView`** counts what a scroller clips as out of view, so a row below a scroller's edge animates when
+  it is scrolled in, not at mount.
+- **Rust: widgets and Motion.** A frame of moving values (no layout) freed every form widget; it keeps them now.
+- **Windows: a window that animates for ever ignored the mouse, the keyboard and its title bar.** The frames of an animation are
+  posted messages (`WM_BK_RENDER`, one after another), and Windows hands a thread its posted messages before hardware input and
+  timers, so with an endless animation (a loop, a spinner, a marquee) none of them got through: no hover, no drag, no maximize,
+  no alt-tab, and the busy cursor over the window. Between two frames the host now takes the input, paint and timer messages
+  that are waiting.
+- **Windows (and every native window): ghosts of moved things after `getBoundingClientRect()` and `screenshot()`.** Both
+  rendered the window into its own raster without presenting it, so the kit's record of what is on the screen moved on while the
+  screen didn't: whatever had changed since the last present (a dragged square's old place) stayed painted for good. `bounds`
+  now only brings the layout up to date (`App::layout`), and `draw` on a native window renders into a raster of its own and
+  asks the window to repaint everything.
+- **`repeat: -1` in a timeline** (and so on every element or selector, which GSAP-style calls run through a timeline): a
+  child that repeats for ever counted as zero long, so its timeline ended at once and it never moved. The timeline now plays
+  until it is killed.
+- **Text in a translated box moved twice** when it was a `white-space: pre` (or otherwise line-boxed) run: the words carried
+  their owner's `translate` as well as the box that held them. Animated `x` / `y` and CSS `translate` on such text are right now.
+- **QuickJS (`bui run`, `bui build`):** the runtime rejected `commit` calls that passed `undefined` for the motion props, so
+  every app drew nothing.
+
+## [0.5.1] - 2026-11-13
+
+### Added
+- **LuaRocks:** `luarocks install blenderui`, then `require("bui")`. The rockspec (`bindings/lua/blenderui-<version>-1.rockspec`)
+  builds the C kit and the `_bui` module with CMake against the Lua that runs the rock (Lua 5.4; it needs CMake and a C and C++20 compiler, and on Linux the X11 headers for native windows) and installs them with
+  the `bui.lua` wrapper; the new CMake option `BUI_LUA_ROCK` builds only the module (nothing is fetched, no `bui-lua`
+  executable). CI builds and loads the rock on Linux and macOS (`luarocks` job in `ci.yml`); `release.yml` uploads the
+  rockspec on a tag (secret `LUAROCKS_API_KEY`), and `tools/bump_version.py`, `check_versions.py` and `release.py` move,
+  check and verify it with the other registries.
+- **Custom themes.** A theme file (JSON, in gpui-kit's shape, with Blender's own names for the colors) adds your
+  own themes to Dark and Light: `bui.load_theme(path_or_text)`, `blenderui::load_theme` / `load_theme_file`,
+  `app.loadTheme`, `bui.load_theme` (Lua), `BK_theme_load_file` / `BK_theme_load_json` (C), then `set_theme(name)`.
+  A key is plain English (`button.background`) or Blender's (`user_interface.wcol_regular.inner`), both from one
+  table that `tools/gen_theme_keys.py` writes from Blender's theme XML (782 keys; BUI uses what it has widgets for
+  and ignores the rest, so a theme from Blender loads whole). Short palette names (`background`,
+  `primary.background`, ...) fill in many keys; a key the theme sets itself wins. Single values change at run time
+  (`set_theme_color`, `set_theme_value`), and every widget takes `roundness`, `corners.top_left` / `top_right` /
+  `bottom_left` / `bottom_right`, `border.width`, `emboss.enabled` and the gradient keys; a theme also sets
+  `font.family`, `font.size`, `shadow` and `radius`. The Rust `styled` sheet follows the theme. Errors name the line
+  and column and add no themes. `docs/theming.md`, `docs/theme-keys.md`, `docs/theme-schema.json` (for editor
+  completion) and `docs/themes/catppuccin.json` (an example); the website's Theming page.
 - **Rust:** `<input live>` (and `<textarea live>`): the field reports every keystroke to `on_input` / `on_change`, not only on Enter or blur,
   so a view can follow the typing (a search box, a date field that lights up a calendar).
+- **Linux window requests** that Win32 and Cocoa already had, through `BK_window_wm` (Python `Window.wm`):
+  `"state"` 2 and 0 hide and show a window on X11 and Wayland; `"override"` removes the frame (`_MOTIF_WM_HINTS`
+  on X11, client-side decorations on Wayland) and `"topmost"` keeps an X11 window above others
+  (`_NET_WM_STATE_ABOVE`), both ported from `GHOST_WindowX11`.
+- **Transparent windows on Linux:** `wm "transparent"` before `show` gives per-pixel alpha, with no region
+  background, through a 32-bit ARGB visual on X11 and ARGB8888 buffers on Wayland. The software raster can keep
+  premultiplied alpha (`BUI_raster_set_alpha`, `BUI_raster_alpha`, `BUI_raster_clear`); opaque frames are
+  unchanged byte for byte and draw as fast as before. The OpenGL renderer draws transparent windows too: a GLX config for the
+  32-bit visual, frames cleared to alpha 0 and `BUI_raster_clear` as a GPU clear of the redrawn rect (`ROP`: premultiplied
+  `ONE, ONE_MINUS_SRC_ALPHA` for colour and alpha, as in Blender's `GPU_BLEND_ALPHA_PREMULT`).
+- **Transparent windows on Windows and macOS:** `wm "transparent"` gives per-pixel alpha with the software
+  raster. Windows shows the premultiplied frame through a layered window (`UpdateLayeredWindow`, `AC_SRC_ALPHA`; the
+  window has no frame and `"alpha"` scales the whole window); macOS draws it in a non-opaque window with a clear
+  background. Rust `WindowBackgroundAppearance::Transparent` and JavaScript `transparent: true` use it there too.
+  With the Direct3D 11 renderer the window uses DWM blur-behind (`DwmEnableBlurBehindWindow` over the client area, the
+  surface cleared to zero alpha) and a bitblt-model swap chain, as SDL does (no copy to the CPU, `ClearView` for the
+  redrawn rect); without the device it falls back to `UpdateLayeredWindow`. A window that is not transparent keeps the
+  flip-model swap chain with `DXGI_ALPHA_MODE_IGNORE`.
+- **Layer-shell windows on Wayland:** `wm "layer"` (layer 0 background to 3 overlay, keyboard interactivity) and
+  `"anchor"` (edges, exclusive zone) make a wlr-layer-shell surface, on KDE Plasma, wlroots compositors and
+  COSMIC (not GNOME). `wm_get("layer")` says whether the compositor has it. The protocol file (MIT) is in
+  `kit/extern/wayland_protocols`.
+- **Focus callback:** `BKWindowCallbacks.on_focus` reports when a window gets or loses the keyboard focus, on
+  Win32, Cocoa, X11 and Wayland (Python `Window.on_focus`). Losing it cancels an open pie, as Blender's
+  `WINDEACTIVATE` does. In Python the callback is queued behind a running callback, like the timers.
+- **Hit test:** `BK_hit_at(ctx, x, y)` gives the interactive node under a point (Python `ctx.hit`, Lua `ctx:hit`).
+- **Pie menus as in Blender** (`pie_handler`, `pie_menu_begin`): opened while a key is held, releasing the key
+  picks the item in the pointer's direction, and a quick tap keeps the pie open for a click; an item with a
+  submenu opens a sub-pie at the pointer; past 8 items, the 8th is "More" with the rest
+  (`pie_menu_level_create`); items get underlined accelerator letters (`menu_block_set_keyaccels`); and the
+  items grow out of the center over 60 ms (`pie_animation_timeout`, off with reduced motion).
+- **Rust:** `App::on_window_activation(|id, active, cx| ...)` reports keyboard focus, and `WindowOptions.window_background =
+  WindowBackgroundAppearance::Transparent` opens a transparent window on Linux, Windows and macOS.
+- **JavaScript** (Node, Bun and `bui build` apps): `app.window({ transparent: true })` and the window events `focus` and
+  `blur`.
+- **Window kinds in Rust and JavaScript:** Rust `WindowOptions.kind` (`WindowKind::Floating`, `PopUp` and
+  `LayerShell(LayerShellOptions)`) and `window_decorations` (`WindowDecorations::Client`), and JavaScript
+  `app.window({ alwaysOnTop, frame: false, layerShell: { layer, anchor, exclusiveZone, keyboard } })`, send the
+  `topmost`, `override`, `layer` and `anchor` window requests that Python reaches through `Window.wm`. Topmost works on
+  Windows, macOS and X11; a Wayland toplevel cannot ask for it, so use the layer shell there.
+- **Dear ImGui:** `ImGui_ImplBUI_AbandonFrame()` (C: `cImGui_ImplBUI_AbandonFrame`) ends a frame that a binding's
+  callback left early on an error, with Dear ImGui's error recovery.
 
 ### Changed
 - **Text fields:** in the HTML look (browser-style inputs and text areas) the caret blinks like a browser's (about every 530 ms, solid right after it
   moves or the text changes); Blender's own fields keep Blender's solid caret. The window wakes only for the next toggle, so an idle window still sleeps.
 - **File browser, System and Volumes:** Blender's own `fsmenu_system_unix.cc`, `fsmenu_system_win32.cc` and `fsmenu_system_macos.mm`, copied into `kit/intern/blender/` with `BUI:` edits. This adds gvfs network shares on Linux, known folders, drive icons and Quick Access on Windows, and volumes, iCloud Drive and Finder favourites on macOS.
+- `BK_open_pie` takes the pie's center (`at_x`, `at_y`; `-100000` for the pointer, as in `BK_open_menu`).
+  Python `PieMenu.show(..., at=(x, y))` and `ctx.open_pie(..., at=)`, Lua `ctx:open_pie(items, title, x, y)`.
+- Pie number keys are directions on the numpad (8 north, 6 east, 2 south, 4 west, the diagonals on 7, 9, 1 and 3),
+  as in Blender. They were item positions.
+- **Python text has no shadow:** Blender's UI text shadow made small text look soft. The Python binding turns it off at import;
+  `buipy.kit_set_text_shadow(True)` brings it back. Other bindings keep it. The switch is `BK_set_text_shadow(on)` in C.
+- **Wayland cursors** go through the cursor-shape protocol when the compositor has it (KDE, wlroots, GNOME 46+), as in
+  Blender's GHOST: the compositor draws the cursor and no cursor theme is loaded. Elsewhere the theme loads on the first
+  cursor change, not at start-up. Builds with wayland-protocols older than 1.32 keep the theme.
+- `BKWindowCallbacks` has the new `on_focus` member, and so has the Rust `blenderui-sys` struct.
+- **GPU renderer header:** `BuiGpuX11Window` has the new `visual` member (the window's VisualID, 0 for the default one),
+  and `BUI_raster_clear` clears on a GPU raster too. Call `BUI_raster_set_alpha` before attaching a GPU renderer: it
+  reads the setting when it starts.
 
 ### Fixed
+- **Crash at exit on Wayland:** `exit` on another thread closed libwayland-client while the event loop still called into
+  it (SIGSEGV in about 1 of 15 benchmark exits). The library now stays loaded until the process ends.
+- **X11 frame pacing:** an animation frame is due one refresh after the previous frame started, so the render time is part
+  of the interval, as the docs say. The loop slept a full refresh after each frame, so a 3000-cell animation on the GPU
+  renderer ran at 24 fps instead of 49 fps.
+- **Wayland start:** `BK_window_supported` only connects and asks for the globals; the first window waits for them, so
+  the compositor answers while the program sets up (as GTK does). It no longer opens an X11 connection first in a Wayland
+  session. While a new Wayland window waits for its first configure, the UI font and its ASCII glyphs load, so the first
+  frame does not: about 2 ms less from configure to the first frame.
+- **Rust: one hasher, a word at a time.** Style, layout and paint keys hashed with two copies of a byte-at-a-time FNV;
+  they now share foldhash (already in the dependency tree). 3000 animated cells: the cascade 3.0 to 4.7 ms per frame,
+  now 2.2 to 2.7 ms.
+- **Rust: elements are 136 bytes, not 176.** Every builder call moves the element; its rarely used parts (a canvas paint
+  callback, an image or video, deferred work) are one boxed field now, allocated only when used. A replaced element
+  shows the last source it was given.
+- **A display list that changes everywhere** (`BK_canvas_put_item` each frame) compared and damaged every item one by one.
+  Once the damage covers half the canvas, or the window redraws whole, the canvas redraws whole and items are no longer
+  compared, as Blender's `ED_region_tag_redraw_partial` does. 3000 animated cells: 1.5 ms of flush per frame, 0.5 ms now.
+- **Closing a pie during its open animation** freed it while the animation still pointed at it, so the next render read freed
+  memory (`bui_lua_context` crashed in CI). Closing a popup now clears everything that refers into it through `bk_forget`.
+- **Wayland frames copied the whole window every frame** after the first full one: the double-buffer copy kept
+  its own full copy as the next frame's damage. It copies and reports only what changed now.
+- **Setting a node's geometry or a flag property** (`visible`, `enabled` ...) **to the value it already has** relaid out
+  and redrew the whole window. Unchanged values do nothing now. The Rust binding sets every widget's place each frame,
+  so each Rust frame was a full redraw: 2.7 ms of CPU per frame at 941x982 on Wayland, 0.43 ms now.
+- **`BK_canvas_put_item` / `BK_canvas_truncate`** (display lists rebuilt each frame) redrew the whole canvas. Only items
+  that changed, moved or went away are redrawn now.
+- **Python Tk host on X11:** a held key no longer sends a release on each auto-repeat, so holding a pie key keeps the pie open
+  until the key is up (the native X11 host already did this).
+- **Lua bindings** set_menus on menubar fix; ctx:free() no-ops fix; widget tests
 - **Browser-look text fields** take the CSS `color` and `font-size` the field itself is given (one that differs from its parent's); without them they keep Chrome's black 13.33px, as before.
 - **Browser-look form controls** drew their text with Blender's UI drop shadow, which made it look heavy next to the page's text. They draw none now, as in a browser.
 - **macOS:** the npm `bui-runtime` (and the release build of the addon) failed to link with `Undefined symbols: ___isPlatformVersionAtLeast`: the
   Cocoa host asked for ProMotion with `@available`, which needs a symbol from clang's runtime that a Rust binary linked with
   `-nodefaultlibs` does not have. It asks by selector now.
+- **Wayland:** a new window drew nothing until a later turn of the event loop, because the host did not wait for
+  the compositor's first configure. It waits now, as `GHOST_WindowWayland` does (`buipy_render` failed on
+  Wayland sessions).
+- **Dear ImGui from Python:** an exception after `Begin()` in a frame callback aborted the process in builds with
+  asserts ("Missing End()"). The frame is unwound now and the exception reaches Python.
+- Pies with more than 8 items dropped the rest; they now get Blender's "More" item.
+- **IME:** committed text was handed to the key handler as a key name, so composing "left" or "return" moved the cursor or pressed Enter instead of typing the word. It is inserted as text now.
+- **C API:** `bui_version_string()` and `BUI_VERSION_*` were stuck at 0.1.0; they follow the kit version now (a test keeps them equal, and so do the Python and Lua tests).
+- `BK_context_free` leaked every undo entry (about 60 KB per context with text history).
+- **Vector fields:** Ctrl+Alt+C on a vector with many wide components overflowed a 512-byte stack buffer.
+- **Lua:** a window's `on_close` callback was given a copy of the window userdata; when the copy was collected it freed the live window. It gets the window itself now, errors in it are reported instead of unwinding through the loop, and a window keeps its Context alive. New `window:on_frame(fn)`; freeing a window from inside its own callback closes it and frees it once the callback is done. A window with callbacks is collected once it is closed (it used to stay alive for as long as the Lua state did).
+- **Windows:** a frame callback that closed its window crashed the host: the Win32 backend rendered the closed window (X11, Wayland and Cocoa already returned).
+- **Lua:** the loadable module (`_bui.dll`/`.so`) could not be loaded: it exported `luaopen_bui` but Lua looks for `luaopen__bui`; also fixed the MinGW file name, and Lua built from source (Linux, macOS) now has `package.loadlib`, so `require` can load C modules.
+- **CI:** the crates.io dry run always failed (`[ ... ] && sleep` under `bash -e`); the PyPI wheels workflow now checks the tag against the versions in the repo before building or publishing.
 
 ## [0.5.0] - 2026-11-08
 

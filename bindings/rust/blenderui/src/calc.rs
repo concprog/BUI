@@ -10,6 +10,7 @@
 
 use crate::css::Tok;
 use crate::geometry::{Units, ROOT_FONT_SIZE};
+use crate::style::{key_hasher, KeyMap};
 use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 
@@ -93,6 +94,22 @@ impl Calc {
             Clamp(a, b, c) => a.has_pct() || b.has_pct() || c.has_pct(),
             Fn1(_, a) => a.has_pct(),
             Log(a, b) => a.has_pct() || b.as_ref().is_some_and(|b| b.has_pct()),
+        }
+    }
+
+    /// Whether the expression is a plain number (no length or percentage
+    /// leaf): `calc(1.25 / 0.875)`, which `line-height` takes as a factor.
+    pub fn is_number(&self) -> bool {
+        use Calc::*;
+        match self {
+            Num(_) => true,
+            Px(_) | Pct(_) | Em(_) | Rem(_) | Vw(_) | Vh(_) | Vmin(_) | Vmax(_) => false,
+            Add(a, b) | Sub(a, b) | Mul(a, b) | Div(a, b) | Mod(a, b) | Rem2(a, b) | Pow(a, b)
+            | Atan2(a, b) | Round(_, a, b) => a.is_number() && b.is_number(),
+            Min(v) | Max(v) | Hypot(v) => v.iter().all(Calc::is_number),
+            Clamp(a, b, c) => a.is_number() && b.is_number() && c.is_number(),
+            Fn1(_, a) => a.is_number(),
+            Log(a, b) => a.is_number() && b.as_ref().is_none_or(|b| b.is_number()),
         }
     }
 
@@ -292,8 +309,8 @@ impl Resolved {
 /// Every distinct expression, kept for the life of the process (they are
 /// few: the stylesheets' and styles' calc() values).
 fn intern(c: Calc) -> &'static Calc {
-    static MAP: OnceLock<Mutex<crate::style::FnvMap<u64, Vec<&'static Calc>>>> = OnceLock::new();
-    let mut h = crate::style::Fnv::default();
+    static MAP: OnceLock<Mutex<KeyMap<u64, Vec<&'static Calc>>>> = OnceLock::new();
+    let mut h = key_hasher();
     c.hash_into(&mut h);
     let key = h.finish();
     let mut map = MAP.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());

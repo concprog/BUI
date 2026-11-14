@@ -5,8 +5,10 @@
 //! each property has exactly one implementation.
 
 use std::collections::HashMap;
+use std::hash::{BuildHasher, Hasher};
 use std::sync::OnceLock;
 
+use foldhash::quality::FixedState;
 use taffy::geometry::MinMax;
 use taffy::prelude::*;
 use taffy::style::Overflow;
@@ -42,6 +44,19 @@ impl DisplayKind {
         matches!(self, DisplayKind::Inline | DisplayKind::InlineBlock | DisplayKind::InlineFlex
                  | DisplayKind::InlineGrid)
     }
+}
+
+/// `user-select`: whether, and how, the text of an element can be selected.
+/// `contain` is read as `text`; `auto` is resolved against the parent (see
+/// [`Computed::inherit`]) and is `text` for ordinary content.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UserSelect {
+    #[default]
+    Auto,
+    None,
+    Text,
+    /// One click selects the whole element.
+    All,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -345,6 +360,8 @@ pub struct Computed {
     pub visible: bool,
     pub cursor: Option<i32>,
     pub pointer_events: bool,
+    /// `user-select` (not inherited; `auto` takes `none` / `all` from the parent, see `inherit`).
+    pub user_select: UserSelect,
     pub color: Rgba,
     pub accent: Option<Rgba>,
     pub font_size: f32,
@@ -393,6 +410,8 @@ pub struct Computed {
     pub underline_offset: Option<f32>,
     /// `empty-cells: hide` (inherited).
     pub empty_cells_hide: bool,
+    /// `field-sizing: content` (not inherited): a textarea is as tall as its text, wrapped at its width.
+    pub field_sizing_content: bool,
     /// `list-style-image: url()` (inherited).
     pub list_image: Option<std::sync::Arc<str>>,
     /// `word-break: break-all` (inherited).
@@ -406,7 +425,7 @@ pub struct Computed {
     /// `content` (for `::before` / `::after`): None = `normal` / `none`.
     pub content: Option<Box<[ContentPart]>>,
     /// `animation-*` / `transition-*` (None: none). Not inherited.
-    pub anim: Option<Box<crate::anim::AnimSpec>>,
+    pub anim: Option<std::sync::Arc<crate::anim::AnimSpec>>,
 }
 
 /// One piece of generated content.
@@ -453,6 +472,7 @@ impl Default for Computed {
             visible: true,
             cursor: None,
             pointer_events: true,
+            user_select: UserSelect::Auto,
             color: crate::color::rgb(0x000000), // initial: CanvasText
             accent: None,
             font_size: 13.0,
@@ -490,6 +510,7 @@ impl Default for Computed {
             decoration_thickness: None,
             underline_offset: None,
             empty_cells_hide: false,
+            field_sizing_content: false,
             list_image: None,
             break_all: false,
             wrap_anywhere: false,
@@ -508,6 +529,12 @@ impl Computed {
             visible: parent.visible,
             cursor: parent.cursor,
             pointer_events: parent.pointer_events,
+            // CSS UI 4: `auto` computes to the parent's `none` / `all`, else `text`
+            user_select: match parent.user_select {
+                UserSelect::None => UserSelect::None,
+                UserSelect::All => UserSelect::All,
+                _ => UserSelect::Auto,
+            },
             color: parent.color,
             accent: parent.accent,
             font_size: parent.font_size,
@@ -564,6 +591,12 @@ impl Computed {
             LineHeight::Factor(f) => (self.font_size * f).round(),
             LineHeight::Px(p) => p,
         }
+    }
+
+    /// `text-overflow: ellipsis` takes effect: it only applies to a block
+    /// container that clips its overflow horizontally (CSS Overflow 3).
+    pub fn ellipsizes(&self) -> bool {
+        self.ellipsis && self.layout.overflow.x != taffy::Overflow::Visible
     }
 
     pub fn bold(&self) -> bool {
@@ -630,7 +663,7 @@ pub(crate) fn supports_decl(prop: &str, value: &str) -> bool {
 
 /// The property index of `name` (run-time lookup for parsed CSS).
 pub(crate) fn prop_index(name: &str) -> Prop {
-    static MAP: OnceLock<FnvMap<&'static str, u16>> = OnceLock::new();
+    static MAP: OnceLock<KeyMap<&'static str, u16>> = OnceLock::new();
     let map = MAP.get_or_init(|| {
         HANDLERS.iter().map(|(n, _)| *n).chain(ACCEPTED.iter().copied()).enumerate()
             .map(|(i, n)| (n, i as u16)).collect()
@@ -646,7 +679,7 @@ pub(crate) fn prop_index(name: &str) -> Prop {
 /// renderer (floats, bidi, generated content, background images, animation ...).
 pub const ACCEPTED: &[&str] = &[
     "writing-mode", "will-change",
-    "user-select", "resize", "appearance", "caret-color", "scroll-behavior",
+    "resize", "appearance", "caret-color", "scroll-behavior",
     "overscroll-behavior", "touch-action", "hyphens",
     "font-feature-settings", "font-kerning",
     "font-stretch", "text-rendering", "-webkit-font-smoothing", "-moz-osx-font-smoothing",
@@ -680,7 +713,7 @@ pub const ACCEPTED: &[&str] = &[
     // sizing / containment / rendering hints
     "contain-intrinsic-size", "contain-intrinsic-width", "contain-intrinsic-height",
     "contain-intrinsic-block-size", "contain-intrinsic-inline-size", "content-visibility",
-    "field-sizing", "interpolate-size", "color-scheme", "forced-color-adjust",
+    "interpolate-size", "color-scheme", "forced-color-adjust",
     "print-color-adjust", "color-adjust", "image-orientation", "image-resolution",
     "transform-box", "transform-style", "perspective-origin", "zoom", "caret", "caret-shape",
     "background-blend-mode", "column-span", "column-fill", "column-rule-color", "column-rule-style",
@@ -723,7 +756,7 @@ fn global_keyword(ctx: &mut Ctx, name: &str, keyword: &str) -> bool {
         "background-color" => background, "opacity" => opacity, "display" => display,
         "width" => layout.size.width, "height" => layout.size.height,
         "font-family" => font_family, "accent-color" => accent,
-        "-bui-font-id" => font_id,
+        "-bui-font-id" => font_id, "user-select" => user_select,
     }
 }
 
@@ -741,27 +774,20 @@ const INHERITED: &[&str] = &[
     "overflow-wrap", "word-wrap", "tab-size", "text-underline-offset",
 ];
 
-/// FNV-1a: property names are short, so this beats the default SipHash.
-#[derive(Default, Clone, Copy)]
-pub(crate) struct Fnv(pub u64);
+/// The one hasher for keys, caches and maps: foldhash, a word at a time (FNV took a byte at a
+/// time). The fixed seed keeps keys the same for the whole run; the quality variant keeps
+/// element keys, which are identities with no equality check, collision-free in practice.
+pub(crate) type KeyState = FixedState;
 
-impl std::hash::Hasher for Fnv {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        let mut h = if self.0 == 0 { 0xcbf29ce484222325 } else { self.0 };
-        for b in bytes {
-            h = (h ^ *b as u64).wrapping_mul(0x100000001b3);
-        }
-        self.0 = h;
-    }
+/// A new hasher with the crate's fixed seed.
+pub(crate) fn key_hasher() -> impl Hasher {
+    KeyState::default().build_hasher()
 }
 
-pub(crate) type FnvMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<Fnv>>;
+pub(crate) type KeyMap<K, V> = HashMap<K, V, KeyState>;
 
-fn handlers() -> &'static FnvMap<&'static str, Handler> {
-    static MAP: OnceLock<FnvMap<&'static str, Handler>> = OnceLock::new();
+fn handlers() -> &'static KeyMap<&'static str, Handler> {
+    static MAP: OnceLock<KeyMap<&'static str, Handler>> = OnceLock::new();
     MAP.get_or_init(|| HANDLERS.iter().copied().collect())
 }
 
@@ -1381,10 +1407,12 @@ fn line_height(t: &Tok, ctx: &Ctx) -> Option<LineHeight> {
         Tok::Ident(s) if s == "normal" => LineHeight::Normal,
         Tok::Num(n) => LineHeight::Factor(*n),
         Tok::Pct(p) => LineHeight::Factor(p / 100.0),
-        _ => LineHeight::Px(match length(t)? {
-            Length::Em(e) => e * ctx.c.font_size,
-            other => other.to_px(&ctx.u)?,
-        }),
+        _ => match length(t)? {
+            // `calc(1.25 / 0.875)` (Tailwind's `text-sm`) is a number, a factor of the font size
+            Length::Calc(c) if c.is_number() => LineHeight::Factor(c.eval_units(&ctx.u, 0.0)),
+            Length::Em(e) => LineHeight::Px(e * ctx.c.font_size),
+            other => LineHeight::Px(other.to_px(&ctx.u)?),
+        },
     })
 }
 
@@ -1420,8 +1448,11 @@ fn display(ctx: &mut Ctx, v: &[Tok]) -> bool {
     true
 }
 
+/// The kit's I-beam cursor (`cursor: text`, and the pointer over selectable text).
+pub(crate) const CURSOR_TEXT: i32 = 3;
+
 const CURSORS: &[(&str, i32)] = &[
-    ("auto", -1), ("default", 0), ("pointer", 5), ("text", 3), ("vertical-text", 3),
+    ("auto", -1), ("default", 0), ("pointer", 5), ("text", CURSOR_TEXT), ("vertical-text", CURSOR_TEXT),
     ("crosshair", 4), ("move", 6), ("all-scroll", 6), ("grab", 6), ("grabbing", 6),
     ("ew-resize", 1), ("e-resize", 1), ("w-resize", 1), ("col-resize", 1),
     ("ns-resize", 2), ("n-resize", 2), ("s-resize", 2), ("row-resize", 2),
@@ -3160,6 +3191,13 @@ pub(crate) const HANDLERS: &[(&str, Handler)] = &{
             },
             _ => false,
         }),
+        h("field-sizing", |c, v| match kw(v) {
+            Some(k @ ("content" | "fixed")) => {
+                c.c.field_sizing_content = k == "content";
+                true
+            }
+            _ => false,
+        }),
         h("empty-cells", |c, v| match kw(v) {
             Some(k @ ("show" | "hide")) => {
                 c.c.empty_cells_hide = k == "hide";
@@ -3181,6 +3219,18 @@ pub(crate) const HANDLERS: &[(&str, Handler)] = &{
             }
             true
         }),
+        h("user-select", |c, v| {
+            c.c.user_select = match kw(v) {
+                Some("auto") => UserSelect::Auto,
+                Some("none") => UserSelect::None,
+                Some("text" | "contain") => UserSelect::Text,
+                Some("all") => UserSelect::All,
+                _ => return false,
+            };
+            true
+        }),
+        h("-webkit-user-select", |c, v| delegate(c, "user-select", v)),
+        h("-moz-user-select", |c, v| delegate(c, "user-select", v)),
         h("pointer-events", |c, v| {
             c.c.pointer_events = kw(v) != Some("none");
             true

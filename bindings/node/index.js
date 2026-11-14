@@ -40,6 +40,31 @@ function loadAddon () {
 const signals = require('./signals')
 const dom = require('./dom')
 const { OP, HTMLElement, TextNode, Comment, DocumentFragment, createElement } = dom
+const { Motions } = require('./anim')
+
+const LAYERS = ['background', 'bottom', 'top', 'overlay']
+const EDGES = ['top', 'bottom', 'left', 'right']
+const KEYBOARD = ['none', 'exclusive', 'on-demand']
+
+function oneOf (what, value, names) {
+  if (value != null && !names.includes(value)) {
+    throw new TypeError(`${what}: '${value}' is not one of ${names.map((n) => `'${n}'`).join(', ')}`)
+  }
+}
+
+/** The window options as the addon takes them; unknown layer-shell names throw here. */
+function windowConfig (o) {
+  const l = o.layerShell
+  if (l) {
+    oneOf('layerShell.layer', l.layer, LAYERS)
+    oneOf('layerShell.keyboard', l.keyboard, KEYBOARD)
+    for (const e of l.anchor ?? []) oneOf('layerShell.anchor', e, EDGES)
+  }
+  return {
+    title: o.title, width: o.width, height: o.height, resizable: o.resizable, gpu: o.gpu,
+    transparent: o.transparent, alwaysOnTop: o.alwaysOnTop, frame: o.frame, layerShell: l,
+  }
+}
 
 class Window {
   constructor (app, id, options = {}) {
@@ -51,8 +76,9 @@ class Window {
     this._ops = []
     this._strings = []
     this._stringIds = new Map()
+    this._motion = [] // [which, value, ...]: the Motion props of this tick's MOTION ops
     this._scheduled = false
-    this._onClose = new Set()
+    this._on = { close: new Set(), focus: new Set(), blur: new Set() }
     this._frameCallbacks = new Map()
     this._nextFrameId = 1
     this._framePending = false
@@ -63,10 +89,7 @@ class Window {
     this.body.ownerWindow = this
     this.body.id = 0
     this._nodes.set(0, this.body)
-    app.native.openWindow(id, {
-      title: options.title, width: options.width, height: options.height,
-      resizable: options.resizable, gpu: options.gpu,
-    })
+    app.native.openWindow(id, windowConfig(options))
   }
 
   /** An element. Capitalized tags are Blender's widgets (`Button`, `NumberSlider` ...). */
@@ -95,11 +118,18 @@ class Window {
     if (this._ops.length === 0) return
     const ops = this.closed ? null : Int32Array.from(this._ops)
     const strings = this._strings
-    this._ops.length = 0 // the array keeps its capacity for the next tick
-    this._strings = []
-    this._stringIds.clear()
-    // while animating, changes render on the next vsync (one rebuild per frame)
-    if (ops) this.app.native.commit(this.id, ops, strings, this._inFrame || this._framePending)
+    const motion = this._motion.length > 0 ? this._motion : undefined
+    try {
+      // while animating, changes render on the next vsync (one rebuild per frame). A Motion prop
+      // the addon can't read throws here, after it applied the rest of the batch (without it): the
+      // elements JavaScript made are in the native tree either way
+      if (ops) this.app.native.commit(this.id, ops, strings, this._inFrame || this._framePending, motion)
+    } finally {
+      this._ops.length = 0 // the array keeps its capacity for the next tick
+      this._strings = []
+      this._stringIds.clear()
+      if (motion) this._motion = []
+    }
   }
 
   /**
@@ -147,6 +177,24 @@ class Window {
     this.app.native.simulateClick(this.id, x, y)
   }
 
+  /** Move the pointer to (x, y) logical pixels (tests): hover, drag and mouse events follow. */
+  mouseMove (x, y) {
+    this.flush()
+    this.app.native.simulatePointer(this.id, 0, x, y)
+  }
+
+  /** Press the left button at (x, y) (tests). */
+  mouseDown (x, y) {
+    this.flush()
+    this.app.native.simulatePointer(this.id, 1, x, y)
+  }
+
+  /** Let go of the left button at (x, y) (tests). */
+  mouseUp (x, y) {
+    this.flush()
+    this.app.native.simulatePointer(this.id, 2, x, y)
+  }
+
   close () {
     this.flush()
     this.app.native.closeWindow(this.id)
@@ -154,17 +202,22 @@ class Window {
   }
 
   on (event, fn) {
-    if (event !== 'close') throw new Error(`blenderui: unsupported window event "${event}"`)
-    this._onClose.add(fn)
+    const set = this._on[event]
+    if (!set) throw new Error(`blenderui: unsupported window event "${event}"`)
+    set.add(fn)
     return this
+  }
+
+  _emit (event) {
+    for (const fn of this._on[event]) {
+      try { fn() } catch (err) { queueMicrotask(() => { throw err }) }
+    }
   }
 
   _closed () {
     if (this.closed) return
     this.closed = true
-    for (const fn of this._onClose) {
-      try { fn() } catch (err) { queueMicrotask(() => { throw err }) }
-    }
+    this._emit('close')
     // the native window is gone: free what follows signals or holds listeners
     for (const n of this._nodes.values()) {
       n._unbindAll()
@@ -185,6 +238,12 @@ class Window {
     if (this._scheduled) return
     this._scheduled = true
     queueMicrotask(() => this.flush())
+  }
+
+  /** A Motion prop of node `id` (read by the addon when this tick is sent). */
+  _motionOp (id, which, value) {
+    this._op(OP.MOTION, id, which, this._motion.length / 2)
+    this._motion.push(which, value)
   }
 
   _s (str) {
@@ -227,9 +286,21 @@ class App {
     this.native = new native.NativeApp(
       { gpu: options.gpu, slug: options.slug, headless: options.headless, theme: options.theme },
       raw => this._event(raw))
+    /** Its animations (gsap, motion, `el.animate`): the newest App's take selectors. */
+    this.motions = new Motions(this)
   }
 
   get headless () { return this.native.headless }
+
+  /** Move the animation clock `ms` forward; headless, every window renders
+   *  that frame (tests step animations frame-exactly). Resolves once the
+   *  step's callbacks (onUpdate ...) have run. */
+  advanceClock (ms) {
+    for (const w of this.windows.values()) w.flush()
+    const step = new Promise((resolve) => (this._clock ??= []).push(resolve))
+    this.native.advanceClock(ms)
+    return step
+  }
 
   /** Open a window: `{ title, width, height, resizable, gpu }`. */
   window (options) {
@@ -241,15 +312,55 @@ class App {
   /** GPU text: Slug (glyph outlines) or the glyph atlas. */
   setSlug (on) { this.native.setSlug(!!on) }
 
-  /** Blender's 'dark' (default) or 'light' theme; open windows redraw. */
+  /**
+   * Blender's 'dark' (default) or 'light' theme, or a theme loaded with `loadTheme`; open windows
+   * redraw. A built-in name switches at once; a loaded theme's name returns a promise (the theme
+   * lives on the UI thread) that rejects for an unknown name.
+   */
   setTheme (name) {
-    if (!this.native.setTheme(String(name))) throw new RangeError(`unknown theme ${name} (expected 'dark' or 'light')`)
+    name = String(name)
+    if (this.native.setTheme(name)) return Promise.resolve()
+    return this.native.setCustomTheme(name).then((ok) => {
+      if (!ok) throw new RangeError(`unknown theme ${name} (expected 'dark', 'light' or a theme loaded with loadTheme)`)
+    })
+  }
+
+  /**
+   * Register the themes of a theme file (a path) or of theme JSON text (gpui-kit's format with
+   * Blender's color names, docs/theming.md) and resolve with how many were added. Choose one with
+   * `setTheme(name)`. Rejects with the line and column of a mistake; a file with one adds no themes.
+   */
+  loadTheme (source) {
+    const text = String(source)
+    return this.native.loadTheme(text, !text.trimStart().startsWith('{'))
+  }
+
+  /** The names of the themes loaded with `loadTheme`. */
+  themes () { return this.native.themes() }
+
+  /** One color of the active theme: a key such as 'button.background' and a '#rrggbb[aa]' string or [r, g, b, a] in 0..1. */
+  async setThemeColor (key, color) {
+    let c = color
+    if (typeof color === 'string') {
+      let h = color.replace('#', '')
+      if (h.length <= 4) h = [...h].map((ch) => ch + ch).join('')
+      if (!/^[0-9a-f]{6}([0-9a-f]{2})?$/i.test(h)) throw new RangeError(`not a color: ${color}`)
+      c = [0, 2, 4, 6].slice(0, h.length / 2).map((i) => parseInt(h.slice(i, i + 2), 16) / 255)
+    }
+    const [r, g, b, a = 1] = c
+    if (!(await this.native.setThemeColor(String(key), r, g, b, a))) throw new RangeError(`no theme color ${key}`)
+  }
+
+  /** One number of the active theme: 'button.roundness', 'button.border.width', 'button.corners.top_left' (false keeps the corner square), ... */
+  async setThemeValue (key, value) {
+    if (!(await this.native.setThemeValue(String(key), Number(value)))) throw new RangeError(`no theme value ${key}`)
   }
 
   /** Close every window and end the UI thread (Node may then exit). */
   quit () {
     if (this._quit) return
     this._quit = true
+    this.motions.close()
     for (const w of [...this.windows.values()]) {
       w.flush()
       w._closed()
@@ -258,6 +369,8 @@ class App {
   }
 
   _event (raw) {
+    if (raw.kind === 'motion') return this.motions._event(raw)
+    if (raw.kind === 'clock') return this._clock?.shift()?.()
     const win = this.windows.get(raw.window)
     if (!win) return
     if (raw.kind === 'close') {
@@ -268,6 +381,10 @@ class App {
       win._frame()
       return
     }
+    if (raw.kind === 'focus' || raw.kind === 'blur') {
+      win._emit(raw.kind)
+      return
+    }
     win._nodes.get(raw.target)?._dispatch(raw)
   }
 
@@ -275,6 +392,7 @@ class App {
     this.windows.delete(win.id)
     if (this.quitOnLastWindowClosed && this.windows.size === 0 && !this._quit) {
       this._quit = true
+      this.motions.close()
       this.native.quit()
     }
   }

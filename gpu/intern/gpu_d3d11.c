@@ -23,6 +23,7 @@
 #  define COBJMACROS
 #  include <windows.h>
 #  include <d3d11.h>
+#  include <d3d11_1.h>
 #  include <dxgi1_2.h>
 
 #  include <stdio.h>
@@ -32,6 +33,7 @@
 #  include "GPU_raster.h"
 #  include "gpu_d3d11.h"
 #  include "gpu_d3d11_shaders.h"
+#  include "gpu_effect.h"
 
 static const GUID k_IID_IDXGIDevice = {
     0x54ec77fa, 0x1377, 0x44e6, {0x8c, 0x32, 0x88, 0xfd, 0x5f, 0x44, 0xc8, 0x4c}};
@@ -39,6 +41,8 @@ static const GUID k_IID_IDXGIFactory2 = {
     0x50c83a1c, 0xe072, 0x4c48, {0x87, 0xb0, 0x36, 0x30, 0xfa, 0x36, 0xa6, 0xd0}};
 static const GUID k_IID_ID3D11Texture2D = {
     0x6f15aaf2, 0xd208, 0x4e89, {0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f, 0x9c}};
+static const GUID k_IID_ID3D11DeviceContext1 = {
+    0xbb2c6faa, 0xb5fb, 0x4082, {0x8e, 0x6b, 0x38, 0x8b, 0x8c, 0xfa, 0x90, 0xe1}};
 
 #  define REL(p) \
     do { \
@@ -90,7 +94,8 @@ typedef struct SlugGlyph {
 } SlugGlyph;
 
 typedef struct Batch {
-  int tri; /* 0: quad instances, 1: triangles, 2: textured mesh (indexed) */
+  int tri; /* 0: quad instances, 1: triangles, 2: textured mesh (indexed), 3: one effect draw
+            * (first: its FxCall) */
   int first, count;
   int img; /* quads: the RGBA texture their images sample (-1 none yet, 0 atlas, n: big[n - 1]) */
   /* meshes: texture (0: white), sampler, scissor x0 y0 x1 y1 */
@@ -127,6 +132,25 @@ typedef struct TriV {
   float clip[4];
 } TriV;
 
+/* An effect (gpu_effect.h) on this device, by registry slot: compiled on first use. */
+typedef struct DevFx {
+  int id;     /* 0 = empty */
+  int failed; /* compiling it failed: the log is the effect's error */
+  int n_inputs, n_floats;
+  ID3D11VertexShader *vs;
+  ID3D11PixelShader *ps;
+  ID3D11Buffer *cb; /* b1: box, 2 / target size, then one register per float */
+} DevFx;
+
+/* One recorded effect draw. */
+typedef struct FxCall {
+  int effect;
+  float rect[4];
+  int inputs[BUI_EFFECT_MAX_INPUTS];
+  int clip[4];
+  int floats; /* where its n_floats of the effect are in BuiGpu.fxf */
+} FxCall;
+
 struct BuiGpu {
   HWND hwnd;
   volatile LONG state; /* 0 pending, 1 ready, -1 failed */
@@ -137,6 +161,10 @@ struct BuiGpu {
   IDXGIFactory2 *factory;
   IDXGISwapChain1 *swap;
   int sw, sh; /* swap chain size */
+  /* alpha: frames keep premultiplied alpha. The swap chain is a bitblt one (DWM blur-behind
+   * shows its alpha, as in SDL) and ClearView clears the rects of a redrawn region. */
+  int alpha;
+  ID3D11DeviceContext1 *ctx1;
   int swap_fresh;
 
   ID3D11VertexShader *vs_quad, *vs_tri, *vs_mesh;
@@ -152,11 +180,15 @@ struct BuiGpu {
   DevTex *dtex;
   int n_dtex;
   unsigned dtex_free_gen;
+  DevFx *dfx;
+  int n_dfx;
+  unsigned dfx_free_gen;
 
   ID3D11Texture2D *target;
   ID3D11RenderTargetView *rtv;
-  int tw, th;
-  int w, h; /* frame size */
+  int tw, th; /* target texture size (>= the frame) */
+  int fw, fh; /* the frame size the target holds */
+  int w, h;   /* frame size */
 
   Atlas mask, rgba;
   BigTex big[BIG_MAX];
@@ -182,11 +214,19 @@ struct BuiGpu {
   int n_mv, cap_mv;
   uint32_t *mi;
   int n_mi, cap_mi;
+  FxCall *fx;
+  int n_fx, cap_fx;
+  float *fxf;
+  int n_fxf, cap_fxf;
   Batch *b;
   int n_b, cap_b;
 
   RECT dmg[16];
   int n_dmg, dmg_full;
+  /* the last present's damage (whole: the whole frame): with two flip buffers, the buffer being
+   * drawn is two frames old, so it needs this frame's damage and that one's, not everything */
+  RECT prev[16];
+  int n_prev, prev_whole;
 };
 
 static int atlas_create(BuiGpu *g, Atlas *a, int size, int bpp)
@@ -265,6 +305,14 @@ static void atlas_upload(BuiGpu *g, Atlas *a, int x, int y, int w, int h, const 
 /** \name Device (worker thread)
  * \{ */
 
+static void dfx_release(DevFx *f)
+{
+  REL(f->vs);
+  REL(f->ps);
+  REL(f->cb);
+  memset(f, 0, sizeof(*f));
+}
+
 typedef HRESULT(WINAPI *CreateDeviceFn)(IDXGIAdapter *, D3D_DRIVER_TYPE, HMODULE, UINT,
                                         const D3D_FEATURE_LEVEL *, UINT, UINT, ID3D11Device **,
                                         D3D_FEATURE_LEVEL *, ID3D11DeviceContext **);
@@ -303,6 +351,11 @@ static int device_init(BuiGpu *g)
   }
   if (FAILED(hr)) {
     return fail("D3D11CreateDevice", hr);
+  }
+  if (g->alpha && FAILED(hr = ID3D11DeviceContext_QueryInterface(g->ctx, &k_IID_ID3D11DeviceContext1,
+                                                                  (void **)&g->ctx1)))
+  {
+    return fail("ID3D11DeviceContext1", hr); /* Windows 8: ClearView */
   }
   g->max_tex = got >= D3D_FEATURE_LEVEL_11_0 ? D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION : 8192;
   const char *max_env = getenv("BUI_GPU_MAX_TEXTURE"); /* tests: force tiling */
@@ -431,13 +484,14 @@ static DWORD WINAPI device_thread(void *arg)
   return 0;
 }
 
-BuiGpu *bui_gpu_create(void *hwnd)
+BuiGpu *bui_gpu_create(void *hwnd, int alpha)
 {
   BuiGpu *g = (BuiGpu *)calloc(1, sizeof(BuiGpu));
   if (!g) {
     return NULL;
   }
   g->hwnd = (HWND)hwnd;
+  g->alpha = alpha;
   g->mask_map = (Slot *)calloc(MASK_MAP, sizeof(Slot));
   g->img_map = (Slot *)calloc(IMG_MAP, sizeof(Slot));
   g->thread = CreateThread(NULL, 0, device_thread, g, 0, NULL);
@@ -498,6 +552,12 @@ void bui_gpu_free(BuiGpu *g)
     REL(g->dtex[i].tex);
   }
   free(g->dtex);
+  for (int i = 0; i < g->n_dfx; i++) {
+    dfx_release(&g->dfx[i]);
+  }
+  free(g->dfx);
+  free(g->fx);
+  free(g->fxf);
   REL(g->white_srv);
   REL(g->white_tex);
   REL(g->smp_linear);
@@ -523,6 +583,7 @@ void bui_gpu_free(BuiGpu *g)
   REL(g->ps_tri);
   REL(g->swap);
   REL(g->factory);
+  REL(g->ctx1);
   REL(g->ctx);
   REL(g->dev);
   free(g->inst);
@@ -559,7 +620,7 @@ static Batch *batch_new(BuiGpu *g, int tri, int first);
 /* The batch to append to: the last one when it is of the same kind. */
 static Batch *batch_for(BuiGpu *g, int tri, int first)
 {
-  if (tri != 2 && g->n_b > 0 && g->b[g->n_b - 1].tri == tri) {
+  if (tri < 2 && g->n_b > 0 && g->b[g->n_b - 1].tri == tri) {
     return &g->b[g->n_b - 1];
   }
   return batch_new(g, tri, first);
@@ -854,6 +915,184 @@ void bui_gpu_triangles(BuiGpu *g,
     }
   }
   b->count += count;
+}
+
+/* -- effects (application shaders) -------------------------------------------------- */
+
+typedef HRESULT(WINAPI *D3DCompileFn)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO *,
+                                      ID3DInclude *, LPCSTR, LPCSTR, UINT, UINT, ID3DBlob **,
+                                      ID3DBlob **);
+
+/* d3dcompiler_47.dll (Windows 8.1 and later ship it) is loaded when the first effect is drawn:
+ * nothing links against it and no SDK is needed. System folder first, then the app's own. */
+static D3DCompileFn d3d_compiler(void)
+{
+  static int tried;
+  static D3DCompileFn fn;
+  if (!tried) {
+    tried = 1;
+    HMODULE m = LoadLibraryExW(L"d3dcompiler_47.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!m) {
+      m = LoadLibraryExW(L"d3dcompiler_47.dll", NULL, LOAD_LIBRARY_SEARCH_APPLICATION_DIR);
+    }
+    if (m) {
+      fn = (D3DCompileFn)(void *)GetProcAddress(m, "D3DCompile");
+    }
+  }
+  return fn;
+}
+
+/* One stage of the assembled source; on failure the compiler's text goes to `log`. */
+static ID3DBlob *fx_stage(D3DCompileFn compile, const char *src, const char *name,
+                          const char *entry, const char *target, char *log, size_t log_n)
+{
+  ID3DBlob *code = NULL, *err = NULL;
+  const HRESULT hr = compile(src, strlen(src), name, NULL, NULL, entry, target,
+                             (1u << 15) /* D3DCOMPILE_OPTIMIZATION_LEVEL3 */, 0, &code, &err);
+  if (FAILED(hr)) {
+    snprintf(log, log_n, "%.*s",
+             err ? (int)ID3D10Blob_GetBufferSize(err) : 0,
+             err ? (const char *)ID3D10Blob_GetBufferPointer(err) : "compile failed");
+    REL(code);
+  }
+  REL(err);
+  return FAILED(hr) ? NULL : code;
+}
+
+/* Compiles `v` for this device; false (with the log) when it fails. */
+static int fx_build(BuiGpu *g, const BuiEffectView *v, DevFx *f, char *log, size_t log_n)
+{
+  D3DCompileFn compile = d3d_compiler();
+  if (!compile) {
+    snprintf(log, log_n, "d3dcompiler_47.dll is not available: the effect cannot run on this system");
+    return 0;
+  }
+  char *src = bui_effect_assemble(BUI_FX_HLSL, v);
+  if (!src) {
+    snprintf(log, log_n, "out of memory");
+    return 0;
+  }
+  ID3DBlob *psb = fx_stage(compile, src, v->name, "bui_ps", "ps_4_0", log, log_n);
+  free(src);
+  ID3DBlob *vsb = psb ? fx_stage(compile, bui_fx_hlsl_vs, "effect_vs", "bui_vs", "vs_4_0", log, log_n) : NULL;
+  int ok = 0;
+  if (vsb) {
+    D3D11_BUFFER_DESC bd = {0};
+    bd.ByteWidth = (UINT)(sizeof(float) * (8 + 4 * (size_t)(v->n_floats > 0 ? v->n_floats : 1)));
+    bd.Usage = D3D11_USAGE_DYNAMIC;
+    bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    ok = SUCCEEDED(ID3D11Device_CreateVertexShader(g->dev, ID3D10Blob_GetBufferPointer(vsb),
+                                                   ID3D10Blob_GetBufferSize(vsb), NULL, &f->vs)) &&
+         SUCCEEDED(ID3D11Device_CreatePixelShader(g->dev, ID3D10Blob_GetBufferPointer(psb),
+                                                  ID3D10Blob_GetBufferSize(psb), NULL, &f->ps)) &&
+         SUCCEEDED(ID3D11Device_CreateBuffer(g->dev, &bd, NULL, &f->cb));
+    if (!ok) {
+      snprintf(log, log_n, "the device rejected the compiled shader");
+    }
+  }
+  REL(vsb);
+  REL(psb);
+  return ok;
+}
+
+/* The device's pipeline of effect `v`, compiled on first use. NULL: no room. */
+static DevFx *dfx_get(BuiGpu *g, const BuiEffectView *v)
+{
+  const int slot = BUI_EFFECT_SLOT(v->id);
+  if (slot >= g->n_dfx) {
+    const int n = slot + 8;
+    DevFx *nd = (DevFx *)realloc(g->dfx, sizeof(DevFx) * (size_t)n);
+    if (!nd) {
+      return NULL;
+    }
+    memset(nd + g->n_dfx, 0, sizeof(DevFx) * (size_t)(n - g->n_dfx));
+    g->dfx = nd;
+    g->n_dfx = n;
+  }
+  DevFx *f = &g->dfx[slot];
+  if (f->id == v->id) {
+    return f;
+  }
+  if (f->id) { /* a freed effect's slot, reused */
+    flush(g);
+    dfx_release(f);
+  }
+  char log[BUI_EFFECT_LOG] = "";
+  f->id = v->id;
+  f->n_inputs = v->n_inputs;
+  f->n_floats = v->n_floats;
+  if (!fx_build(g, v, f, log, sizeof(log))) {
+    dfx_release(f);
+    f->id = v->id;
+    f->failed = 1;
+    fail(log, 0);
+  }
+  bui_effect_set_error(v->id, log);
+  return f;
+}
+
+/* Frees the pipelines of effects freed in the registry. */
+static void dfx_sweep(BuiGpu *g)
+{
+  const unsigned fg = bui_effect_free_gen();
+  if (fg == g->dfx_free_gen) {
+    return;
+  }
+  g->dfx_free_gen = fg;
+  BuiEffectView v;
+  for (int i = 0; i < g->n_dfx; i++) {
+    if (g->dfx[i].id && !bui_effect_view(g->dfx[i].id, &v)) {
+      flush(g);
+      dfx_release(&g->dfx[i]);
+    }
+  }
+}
+
+int bui_gpu_effect(BuiGpu *g,
+                   int effect,
+                   const float rect[4],
+                   const int inputs[BUI_EFFECT_MAX_INPUTS],
+                   const float *floats,
+                   int n_floats,
+                   const int clip[4])
+{
+  BuiEffectView v;
+  if (!bui_effect_view(effect, &v)) {
+    return 0;
+  }
+  dfx_sweep(g);
+  DevFx *f = dfx_get(g, &v);
+  if (!f || f->failed) {
+    return 0;
+  }
+  dtex_sweep(g);
+  for (int k = 0; k < v.n_inputs; k++) {
+    dtex_get(g, inputs[k]); /* may flush: before anything of this draw is recorded */
+  }
+  if (!grow((void **)&g->fx, &g->cap_fx, g->n_fx + 1, sizeof(FxCall)) ||
+      !grow((void **)&g->fxf, &g->cap_fxf, g->n_fxf + v.n_floats, sizeof(float)))
+  {
+    return 0;
+  }
+  Batch *b = batch_new(g, 3, g->n_fx); /* never merged: each draw has its own shader state */
+  if (!b) {
+    return 0;
+  }
+  b->count = 1;
+  FxCall *c = &g->fx[g->n_fx++];
+  c->effect = effect;
+  memcpy(c->rect, rect, sizeof(c->rect));
+  memcpy(c->inputs, inputs, sizeof(c->inputs));
+  memcpy(c->clip, clip, sizeof(c->clip));
+  c->floats = g->n_fxf;
+  const int n = floats && n_floats > 0 ? (n_floats < v.n_floats ? n_floats : v.n_floats) : 0;
+  if (n > 0) {
+    memcpy(g->fxf + g->n_fxf, floats, sizeof(float) * (size_t)n);
+  }
+  memset(g->fxf + g->n_fxf + n, 0, sizeof(float) * (size_t)(v.n_floats - n));
+  g->n_fxf += v.n_floats;
+  return 1;
 }
 
 static uint64_t mix64(uint64_t h)
@@ -1369,16 +1608,43 @@ void bui_gpu_damage(BuiGpu *g, int x, int y, int w, int h)
 /** \name Drawing + present
  * \{ */
 
+/* Resizing steps: the target and the swap chain are made a multiple of GPU_SLACK px wide and
+ * high and kept while the frame stays within [cap - 2 * GPU_SLACK, cap], so a drag-resize
+ * reallocates every few dozen sizes, not at each one. A bitblt (alpha) swap chain stretches its
+ * buffer over the window, so it stays exact. */
+#  define GPU_SLACK 256
+
+static int slack_cap(const BuiGpu *g, int need)
+{
+  if (g->alpha) {
+    return need;
+  }
+  const int cap = (need + GPU_SLACK - 1) / GPU_SLACK * GPU_SLACK;
+  return cap < g->max_tex ? cap : need;
+}
+
+static int slack_fits(const BuiGpu *g, int cap, int need)
+{
+  return cap >= need && (g->alpha ? cap == need : cap - need < 2 * GPU_SLACK);
+}
+
 static int ensure_target(BuiGpu *g)
 {
-  if (g->target && g->tw == g->w && g->th == g->h) {
+  if (g->target && slack_fits(g, g->tw, g->w) && slack_fits(g, g->th, g->h)) {
+    if (g->fw != g->w || g->fh != g->h) { /* another size in the same texture: a redraw follows */
+      g->fw = g->w;
+      g->fh = g->h;
+      const float clear[4] = {0, 0, 0, g->alpha ? 0.0f : 1.0f};
+      ID3D11DeviceContext_ClearRenderTargetView(g->ctx, g->rtv, clear);
+      g->dmg_full = 1;
+    }
     return 1;
   }
   REL(g->rtv);
   REL(g->target);
   D3D11_TEXTURE2D_DESC td = {0};
-  td.Width = (UINT)g->w;
-  td.Height = (UINT)g->h;
+  td.Width = (UINT)slack_cap(g, g->w);
+  td.Height = (UINT)slack_cap(g, g->h);
   td.MipLevels = td.ArraySize = 1;
   td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
   td.SampleDesc.Count = 1;
@@ -1391,10 +1657,12 @@ static int ensure_target(BuiGpu *g)
     REL(g->target);
     return 0;
   }
-  g->tw = g->w;
-  g->th = g->h;
-  const float black[4] = {0, 0, 0, 1};
-  ID3D11DeviceContext_ClearRenderTargetView(g->ctx, g->rtv, black);
+  g->tw = (int)td.Width;
+  g->th = (int)td.Height;
+  g->fw = g->w;
+  g->fh = g->h;
+  const float clear[4] = {0, 0, 0, g->alpha ? 0.0f : 1.0f};
+  ID3D11DeviceContext_ClearRenderTargetView(g->ctx, g->rtv, clear);
   g->dmg_full = 1;
   return 1;
 }
@@ -1434,13 +1702,46 @@ static void upload(BuiGpu *g, ID3D11Buffer *buf, const void *data, size_t bytes)
   }
 }
 
+/* One recorded effect draw: its shaders, floats and inputs, scissored to its clip. */
+static void fx_draw(BuiGpu *g, const FxCall *fc)
+{
+  const int slot = BUI_EFFECT_SLOT(fc->effect);
+  const DevFx *f = slot >= 0 && slot < g->n_dfx ? &g->dfx[slot] : NULL;
+  if (!f || f->id != fc->effect || !f->ps) {
+    return;
+  }
+  ID3D11DeviceContext *c = g->ctx;
+  float data[8 + 4 * BUI_EFFECT_MAX_FLOATS] = {0};
+  memcpy(data, fc->rect, sizeof(fc->rect));
+  data[4] = 2.0f / (float)g->tw;
+  data[5] = 2.0f / (float)g->th;
+  for (int i = 0; i < f->n_floats; i++) { /* HLSL gives each element of an array a register */
+    data[8 + 4 * i] = g->fxf[fc->floats + i];
+  }
+  upload(g, f->cb, data, sizeof(float) * (size_t)(8 + 4 * (f->n_floats > 0 ? f->n_floats : 1)));
+  ID3D11ShaderResourceView *srv[BUI_EFFECT_MAX_INPUTS];
+  for (int k = 0; k < f->n_inputs; k++) {
+    srv[k] = dtex_srv(g, fc->inputs[k]);
+  }
+  if (f->n_inputs > 0) {
+    ID3D11DeviceContext_PSSetShaderResources(c, 8, (UINT)f->n_inputs, srv);
+  }
+  ID3D11DeviceContext_VSSetShader(c, f->vs, NULL, 0);
+  ID3D11DeviceContext_PSSetShader(c, f->ps, NULL, 0);
+  ID3D11DeviceContext_VSSetConstantBuffers(c, 1, 1, (ID3D11Buffer *const *)&f->cb);
+  ID3D11DeviceContext_PSSetConstantBuffers(c, 1, 1, (ID3D11Buffer *const *)&f->cb);
+  const D3D11_RECT sr = {fc->clip[0], fc->clip[1], fc->clip[2], fc->clip[3]};
+  ID3D11DeviceContext_RSSetScissorRects(c, 1, &sr);
+  ID3D11DeviceContext_Draw(c, 4, 0);
+}
+
 static void flush(BuiGpu *g)
 {
   if (g->n_b == 0) {
     return;
   }
   if (!ensure_target(g)) {
-    g->n_b = g->n_inst = g->n_tv = g->n_mv = g->n_mi = 0;
+    g->n_b = g->n_inst = g->n_tv = g->n_mv = g->n_mi = g->n_fx = g->n_fxf = 0;
     return;
   }
   ID3D11DeviceContext *c = g->ctx;
@@ -1484,7 +1785,7 @@ static void flush(BuiGpu *g)
       continue;
     }
     if (b->tri != cur) {
-      if (cur == 2) {
+      if (cur == 2 || cur == 3) { /* the scissored states */
         ID3D11DeviceContext_RSSetState(c, g->rs);
       }
       cur = b->tri;
@@ -1506,6 +1807,12 @@ static void flush(BuiGpu *g)
         ID3D11DeviceContext_IASetPrimitiveTopology(c, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         ID3D11DeviceContext_VSSetShader(c, g->vs_quad, NULL, 0);
         ID3D11DeviceContext_PSSetShader(c, g->ps_quad, NULL, 0);
+      }
+      else if (b->tri == 3) { /* effects: a quad from SV_VertexID, no vertex data */
+        ID3D11DeviceContext_IASetInputLayout(c, NULL);
+        ID3D11DeviceContext_IASetPrimitiveTopology(c, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        ID3D11DeviceContext_PSSetSamplers(c, 0, 1, &g->smp_linear);
+        ID3D11DeviceContext_RSSetState(c, g->rs_scissor);
       }
       else {
         UINT stride = sizeof(TriV);
@@ -1535,40 +1842,52 @@ static void flush(BuiGpu *g)
       }
       ID3D11DeviceContext_DrawInstanced(c, 4, (UINT)b->count, 0, (UINT)b->first);
     }
+    else if (b->tri == 3) {
+      fx_draw(g, &g->fx[b->first]);
+    }
     else {
       ID3D11DeviceContext_Draw(c, (UINT)b->count, (UINT)b->first);
     }
   }
-  if (cur == 2) {
+  if (cur == 2 || cur == 3) {
     ID3D11DeviceContext_RSSetState(c, g->rs);
   }
-  g->n_b = g->n_inst = g->n_tv = g->n_mv = g->n_mi = 0;
+  g->n_b = g->n_inst = g->n_tv = g->n_mv = g->n_mi = g->n_fx = g->n_fxf = 0;
 }
 
 static int ensure_swap(BuiGpu *g)
 {
-  if (g->swap && g->sw == g->w && g->sh == g->h) {
+  if (g->swap && slack_fits(g, g->sw, g->w) && slack_fits(g, g->sh, g->h)) {
     return 1;
   }
+  const int cw = slack_cap(g, g->w), ch = slack_cap(g, g->h);
   if (g->swap) {
     ID3D11DeviceContext_OMSetRenderTargets(g->ctx, 0, NULL, NULL);
-    if (FAILED(IDXGISwapChain1_ResizeBuffers(g->swap, 0, (UINT)g->w, (UINT)g->h,
-                                             DXGI_FORMAT_UNKNOWN, 0)))
+    if (FAILED(IDXGISwapChain1_ResizeBuffers(g->swap, 0, (UINT)cw, (UINT)ch, DXGI_FORMAT_UNKNOWN,
+                                             0)))
     {
       return 0;
     }
   }
   else {
     DXGI_SWAP_CHAIN_DESC1 sd = {0};
-    sd.Width = (UINT)g->w;
-    sd.Height = (UINT)g->h;
+    sd.Width = (UINT)cw;
+    sd.Height = (UINT)ch;
     sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     sd.SampleDesc.Count = 1;
     sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     sd.BufferCount = 2;
-    sd.Scaling = DXGI_SCALING_NONE;
-    sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
-    sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    if (g->alpha) {
+      /* bitblt model, as SDL's transparent D3D11 windows: Present copies the alpha channel into
+       * the window's surface, which DWM blends (the host enables blur-behind) */
+      sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+      sd.Scaling = DXGI_SCALING_STRETCH;
+    }
+    else {
+      sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+      sd.Scaling = DXGI_SCALING_NONE;
+      sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    }
     if (FAILED(IDXGIFactory2_CreateSwapChainForHwnd(g->factory, (IUnknown *)g->dev, g->hwnd, &sd,
                                                     NULL, NULL, &g->swap)))
     {
@@ -1576,10 +1895,21 @@ static int ensure_swap(BuiGpu *g)
     }
     IDXGIFactory2_MakeWindowAssociation(g->factory, g->hwnd, DXGI_MWA_NO_ALT_ENTER);
   }
-  g->sw = g->w;
-  g->sh = g->h;
+  g->sw = cw;
+  g->sh = ch;
   g->swap_fresh = 1;
   return 1;
+}
+
+void bui_gpu_clear(BuiGpu *g, int x, int y, int w, int h)
+{
+  flush(g); /* what was recorded for earlier regions comes first */
+  if (!g->ctx1 || !g->target || g->fw != g->w || g->fh != g->h) {
+    return; /* a new target starts transparent */
+  }
+  const float clear[4] = {0, 0, 0, 0};
+  const RECT rect = {x, y, x + w, y + h};
+  ID3D11DeviceContext1_ClearView(g->ctx1, (ID3D11View *)g->rtv, clear, &rect, 1);
 }
 
 int bui_gpu_present(BuiGpu *g, int full)
@@ -1587,33 +1917,61 @@ int bui_gpu_present(BuiGpu *g, int full)
   flush(g);
   if (!g->target || !ensure_swap(g)) {
     g->n_dmg = g->dmg_full = 0;
-    return g->target != NULL;
+    return g->target != NULL && !g->alpha; /* no alpha surface: the renderer is given up */
   }
   ID3D11Texture2D *back = NULL;
   if (FAILED(IDXGISwapChain1_GetBuffer(g->swap, 0, &k_IID_ID3D11Texture2D, (void **)&back))) {
     return 0;
   }
-  /* the flip model hands back an older buffer: copy the whole frame */
-  ID3D11DeviceContext_CopyResource(g->ctx, (ID3D11Resource *)back, (ID3D11Resource *)g->target);
-  REL(back);
-  DXGI_PRESENT_PARAMETERS pp = {0};
-  if (!(full || g->dmg_full || g->swap_fresh) && g->n_dmg > 0) {
-    for (int i = 0; i < g->n_dmg; i++) { /* clamp: DXGI rejects rects outside the buffer */
-      RECT *r = &g->dmg[i];
-      r->left = r->left < 0 ? 0 : r->left;
-      r->top = r->top < 0 ? 0 : r->top;
-      r->right = r->right > g->w ? g->w : r->right;
-      r->bottom = r->bottom > g->h ? g->h : r->bottom;
-      if (r->right <= r->left || r->bottom <= r->top) {
-        *r = g->dmg[--g->n_dmg];
-        i--;
+  for (int i = 0; i < g->n_dmg; i++) { /* clamp: DXGI rejects rects outside the buffer */
+    RECT *r = &g->dmg[i];
+    r->left = r->left < 0 ? 0 : r->left;
+    r->top = r->top < 0 ? 0 : r->top;
+    r->right = r->right > g->w ? g->w : r->right;
+    r->bottom = r->bottom > g->h ? g->h : r->bottom;
+    if (r->right <= r->left || r->bottom <= r->top) {
+      *r = g->dmg[--g->n_dmg];
+      i--;
+    }
+  }
+  const int whole = full || g->dmg_full || g->swap_fresh || g->n_dmg == 0 || g->alpha;
+  /* copying rects adding up to half the frame or more: one copy of it all is cheaper */
+  long area = 0;
+  for (int k = 0; k < 2 && !whole && !g->prev_whole; k++) {
+    const RECT *rs = k ? g->prev : g->dmg;
+    for (int i = 0, n = k ? g->n_prev : g->n_dmg; i < n; i++) {
+      area += (long)(rs[i].right - rs[i].left) * (rs[i].bottom - rs[i].top);
+    }
+  }
+  if (whole || g->prev_whole || area * 2 >= (long)g->w * g->h) {
+    /* the buffer is two frames old (or of the bitblt model): the whole frame */
+    /* the target can be larger than the window (it grows in steps): copy the frame, not the resource */
+    const D3D11_BOX frame = {0, 0, 0, (UINT)g->w, (UINT)g->h, 1};
+    ID3D11DeviceContext_CopySubresourceRegion(g->ctx, (ID3D11Resource *)back, 0, 0, 0, 0,
+                                              (ID3D11Resource *)g->target, 0, &frame);
+  }
+  else { /* what changed this frame and the last one: the rest is already there */
+    for (int k = 0; k < 2; k++) {
+      const RECT *rs = k ? g->prev : g->dmg;
+      for (int i = 0, n = k ? g->n_prev : g->n_dmg; i < n; i++) {
+        const D3D11_BOX b = {(UINT)rs[i].left, (UINT)rs[i].top, 0, (UINT)rs[i].right, (UINT)rs[i].bottom, 1};
+        ID3D11DeviceContext_CopySubresourceRegion(g->ctx, (ID3D11Resource *)back, 0, b.left, b.top, 0,
+                                                  (ID3D11Resource *)g->target, 0, &b);
       }
     }
+  }
+  REL(back);
+  g->prev_whole = whole;
+  g->n_prev = whole ? 0 : g->n_dmg;
+  memcpy(g->prev, g->dmg, sizeof(RECT) * (size_t)g->n_prev);
+  DXGI_PRESENT_PARAMETERS pp = {0};
+  if (!(full || g->dmg_full || g->swap_fresh) && g->n_dmg > 0) {
     pp.DirtyRectsCount = (UINT)g->n_dmg;
-    pp.pDirtyRects = g->n_dmg ? g->dmg : NULL;
+    pp.pDirtyRects = g->dmg;
   }
   const HRESULT hr = IDXGISwapChain1_Present1(g->swap, 0, 0, &pp);
-  g->swap_fresh = 0;
+  /* occluded or minimized: DWM dropped the frame, so the next one must be whole */
+  g->swap_fresh = hr == DXGI_STATUS_OCCLUDED;
   g->n_dmg = g->dmg_full = 0;
   return !(hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET);
 }
@@ -1621,7 +1979,7 @@ int bui_gpu_present(BuiGpu *g, int full)
 int bui_gpu_read(BuiGpu *g, uint32_t *dst, int w, int h)
 {
   flush(g);
-  if (!g->target || g->tw != w || g->th != h) {
+  if (!g->target || g->fw != w || g->fh != h) {
     return 0;
   }
   D3D11_TEXTURE2D_DESC td = {0};
@@ -1636,14 +1994,18 @@ int bui_gpu_read(BuiGpu *g, uint32_t *dst, int w, int h)
   if (FAILED(ID3D11Device_CreateTexture2D(g->dev, &td, NULL, &st))) {
     return 0;
   }
-  ID3D11DeviceContext_CopyResource(g->ctx, (ID3D11Resource *)st, (ID3D11Resource *)g->target);
+  const D3D11_BOX frame = {0, 0, 0, (UINT)w, (UINT)h, 1};
+  ID3D11DeviceContext_CopySubresourceRegion(g->ctx, (ID3D11Resource *)st, 0, 0, 0, 0,
+                                            (ID3D11Resource *)g->target, 0, &frame);
   D3D11_MAPPED_SUBRESOURCE m;
   int ok = 0;
   if (SUCCEEDED(ID3D11DeviceContext_Map(g->ctx, (ID3D11Resource *)st, 0, D3D11_MAP_READ, 0, &m))) {
+    /* like the raster: 0x00RRGGBB, or premultiplied 0xAARRGGBB with alpha */
+    const uint32_t mask = g->alpha ? 0xFFFFFFFFu : 0xFFFFFFu;
     for (int y = 0; y < h; y++) {
       const uint32_t *src = (const uint32_t *)((const uint8_t *)m.pData + (size_t)y * m.RowPitch);
       for (int x = 0; x < w; x++) {
-        dst[(size_t)y * w + x] = src[x] & 0xFFFFFFu; /* 0x00RRGGBB like the raster */
+        dst[(size_t)y * w + x] = src[x] & mask;
       }
     }
     ID3D11DeviceContext_Unmap(g->ctx, (ID3D11Resource *)st, 0);
@@ -1682,9 +2044,10 @@ int bui_gpu_slug_glyph(BuiGpu *g, int face, int glyph, unsigned gen, float r_bbo
 
 #  include "gpu_d3d11.h"
 
-BuiGpu *bui_gpu_create(void *hwnd)
+BuiGpu *bui_gpu_create(void *hwnd, int alpha)
 {
   (void)hwnd;
+  (void)alpha;
   return NULL;
 }
 void bui_gpu_free(BuiGpu *g)
@@ -1798,6 +2161,31 @@ void bui_gpu_mesh(BuiGpu *g,
   (void)tex;
   (void)nearest;
   (void)clip;
+}
+int bui_gpu_effect(BuiGpu *g,
+                   int effect,
+                   const float rect[4],
+                   const int inputs[BUI_EFFECT_MAX_INPUTS],
+                   const float *floats,
+                   int n_floats,
+                   const int clip[4])
+{
+  (void)g;
+  (void)effect;
+  (void)rect;
+  (void)inputs;
+  (void)floats;
+  (void)n_floats;
+  (void)clip;
+  return 0;
+}
+void bui_gpu_clear(BuiGpu *g, int x, int y, int w, int h)
+{
+  (void)g;
+  (void)x;
+  (void)y;
+  (void)w;
+  (void)h;
 }
 void bui_gpu_damage(BuiGpu *g, int x, int y, int w, int h)
 {

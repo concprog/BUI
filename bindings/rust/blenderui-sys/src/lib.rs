@@ -7,6 +7,9 @@
 
 use std::os::raw::{c_char, c_double, c_float, c_int, c_uchar, c_void};
 
+mod anim;
+pub use anim::*;
+
 /// A kit node (widget, frame, canvas ...).
 #[repr(C)]
 pub struct BKNode {
@@ -75,6 +78,13 @@ pub const BK_ITEM_TEXT: c_int = 4;
 pub const BK_ITEM_ARC: c_int = 5;
 pub const BK_ITEM_IMAGE: c_int = 6;
 pub const BK_ITEM_ROUNDRECT: c_int = 7;
+/// A GPU shader over the item's box (`BUI_effect_create`); the item's image is the fallback.
+pub const BK_ITEM_EFFECT: c_int = 8;
+
+/// The most textures an effect samples, the most floats it reads, the longest source (bytes).
+pub const BK_EFFECT_MAX_INPUTS: usize = 8;
+pub const BK_EFFECT_MAX_FLOATS: usize = 256;
+pub const BK_EFFECT_MAX_SOURCE: usize = 65536;
 
 // Font flags (GPU_raster.h).
 pub const BUI_FONT_BOLD: c_int = 1;
@@ -116,6 +126,13 @@ pub struct BKCanvasItem {
     pub frame: c_int,
     /// Images: a video's current frame (borrowed, as `imbuf`).
     pub video: *mut BKVideo,
+    /// A canvas with `hititems` lets the pointer through this item.
+    pub no_hit: c_int,
+    /// `BK_ITEM_EFFECT`: the effect, the BUI textures it samples (unused: 0) and its floats (copied).
+    pub effect: c_int,
+    pub effect_inputs: [c_int; BK_EFFECT_MAX_INPUTS],
+    pub effect_floats: *const c_float,
+    pub n_effect_floats: c_int,
 }
 
 /// A `<video>` (`BKVideo`): the kit's player (OS decoders; frames in one GPU
@@ -215,6 +232,7 @@ pub struct BKWindowCallbacks {
     pub on_timer: Option<unsafe extern "C" fn(data: *mut c_void, win: *mut BKWindow, id: c_int)>,
     pub on_close: Option<unsafe extern "C" fn(data: *mut c_void, win: *mut BKWindow) -> c_int>,
     pub on_frame: Option<unsafe extern "C" fn(data: *mut c_void, win: *mut BKWindow)>,
+    pub on_focus: Option<unsafe extern "C" fn(data: *mut c_void, win: *mut BKWindow, active: c_int)>,
 }
 
 unsafe extern "C" {
@@ -228,11 +246,27 @@ unsafe extern "C" {
     pub fn BK_version() -> c_int;
     pub fn BK_version_string() -> *const c_char;
     pub fn BK_theme_color(key: *const c_char, r_rgba: *mut c_float) -> c_int;
+    pub fn BK_theme_load_json(json: *const c_char) -> c_int;
+    pub fn BK_theme_load_file(path: *const c_char) -> c_int;
+    pub fn BK_theme_error() -> *const c_char;
+    pub fn BK_theme_ignored() -> c_int;
+    pub fn BK_theme_count() -> c_int;
+    pub fn BK_theme_at(index: c_int) -> *const c_char;
+    pub fn BK_theme_set_color(key: *const c_char, rgba: *const c_float) -> c_int;
+    pub fn BK_theme_set_num(key: *const c_char, value: f64) -> c_int;
+    pub fn BK_theme_num(key: *const c_char, r_value: *mut f64) -> c_int;
+    pub fn BK_theme_generation() -> c_int;
+    pub fn BK_theme_mode() -> *const c_char;
+    pub fn BK_set_font_size(points: c_float);
+    pub fn BK_font_size_points() -> c_float;
 
     // nodes
     pub fn BK_node_new(type_: *const c_char) -> *mut BKNode;
+    /// Size or structure changed: lay out and redraw everything on the next render.
+    pub fn BK_node_relayout(node: *mut BKNode);
     pub fn BK_node_free(node: *mut BKNode);
     pub fn BK_node_add(parent: *mut BKNode, child: *mut BKNode, index: c_int) -> c_int;
+    pub fn BK_node_child(node: *const BKNode, i: c_int) -> *mut BKNode;
     pub fn BK_node_remove(parent: *mut BKNode, child: *mut BKNode);
     pub fn BK_node_rect(node: *const BKNode, r_rect: *mut c_int);
     pub fn BK_node_natural(node: *mut BKNode, r_size: *mut c_int);
@@ -254,6 +288,13 @@ unsafe extern "C" {
     pub fn BK_imbuf_texture_update(ib: *const BKImBuf, frame: c_int, tex: c_int) -> c_int;
     /// Frees a BUI texture (`BK_imbuf_texture`, Dear ImGui user textures).
     pub fn BUI_texture_free(tex: c_int);
+
+    // GPU effects (application shaders; `BK_effect_*` in BUI_kit.h are macros for these)
+    /// An id > 0, or 0 for bad arguments (see `BK_EFFECT_MAX_*`). Nothing compiles until a GPU frame draws it.
+    pub fn BUI_effect_create(name: *const c_char, source: *const c_char, n_inputs: c_int, n_floats: c_int) -> c_int;
+    pub fn BUI_effect_free(id: c_int);
+    /// The compile/link log of the last GPU attempt ("" when fine or not tried yet); null for an unknown id.
+    pub fn BUI_effect_error(id: c_int) -> *const c_char;
     pub fn BK_imbuf_decode_frame(data: *const c_void, len: usize, frame: c_int, max_w: c_int, max_h: c_int)
                                  -> *mut BKImBuf;
     pub fn BK_anim_open(data: *const c_void, len: usize, max_w: c_int, max_h: c_int) -> *mut BKAnim;
@@ -279,6 +320,13 @@ unsafe extern "C" {
     pub fn BK_video_seek(v: *mut BKVideo, seconds: c_double);
     pub fn BK_video_set_rate(v: *mut BKVideo, rate: c_double);
     pub fn BK_video_set_loop(v: *mut BKVideo, on: c_int);
+    pub fn BK_video_set_muted(v: *mut BKVideo, muted: c_int);
+    pub fn BK_video_muted(v: *const BKVideo) -> c_int;
+    pub fn BK_video_set_volume(v: *mut BKVideo, volume: c_double);
+    pub fn BK_video_volume(v: *const BKVideo) -> c_double;
+    pub fn BK_video_has_audio(v: *const BKVideo) -> c_int;
+    pub fn BK_video_set_audio_effects(v: *mut BKVideo, on: c_int);
+    pub fn BK_video_audio_effects(v: *const BKVideo) -> c_int;
     pub fn BK_video_set_poster(v: *mut BKVideo, src: *const c_char);
     pub fn BK_video_set_controls(v: *mut BKVideo, on: c_int);
     pub fn BK_video_state(v: *const BKVideo) -> c_int;
@@ -348,6 +396,7 @@ unsafe extern "C" {
     pub fn BK_context_menu(ctx: *mut BKContext, x: c_int, y: c_int, mods: c_int) -> c_int;
     pub fn BK_timer(ctx: *mut BKContext, timer: c_int);
     pub fn BK_cursor(ctx: *mut BKContext) -> c_int;
+    pub fn BK_focus(ctx: *mut BKContext) -> *mut BKNode;
     pub fn BK_focus_node(ctx: *mut BKContext, n: *mut BKNode);
     pub fn BK_clipboard_get(ctx: *mut BKContext) -> *mut c_char;
     pub fn BK_clipboard_set(ctx: *mut BKContext, text: *const c_char);
@@ -383,9 +432,19 @@ unsafe extern "C" {
     // raster + text (gpu/)
     pub fn BUI_raster_create(width: c_int, height: c_int) -> *mut BuiRaster;
     pub fn BUI_raster_free(r: *mut BuiRaster);
+    /// The rectangles (x, y, w, h) the last frame changed: what a present copies.
+    pub fn BUI_raster_damage(r: *const BuiRaster, r_rects: *mut *const [c_int; 4]) -> c_int;
     pub fn BUI_raster_width(r: *const BuiRaster) -> c_int;
     pub fn BUI_raster_height(r: *const BuiRaster) -> c_int;
     pub fn BUI_raster_pixels(r: *const BuiRaster) -> *const u32;
+    pub fn BUI_raster_begin_frame(r: *mut BuiRaster, width: c_int, height: c_int);
+    pub fn BUI_raster_end_frame(r: *mut BuiRaster);
+    /// Offscreen GPU rendering with a null window (waits for the device); 0 when there is none.
+    pub fn BUI_raster_gpu_attach(r: *mut BuiRaster, window_handle: *mut c_void, wait: c_int) -> c_int;
+    pub fn BUI_raster_is_gpu(r: *const BuiRaster) -> c_int;
+    /// An application shader over a box, on the GPU: 1 when drawn, 0 when it cannot run (the caller draws its fallback).
+    pub fn BUI_raster_effect(r: *mut BuiRaster, x: c_float, y: c_float, w: c_float, h: c_float, effect: c_int,
+                             inputs: *const c_int, floats: *const c_float, n_floats: c_int) -> c_int;
     pub fn BUI_text_measure(family: *const c_char, flags: c_int, size: c_float,
                             utf8: *const c_char, len: c_int, r_width: *mut c_float) -> c_int;
     /// Registers a TrueType/OpenType font (copied) for `family` + style flags.

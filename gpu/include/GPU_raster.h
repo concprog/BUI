@@ -53,6 +53,14 @@ const uint32_t *BUI_raster_pixels(const BuiRaster *r);
 int BUI_raster_damage(const BuiRaster *r, const int (**r_rects)[4]);
 /* Force the next end_frame to report the full frame as damaged. */
 void BUI_raster_invalidate(BuiRaster *r);
+/* Keep alpha: the frame becomes premultiplied 0xAARRGGBB, starting transparent where
+ * BUI_raster_clear clears it (a transparent window). Off (the default), the alpha byte stays 0
+ * and the frame is opaque 0x00RRGGBB. A GPU renderer takes the setting when it is attached (the
+ * window needs an alpha surface: a 32-bit visual, a composition swap chain), so set it first. */
+void BUI_raster_set_alpha(BuiRaster *r, int on);
+int BUI_raster_alpha(const BuiRaster *r);
+/* Set the pixels of a rect to transparent (0), within the clip. */
+void BUI_raster_clear(BuiRaster *r, int x, int y, int w, int h);
 
 /* Clip subsequent drawing; w/h <= 0 removes the clip. */
 void BUI_raster_set_clip(BuiRaster *r, int x, int y, int w, int h);
@@ -309,6 +317,7 @@ const void *BUI_text_default_font(int *r_len);
 typedef struct BuiGpuX11Window {
   void *display;        /* Display * the window lives on (NULL: open one) */
   unsigned long window; /* Window */
+  unsigned long visual; /* its VisualID (0: the default visual) */
 } BuiGpuX11Window;
 int BUI_raster_gpu_attach(BuiRaster *r, void *window_handle, int wait);
 int BUI_raster_gpu_poll(BuiRaster *r);
@@ -325,10 +334,54 @@ void BUI_gpu_set_default(int on);
 int BUI_gpu_default(void);
 /* How the GPU renderer draws text: 1 = Slug (glyph outlines evaluated in the
  * pixel shader; sharp at any size), 0 = per-glyph bitmap atlas (Blender's
- * approach; less GPU work). Takes effect on the next frame. Default: the
- * BUI_SLUG build option (ON), overridden by the BUI_SLUG variable (1/0). */
+ * approach; less GPU work). Takes effect on the next frame. Without a choice
+ * (BUI_gpu_set_slug, the BUI_SLUG variable 1/0), the BUI_SLUG build option ON
+ * draws text of 40 px and up, and synthetic italic (the atlas has no slant),
+ * with Slug and the rest from the atlas (half the GPU time on UI text, the
+ * same pixels as the CPU renderer); OFF: the atlas. BUI_gpu_slug() says
+ * whether Slug is in use at all. */
 void BUI_gpu_set_slug(int on);
 int BUI_gpu_slug(void);
+
+/* -- effects: application shaders --------------------------------------------
+ * A full-box pixel shader the GPU renderers run: the app gives GLSL-like source
+ * (one portable dialect, see gpu/intern/gpu_effect.c and the "GPU effects" docs
+ * page), the Direct3D 11 backend compiles it at run time with d3dcompiler_47.dll
+ * (loaded dynamically), the OpenGL backend through the driver. As Blender does
+ * with its shader create-infos, the interface is declared up front (inputs,
+ * floats), the compile/link log is kept as the error string, and the shader is
+ * created on the first frame that draws it.
+ *
+ * The source defines `vec4 effect(vec2 p)`: p is the pixel inside the box (pixel
+ * centres at .5), the result is premultiplied RGBA. Available: `vec2 box_size`,
+ * `float U[n_floats]`, `vec4 input_color(int i, vec2 texel)` (input texture i,
+ * bilinear, clamped, premultiplied), `vec2 input_size(int i)`.
+ *
+ * Create, update and free effects on the thread that draws. */
+#define BUI_EFFECT_MAX_INPUTS 8
+#define BUI_EFFECT_MAX_FLOATS 256
+#define BUI_EFFECT_MAX_SOURCE 65536
+/* An id > 0, or 0 for bad arguments (no source or one over BUI_EFFECT_MAX_SOURCE
+ * bytes, n_inputs outside 0..8, n_floats outside 0..256). Nothing is compiled yet. */
+int BUI_effect_create(const char *name, const char *source, int n_inputs, int n_floats);
+void BUI_effect_free(int id);
+/* The compile/link log of the last GPU attempt: "" when it went fine or no GPU
+ * renderer tried it yet; NULL for an id that is not live. */
+const char *BUI_effect_error(int id);
+/* Draws effect `effect` over x, y, w, h (within the clip) on the GPU, sampling the
+ * BUI textures `inputs[0 .. n_inputs of the effect)` and reading `n_floats` floats
+ * (the rest are 0). Returns 1 when it was drawn; 0 when it cannot run here (software
+ * raster, no compiler, compile error: see BUI_effect_error), nothing was drawn and
+ * the caller draws its fallback. */
+int BUI_raster_effect(BuiRaster *r,
+                      float x,
+                      float y,
+                      float w,
+                      float h,
+                      int effect,
+                      const int inputs[BUI_EFFECT_MAX_INPUTS],
+                      const float *floats,
+                      int n_floats);
 
 /* A BuiGpuSink that renders into `r` (user pointer is the raster). */
 const BuiGpuSink *BUI_raster_sink(BuiRaster *r);

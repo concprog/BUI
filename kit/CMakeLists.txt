@@ -8,6 +8,8 @@ add_library(bui_kit STATIC
   intern/kit_core.c
   intern/kit_draw.c
   intern/kit_theme_presets.c
+  intern/kit_theme.c
+  intern/kit_json.c
   intern/kit_icons_data.c
   intern/kit_widgets.c
   intern/kit_views.c
@@ -51,6 +53,18 @@ add_library(bui::kit ALIAS bui_kit)
 # the optional parts this build has (features.json): BUI_IMAGE_*, BUI_VIDEO*, ...
 bui_features(bui_kit)
 
+# Animation (GSAP- and Motion-style): the engine, or the API alone when it is off
+if(BUI_ANIM)
+  target_sources(bui_kit PRIVATE
+    intern/anim/ease.c
+    intern/anim/spring.c
+    intern/anim/value.c
+    intern/anim/motion.c
+    intern/anim/node.c)
+else()
+  target_sources(bui_kit PRIVATE intern/anim/anim_off.c)
+endif()
+
 if(BUI_FILEBROWSER) # Blender's File Browser (editors/space_file)
   target_sources(bui_kit PRIVATE
     intern/kit_filebrowser_paths.c
@@ -88,23 +102,29 @@ if(BUI_IMAGE_PNG OR BUI_IMAGE_GIF OR BUI_IMAGE_BMP OR BUI_IMAGE_TGA OR BUI_IMAGE
   set_source_files_properties(intern/image/format_wuffs.c PROPERTIES COMPILE_OPTIONS "${_bui_quiet}")
 endif()
 # Video: the OS backend of this platform, loaded at run time; dav1d / FFmpeg
-# when asked for (they link those libraries)
+# when asked for (they link those libraries). Its sound plays on the OS's
+# audio output (intern/audio), loaded at run time too.
 if(BUI_VIDEO)
+  target_sources(bui_kit PRIVATE intern/audio/audio.c)
   if(WIN32)
-    target_sources(bui_kit PRIVATE intern/image/movie_mf.c)
-    target_compile_definitions(bui_kit PRIVATE BUI_VIDEO_MF)
+    target_sources(bui_kit PRIVATE intern/image/movie_mf.c intern/audio/device_wasapi.c)
+    target_compile_definitions(bui_kit PRIVATE BUI_VIDEO_MF BUI_AUDIO_WASAPI)
   elseif(APPLE)
-    target_sources(bui_kit PRIVATE intern/image/movie_avf.m)
+    target_sources(bui_kit PRIVATE intern/image/movie_avf.m intern/audio/device_coreaudio.c)
     set_source_files_properties(intern/image/movie_avf.m PROPERTIES COMPILE_OPTIONS "-fno-objc-arc")
-    target_compile_definitions(bui_kit PRIVATE BUI_VIDEO_AVF)
+    target_compile_definitions(bui_kit PRIVATE BUI_VIDEO_AVF BUI_AUDIO_COREAUDIO)
     # weak: a system without them still starts (one argument each for the linker)
     target_link_libraries(bui_kit PUBLIC "-Wl,-weak_framework,AVFoundation"
                                          "-Wl,-weak_framework,CoreMedia"
-                                         "-Wl,-weak_framework,CoreVideo")
-  else()
-    target_sources(bui_kit PRIVATE intern/image/movie_gst.c)
-    target_compile_definitions(bui_kit PRIVATE BUI_VIDEO_GST)
-    target_link_libraries(bui_kit PUBLIC ${CMAKE_DL_LIBS})
+                                         "-Wl,-weak_framework,CoreVideo"
+                                         "-Wl,-weak_framework,AudioToolbox")
+  elseif(CMAKE_SYSTEM_NAME MATCHES "Linux|FreeBSD|NetBSD|OpenBSD|DragonFly")
+    # GStreamer and PulseAudio exist here; any other system (Android, Emscripten, ...) builds
+    # with no video backend and no audio device: silent, nothing else changes
+    target_sources(bui_kit PRIVATE intern/image/movie_gst.c intern/audio/device_pulse.c)
+    target_compile_definitions(bui_kit PRIVATE BUI_VIDEO_GST BUI_AUDIO_PULSE)
+    find_package(Threads REQUIRED)
+    target_link_libraries(bui_kit PUBLIC ${CMAKE_DL_LIBS} Threads::Threads)
   endif()
 endif()
 if(BUI_IMAGE_JPEG) # libjpeg-turbo 3.1.2: the 8-bit decompressor, no SIMD (it needs NASM)
@@ -183,15 +203,28 @@ elseif(UNIX AND NOT APPLE)
       set(_wl_gen ${CMAKE_CURRENT_BINARY_DIR}/wayland)
       file(MAKE_DIRECTORY ${_wl_gen})
       set(_wl_src)
-      foreach(_p stable/xdg-shell/xdg-shell unstable/xdg-decoration/xdg-decoration-unstable-v1)
-        get_filename_component(_n ${_p} NAME)
+      # wlr-layer-shell is not in wayland-protocols: kit/extern/wayland_protocols has it
+      set(_wl_xml ${BUI_WL_PROTOCOLS}/stable/xdg-shell/xdg-shell.xml
+                  ${BUI_WL_PROTOCOLS}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml
+                  ${CMAKE_CURRENT_SOURCE_DIR}/extern/wayland_protocols/wlr-layer-shell-unstable-v1.xml)
+      # cursor-shape (wayland-protocols 1.32+), as GHOST: the compositor draws the cursor, so no
+      # cursor theme is loaded. Its code refers to the tablet tool interface.
+      set(_wl_cursor_shape ${BUI_WL_PROTOCOLS}/staging/cursor-shape/cursor-shape-v1.xml)
+      set(_wl_tablet ${BUI_WL_PROTOCOLS}/stable/tablet/tablet-v2.xml)
+      if(NOT EXISTS ${_wl_tablet})
+        set(_wl_tablet ${BUI_WL_PROTOCOLS}/unstable/tablet/tablet-unstable-v2.xml)
+      endif()
+      if(EXISTS ${_wl_cursor_shape} AND EXISTS ${_wl_tablet})
+        list(APPEND _wl_xml ${_wl_cursor_shape} ${_wl_tablet})
+        target_compile_definitions(bui_kit PRIVATE BUI_WL_CURSOR_SHAPE)
+      endif()
+      foreach(_x ${_wl_xml})
+        get_filename_component(_n ${_x} NAME_WE)
         add_custom_command(
           OUTPUT ${_wl_gen}/${_n}-client-protocol.h ${_wl_gen}/${_n}-client-protocol.c
-          COMMAND ${BUI_WL_SCANNER} client-header ${BUI_WL_PROTOCOLS}/${_p}.xml
-                  ${_wl_gen}/${_n}-client-protocol.h
-          COMMAND ${BUI_WL_SCANNER} private-code ${BUI_WL_PROTOCOLS}/${_p}.xml
-                  ${_wl_gen}/${_n}-client-protocol.c
-          DEPENDS ${BUI_WL_PROTOCOLS}/${_p}.xml)
+          COMMAND ${BUI_WL_SCANNER} client-header ${_x} ${_wl_gen}/${_n}-client-protocol.h
+          COMMAND ${BUI_WL_SCANNER} private-code ${_x} ${_wl_gen}/${_n}-client-protocol.c
+          DEPENDS ${_x})
         list(APPEND _wl_src ${_wl_gen}/${_n}-client-protocol.c)
       endforeach()
       target_sources(bui_kit PRIVATE intern/kit_window_wayland.c intern/kit_window_linux.c

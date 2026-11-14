@@ -1,6 +1,6 @@
 {
   "name": "@blender-ui/native",
-  "version": "0.4.0",
+  "version": "0.5.1",
   "description": "Blender's UI from JavaScript: native windows (CPU or Direct3D 11), HTML elements, CSS and Tailwind classes, signals. Node.js and Bun, through napi-rs.",
   "main": "index.js",
   "types": "index.d.ts",
@@ -13,6 +13,14 @@
       "default": "./index.js"
     },
     "./signals": "./signals.js",
+    "./gsap": {
+      "types": "./gsap.d.ts",
+      "default": "./gsap.js"
+    },
+    "./motion": {
+      "types": "./motion.d.ts",
+      "default": "./motion.js"
+    },
     "./host": {
       "types": "./host.d.ts",
       "default": "./host.js"
@@ -30,7 +38,13 @@
     "globals.js",
     "bundle.js",
     "signals.js",
+    "anim.js",
+    "gsap.js",
+    "motion.js",
+    "waapi.js",
     "index.d.ts",
+    "gsap.d.ts",
+    "motion.d.ts",
     "host.d.ts",
     "globals.d.ts",
     "cli.js",
@@ -82,6 +96,7 @@
     "signals",
     "bun",
     "react",
-    "svelte"
+    "svelte",
+    "vue"
   ]
 }

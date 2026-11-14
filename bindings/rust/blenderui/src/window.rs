@@ -18,7 +18,9 @@ use crate::events::*;
 use crate::geometry::{point, px, size, Bounds, Pixels, Size};
 use crate::layout::{id_key, layout, Content, Frame, Key, LayoutCaches, UiState};
 use crate::prof::{self, span, Phase};
+use crate::window_kind::{WindowDecorations, WindowKind};
 use crate::paint::{paint_frame, Painter};
+use crate::selection::{Cx, Selector};
 use crate::widgets::{WKind, Widgets};
 use blenderui_sys as sys;
 
@@ -203,6 +205,15 @@ pub enum WindowBounds {
     Fullscreen(Bounds<Pixels>),
 }
 
+/// How the window's background shows (gpui's `WindowBackgroundAppearance`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowBackgroundAppearance {
+    #[default]
+    Opaque,
+    /// Per-pixel alpha: only the elements show. On Windows the window has no frame.
+    Transparent,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TitlebarOptions {
     pub title: Option<SharedString>,
@@ -218,6 +229,9 @@ pub struct WindowOptions {
     /// Draw this window on the GPU (Direct3D 11 / OpenGL 3.3) instead of the software
     /// raster; `None` follows [`Application::gpu`] / the `BUI_GPU` variable.
     pub gpu: Option<bool>,
+    pub window_background: WindowBackgroundAppearance,
+    pub kind: WindowKind,
+    pub window_decorations: WindowDecorations,
 }
 
 /// The application entry point (gpui's `Application`).
@@ -364,6 +378,8 @@ pub struct App {
     remote: Option<(std::sync::mpsc::Sender<RemoteJob>, std::sync::mpsc::Receiver<RemoteJob>)>,
     /// Called when the user closes a window.
     close_hooks: Vec<Box<dyn FnMut(WindowId, &mut App)>>,
+    /// Called when a window gets or loses the keyboard focus.
+    activation_hooks: Vec<Box<dyn FnMut(WindowId, bool, &mut App)>>,
     /// Counts `notify_all` calls (see `WindowHandle::update`).
     notified: u64,
 }
@@ -400,8 +416,10 @@ unsafe extern "C" fn on_wake() {
 
 impl App {
     fn create(headless: bool) -> App {
+        crate::motion::start_clock(!headless);
         App { windows: Vec::new(), entities: Vec::new(), headless, globals: HashMap::new(), propagate: true,
-              remote: None, close_hooks: Vec::new(), notified: 0 }
+              remote: None, close_hooks: Vec::new(),
+              activation_hooks: Vec::new(), notified: 0 }
     }
 
     /// Create an entity (gpui's `cx.new`).
@@ -448,6 +466,12 @@ impl App {
                 if let Some(m) = options.window_min_size {
                     sys::BK_window_wm(*n, c"minsize".as_ptr(), (m.width.0 * w.scale) as f64,
                                       (m.height.0 * w.scale) as f64);
+                }
+                if options.window_background == WindowBackgroundAppearance::Transparent {
+                    sys::BK_window_wm(*n, c"transparent".as_ptr(), 1.0, 0.0);
+                }
+                for (key, a, b) in options.kind.requests(options.window_decorations) {
+                    sys::BK_window_wm(*n, key.as_ptr(), a, b);
                 }
                 if options.gpu == Some(true) {
                     sys::BK_window_set_gpu(*n, 1);
@@ -500,6 +524,12 @@ impl App {
     /// Call `f` whenever the user closes a window.
     pub fn on_window_closed(&mut self, f: impl FnMut(WindowId, &mut App) + 'static) {
         self.close_hooks.push(Box::new(f));
+    }
+
+    /// Call `f` with `true` when a window gets the keyboard focus and `false` when it
+    /// loses it (gpui's `observe_window_activation`).
+    pub fn on_window_activation(&mut self, f: impl FnMut(WindowId, bool, &mut App) + 'static) {
+        self.activation_hooks.push(Box::new(f));
     }
 
     /// Close a window (as if the user had).
@@ -580,7 +610,7 @@ impl App {
         }
         for id in 0..self.windows.len() {
             let Some(w) = self.windows[id].as_deref_mut() else { continue };
-            if !w.dirty {
+            if !w.dirty && !w.scrolled && !w.motion_frame && !w.sel_repaint {
                 continue;
             }
             match w.native {
@@ -597,7 +627,7 @@ impl App {
                 }
                 Some(_) => {}
                 None => {
-                    self.with_window(id, |w, app| w.rebuild(app));
+                    self.with_window(id, |w, app| w.update(app));
                 }
             }
         }
@@ -621,13 +651,18 @@ impl App {
             return (0, 0, Vec::new());
         };
         let (pw, ph) = w.phys;
+        // A native window's raster is what it presents next, and the pixels the kit compares frames with
+        // belong to it: drawing into it here would take the damage of frames nobody presented, and
+        // leave their old pixels on the screen. It gets its own raster, and the window repaints all.
+        let own = w.native.is_some();
         // SAFETY: the raster is sized to the window; pixels are copied out.
         let px = unsafe {
-            if w.raster.is_null() {
+            if !own && w.raster.is_null() {
                 w.raster = sys::BUI_raster_create(pw, ph);
             }
+            let target = if own { sys::BUI_raster_create(pw, ph) } else { w.raster };
             let _s = span(Phase::Widgets);
-            sys::BK_render(w.ctx, w.raster, pw, ph, 1);
+            sys::BK_render(w.ctx, target, pw, ph, 1);
             // decodes this frame asked for: wait, then draw what arrived
             let mut st = sys::BKImageStats::default();
             sys::BK_image_stats(&raw mut st);
@@ -639,23 +674,78 @@ impl App {
                 sys::BK_image_stats(&raw mut st);
             }
             if sys::BK_image_poll() > 0 {
-                sys::BK_render(w.ctx, w.raster, pw, ph, 0);
+                sys::BK_render(w.ctx, target, pw, ph, 0);
             }
-            let p = sys::BUI_raster_pixels(w.raster);
-            std::slice::from_raw_parts(p, (pw * ph) as usize).to_vec()
+            let p = sys::BUI_raster_pixels(target);
+            let px = std::slice::from_raw_parts(p, (pw * ph) as usize).to_vec();
+            if own {
+                sys::BUI_raster_free(target);
+                sys::BK_node_relayout(w.root); // the window's own next render covers everything again
+            }
+            px
         };
         self.flush(); // configure events from the render
         (pw as usize, ph as usize, px)
+    }
+
+    /// A frame the way a native window draws it, and the same frame in full: what the kit repaints
+    /// where something changed (on the pixels of the last frame), and a fresh render of everything.
+    /// They must be equal; a difference is a damaged region that was lost. (Tests: draw once first.)
+    #[doc(hidden)]
+    pub fn draw_partial_and_full(&mut self, id: WindowId) -> (usize, usize, Vec<u32>, Vec<u32>, Vec<[i32; 4]>) {
+        self.flush();
+        let Some(w) = self.windows.get_mut(id.0).and_then(|w| w.as_deref_mut()) else {
+            return (0, 0, Vec::new(), Vec::new(), Vec::new());
+        };
+        let (pw, ph) = w.phys;
+        // SAFETY: the rasters are sized to the window; pixels are copied out.
+        let (partial, full, damage) = unsafe {
+            if w.raster.is_null() {
+                w.raster = sys::BUI_raster_create(pw, ph);
+            }
+            sys::BK_render(w.ctx, w.raster, pw, ph, 0);
+            let p = sys::BUI_raster_pixels(w.raster);
+            let partial = std::slice::from_raw_parts(p, (pw * ph) as usize).to_vec();
+            // what a window's present would copy to the screen
+            let mut rects: *const [c_int; 4] = std::ptr::null();
+            let n = sys::BUI_raster_damage(w.raster, &raw mut rects);
+            let damage = if rects.is_null() { Vec::new() } else { std::slice::from_raw_parts(rects, n as usize).to_vec() };
+            let fresh = sys::BUI_raster_create(pw, ph);
+            sys::BK_render(w.ctx, fresh, pw, ph, 1);
+            let p = sys::BUI_raster_pixels(fresh);
+            let full = std::slice::from_raw_parts(p, (pw * ph) as usize).to_vec();
+            sys::BUI_raster_free(fresh);
+            (partial, full, damage)
+        };
+        self.flush();
+        (pw as usize, ph as usize, partial, full, damage)
+    }
+
+    /// Bring a window's layout up to date (what `element_bounds` reads) without drawing it: a native
+    /// window draws itself on its next frame, and [`draw`](Self::draw) would be a second, unpresented one.
+    ///
+    /// An off-screen window has no loop of its own: it is drawn, which is also what lays the kit out.
+    pub fn layout(&mut self, id: WindowId) {
+        let native = self.windows.get(id.0).and_then(|w| w.as_deref()).is_some_and(|w| w.native.is_some());
+        if native {
+            self.flush();
+            self.with_window(id.0, |w, app| w.update(app));
+        } else {
+            self.draw(id);
+        }
     }
 
     /// Move every window's CSS animation clock forward by `d`. Headless
     /// windows' clocks stand still otherwise, so tests step animations and
     /// transitions deterministically; native windows add `d` to real time.
     pub fn advance_clock(&mut self, d: std::time::Duration) {
+        crate::motion::advance(d.as_secs_f64());
         for w in self.windows.iter_mut().flatten() {
             w.clock.advance(d);
             if w.caches.anim.any() {
                 w.dirty = true;
+            } else if crate::motion::active() {
+                w.request_motion_frame();
             }
         }
         self.flush();
@@ -707,6 +797,21 @@ impl App {
         });
         self.input(window, |ctx, s| unsafe {
             sys::BK_release(ctx, (x * s) as c_int, (y * s) as c_int, sys::BK_BUTTON1 | mods);
+        });
+    }
+
+    /// Press the left button at (x, y) (and hold it: see [`simulate_release`](Self::simulate_release)).
+    pub fn simulate_press(&mut self, window: WindowId, x: f32, y: f32) {
+        self.simulate_mouse_move(window, x, y);
+        self.input(window, |ctx, s| unsafe {
+            sys::BK_press(ctx, (x * s) as c_int, (y * s) as c_int, 0);
+        });
+    }
+
+    /// Let go of the left button at (x, y).
+    pub fn simulate_release(&mut self, window: WindowId, x: f32, y: f32) {
+        self.input(window, |ctx, s| unsafe {
+            sys::BK_release(ctx, (x * s) as c_int, (y * s) as c_int, sys::BK_BUTTON1);
         });
     }
 
@@ -769,15 +874,22 @@ unsafe extern "C" fn on_emit(data: *mut c_void, node: *mut sys::BKNode, kind: c_
     with_running_app(|app| app.flush());
 }
 
+static FRAMES_PRESENTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Frames drawn by every window so far (full renders and redraws of moving
+/// values alike): a frame counter for benchmarks and overlays, readable from
+/// any thread.
+pub fn frames_presented() -> u64 {
+    FRAMES_PRESENTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 unsafe extern "C" fn on_timer(data: *mut c_void, _win: *mut sys::BKWindow, _id: c_int) {
     let id = data as usize;
     let ran = with_running_app(|app| {
         app.drain();
         app.with_window(id, |w, app| {
             w.timer_pending = false;
-            if w.dirty {
-                w.rebuild(app);
-            }
+            w.update(app);
         });
         app.flush();
     });
@@ -801,9 +913,7 @@ unsafe extern "C" fn on_frame(data: *mut c_void, _win: *mut sys::BKWindow) {
         app.drain();
         app.with_window(id, |w, app| {
             w.frame_pending = false;
-            if w.dirty {
-                w.rebuild(app);
-            }
+            w.update(app);
         });
         app.flush();
     });
@@ -815,14 +925,25 @@ unsafe extern "C" fn on_close(data: *mut c_void, _win: *mut sys::BKWindow) -> c_
         if let Some(w) = app.windows.get_mut(id).and_then(|w| w.as_deref_mut()) {
             w.closed = true;
         }
-        let mut hooks = std::mem::take(&mut app.close_hooks);
-        for h in hooks.iter_mut() {
-            h(WindowId(id), app);
-        }
-        hooks.append(&mut app.close_hooks);
-        app.close_hooks = hooks;
+        run_hooks(app, |a| &mut a.close_hooks, |h, app| h(WindowId(id), app));
     });
     1
+}
+
+unsafe extern "C" fn on_focus(data: *mut c_void, _win: *mut sys::BKWindow, active: c_int) {
+    let id = data as usize;
+    with_running_app(|app| {
+        run_hooks(app, |a| &mut a.activation_hooks, |h, app| h(WindowId(id), active != 0, app));
+    });
+}
+
+/// Call each hook; hooks a hook adds run from the next call.
+fn run_hooks<H: ?Sized>(app: &mut App, list: fn(&mut App) -> &mut Vec<Box<H>>,
+                        mut call: impl FnMut(&mut H, &mut App)) {
+    let mut hooks = std::mem::take(list(app));
+    hooks.iter_mut().for_each(|h| call(h, app));
+    hooks.append(list(app));
+    *list(app) = hooks;
 }
 
 /// Run `f` with the app, unless there is none (before the loop, headless)
@@ -842,6 +963,11 @@ fn with_running_app(f: impl FnOnce(&mut App)) -> bool {
 
 unsafe extern "C" fn noop(_: *mut c_void) {}
 
+unsafe extern "C" {
+    /// The C runtime's `free`, for strings the kit allocates (the clipboard).
+    fn free(p: *mut c_void);
+}
+
 // ==========================================================================
 // Windows
 
@@ -852,6 +978,11 @@ pub struct Window {
     id: usize,
     ctx: *mut sys::BKContext,
     canvas: *mut sys::BKNode,
+    /// The canvases over the first one (see `Painter`: items that overlap a
+    /// widget are drawn on a canvas above it), made as needed.
+    overlays: Vec<*mut sys::BKNode>,
+    /// `canvas`, then `overlays`: what `Painter::flush` fills.
+    canvases: Vec<*mut sys::BKNode>,
     root: *mut sys::BKNode,
     opaque: bool,
     native: Option<*mut sys::BKWindow>,
@@ -868,9 +999,19 @@ pub struct Window {
     state: UiState,
     widgets: Widgets,
     dirty: bool,
+    /// Only scroll offsets changed since the last frame: it is placed again, not rendered
+    /// (when [`scroll_free`](Self::scroll_free)).
+    scrolled: bool,
+    /// The last render did not depend on scroll positions: nothing read them (`scroll_offset`,
+    /// `bounds_of`), nothing animates and no container sticks to its end.
+    scroll_free: bool,
+    /// A view read a scroll position or a placement this render (it must render again to follow it).
+    scroll_read: std::cell::Cell<bool>,
     timer_pending: bool,
     frame_pending: bool,
     animation_frame: bool,
+    /// The next frame is Motion's values alone: a redraw (no render or layout).
+    motion_frame: bool,
     /// CSS animation time (virtual in headless windows).
     clock: crate::anim::Clock,
     vsync: bool,
@@ -880,6 +1021,22 @@ pub struct Window {
     pointer: (f32, f32),
     pressed: Vec<Key>,
     press_button: MouseButton,
+    /// A scrollbar thumb being dragged: the container and where on the thumb it was grabbed.
+    sb_drag: Option<(Key, f32)>,
+    /// `data-stick="bottom"` containers: the scroll range last frame (to see when content grew).
+    stuck: HashMap<Key, f32>,
+    /// The text selection (see `selection`).
+    selector: Selector,
+    /// The press in progress changed only the text selection: nothing answers to it, so it and its
+    /// release render nothing (the selection is drawn on the frame as it is).
+    press_quiet: bool,
+    /// The next `present` shows the frame it already showed (a selection change): its text boxes are
+    /// the same, so the selection's index of them stays.
+    same_frame: bool,
+    /// The selection changed: the next frame paints it again (no render, no layout).
+    sel_repaint: bool,
+    /// Called when the selection changes, with the selected text if any.
+    selection_hooks: Vec<Box<dyn FnMut(Option<&str>, &mut Window, &mut App)>>,
 }
 
 impl Window {
@@ -912,6 +1069,8 @@ impl Window {
                 id,
                 ctx,
                 canvas,
+                overlays: Vec::new(),
+                canvases: vec![canvas],
                 root,
                 opaque: false,
                 native: None,
@@ -925,9 +1084,13 @@ impl Window {
                 state: UiState::default(),
                 widgets: Widgets::new(),
                 dirty: true,
+                scrolled: false,
+                scroll_free: false,
+                scroll_read: std::cell::Cell::new(false),
                 timer_pending: false,
                 frame_pending: false,
                 animation_frame: false,
+                motion_frame: false,
                 clock: crate::anim::Clock::new(!headless),
                 vsync: true,
                 closed: false,
@@ -936,6 +1099,13 @@ impl Window {
                 pointer: (-1.0, -1.0),
                 pressed: Vec::new(),
                 press_button: MouseButton::Left,
+                sb_drag: None,
+                stuck: HashMap::new(),
+                selector: Selector::default(),
+                press_quiet: false,
+                same_frame: false,
+                sel_repaint: false,
+                selection_hooks: Vec::new(),
             };
             if headless {
                 win.scale = sys::BK_scale().max(1.0);
@@ -947,7 +1117,8 @@ impl Window {
                     return Err("could not create a native window".into());
                 }
                 let cb = sys::BKWindowCallbacks { data: id as *mut c_void, on_timer: Some(on_timer),
-                                                  on_close: Some(on_close), on_frame: Some(on_frame) };
+                                                  on_close: Some(on_close), on_frame: Some(on_frame),
+                                                  on_focus: Some(on_focus) };
                 sys::BK_window_set_callbacks(n, &cb);
                 win.scale = sys::BK_scale().max(0.5);
                 win.phys = ((w * win.scale).round() as i32, (h * win.scale).round() as i32);
@@ -999,7 +1170,7 @@ impl Window {
     /// Whether the window will render again (something changed or is
     /// animating). False for an idle window.
     pub fn needs_render(&self) -> bool {
-        self.dirty
+        self.dirty || self.scrolled
     }
 
     /// Frames presented to the native window so far.
@@ -1068,6 +1239,7 @@ impl Window {
 
     /// Scroll offset of a scroll container with `.id(id)`.
     pub fn scroll_offset(&self, id: &str) -> (f32, f32) {
+        self.scroll_read.set(true);
         self.state.scroll.get(&id_key(id)).copied().unwrap_or((0.0, 0.0))
     }
 
@@ -1081,6 +1253,7 @@ impl Window {
     /// placed); inside an event listener the frame is lent out, so a view
     /// keeps what it read while rendering.
     pub fn bounds_of(&self, id: &str) -> Option<Bounds<f32>> {
+        self.scroll_read.set(true); // placements move with scroll
         let f = self.frame.as_ref()?;
         f.by_key().get(&id_key(id)).map(|&i| f.nodes[i].bounds)
     }
@@ -1090,6 +1263,129 @@ impl Window {
         let c = CString::new(text.replace('\0', "")).unwrap_or_default();
         // SAFETY: a live context and a NUL-terminated string the kit copies.
         unsafe { sys::BK_clipboard_set(self.ctx, c.as_ptr()) };
+    }
+
+    /// The clipboard's text (what [`write_clipboard`](Self::write_clipboard) and the user's copies put there).
+    pub fn read_clipboard(&self) -> Option<String> {
+        // SAFETY: a live context; the kit returns a malloc'd NUL-terminated string (or NULL) we free.
+        unsafe {
+            let p = sys::BK_clipboard_get(self.ctx);
+            if p.is_null() {
+                return None;
+            }
+            let s = CStr::from_ptr(p).to_string_lossy().into_owned();
+            free(p.cast());
+            Some(s)
+        }
+    }
+
+    // -- text selection ------------------------------------------------------------------------
+
+    /// The text selected in the window's elements (press and drag, double-click, `Ctrl+A`), if any:
+    /// block boundaries are newlines, whitespace is as rendered. Text fields keep their own selection.
+    pub fn selected_text(&mut self) -> Option<String> {
+        let f = self.frame.as_ref()?;
+        self.selector.text(f, &self.caches.styles)
+    }
+
+    /// Select all the selectable text (like `Ctrl+A` on a page).
+    pub fn select_all(&mut self) {
+        if let Some(f) = &self.frame {
+            if self.selector.select_all(f, &self.caches.styles) {
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Drop the selection (like `Escape`).
+    pub fn clear_selection(&mut self) {
+        if self.selector.clear() {
+            self.dirty = true;
+        }
+    }
+
+    /// Call `f` with the selected text (None: nothing selected) whenever the user changes the selection:
+    /// pressing, dragging, `Ctrl+A`, `Escape`, clicking away. Not for [`select_all`](Self::select_all)
+    /// and [`clear_selection`](Self::clear_selection): their caller knows.
+    pub fn on_selection_change(&mut self, f: impl FnMut(Option<&str>, &mut Window, &mut App) + 'static) {
+        self.selection_hooks.push(Box::new(f));
+    }
+
+    /// The cursor the window shows over its elements now (the kit's cursor id: 0 arrow, 3 I-beam ...).
+    #[doc(hidden)]
+    pub const fn cursor_style(&self) -> i32 {
+        self.cursor
+    }
+
+    /// A text field (the kit's editor) has the keyboard.
+    fn text_field_focused(&self) -> bool {
+        // SAFETY: a live context.
+        unsafe { !sys::BK_focus(self.ctx).is_null() }
+    }
+
+    /// The selection changed by the user: draw it (the frame again, no render) and tell the hooks.
+    fn selection_changed(&mut self, app: &mut App, repaint: bool) {
+        if repaint {
+            // at the next frame, as a redraw of Motion's values is: a native window draws what is
+            // presented from its frame callback
+            self.sel_repaint = true;
+            self.animation_frame = true;
+        }
+        if self.selection_hooks.is_empty() {
+            return;
+        }
+        let text = self.selected_text();
+        let mut hooks = std::mem::take(&mut self.selection_hooks);
+        for h in &mut hooks {
+            h(text.as_deref(), self, app);
+        }
+        hooks.append(&mut self.selection_hooks);
+        self.selection_hooks = hooks;
+    }
+
+    /// Nothing on screen answers to a press on `path` or to the focus moving to it: no listeners,
+    /// `.active()` / `.focus()` refinements or Motion props on it, its ancestors or the element that
+    /// loses the focus, and no `:active` / `:focus` rule in the sheet.
+    fn press_is_quiet(&self, path: &[Key]) -> bool {
+        let Some(f) = &self.frame else { return false };
+        let plain = |k: &Key| f.by_key().get(k).and_then(|&i| f.el(i)).is_none_or(|e| !e.reactive);
+        !self.caches.state_rules && path.iter().all(plain) && self.state.focused.as_ref().is_none_or(plain)
+    }
+
+    fn select_press(&mut self, x: f32, y: f32, shift: bool) -> bool {
+        let Some(f) = &self.frame else { return false };
+        let hit = f.hit_box(x, y, &self.caches.styles);
+        let mut cx = Cx { frame: f, styles: &self.caches.styles, text: &mut self.caches.text };
+        self.selector.press(&mut cx, x, y, hit, shift)
+    }
+
+    fn select_drag(&mut self, x: f32, y: f32) -> bool {
+        let Some(f) = &self.frame else { return false };
+        let mut cx = Cx { frame: f, styles: &self.caches.styles, text: &mut self.caches.text };
+        self.selector.drag_to(&mut cx, x, y)
+    }
+
+    /// `Ctrl+A`, `Ctrl+C` and `Escape` on the document's selection: not while a text field has the
+    /// keyboard (it owns them). (`Ctrl` is the Command key on macOS: the kit maps it.)
+    fn selection_key(&mut self, ks: &Keystroke, app: &mut App) {
+        if self.text_field_focused() {
+            return;
+        }
+        let ctrl = ks.modifiers.control && !ks.modifiers.alt;
+        let changed = match ks.key.to_ascii_lowercase().as_str() {
+            "escape" => self.selector.clear(),
+            "a" if ctrl => self.frame.as_ref().is_some_and(|f| self.selector.select_all(f, &self.caches.styles)),
+            "c" if ctrl => {
+                if let Some(t) = self.selected_text() {
+                    self.write_clipboard(&t);
+                }
+                false
+            }
+            _ => false,
+        };
+        if changed {
+            self.selection_changed(app, true);
+        }
     }
 
     /// One UI unit (Blender's `UI_UNIT_Y`, a row of widgets) in logical pixels.
@@ -1108,6 +1404,8 @@ impl Window {
         // the view is moved out while it renders (it gets `&mut Window`)
         let Some(view) = self.view.take() else { return };
         self.dirty = false;
+        self.scrolled = false;
+        self.scroll_read.set(false);
         let root = {
             let _s = span(Phase::Render);
             crate::hooks::begin(self.id);
@@ -1123,31 +1421,167 @@ impl Window {
         let widgets = &mut self.widgets;
         let recycle = self.frame.take().unwrap_or_default();
         self.caches.anim.begin(self.clock.now());
-        let frame = layout(root, vp, &self.state, &mut self.caches, recycle,
-                           &mut |key, spec| widgets.ensure(canvas, key, spec, scale));
-        // CSS animations / transitions still moving: render again next frame
-        // (nothing running: no frames, so an idle window costs no CPU)
-        let animating = self.caches.anim.end();
-        // `@container`: sizes changed under a query: render once more
-        let container_changed = self.caches.after_layout(&frame);
-        let p = &mut self.painter;
-        p.reset();
+        let mut frame = layout(root, vp, &self.state, &mut self.caches, recycle,
+                           &mut |key, ask| match ask {
+                               crate::widgets::WidgetAsk::Ensure(spec) => widgets.ensure(canvas, key, spec, scale),
+                               crate::widgets::WidgetAsk::Height(w) => (0.0, widgets.height_for(key, w, scale)),
+                           });
+        // CSS animations / transitions still moving: render again next frame;
+        // Motion's values alone: redraw (nothing running: no frames, so an
+        // idle window costs no CPU)
+        let (css, motion) = self.caches.anim.end();
+        // `@container`: sizes changed under a query, or an element came into
+        // view (`whileInView`): render once more
+        let (in_view, flipped) = self.caches.anim.after_layout(&frame, &self.caches.styles, vp);
+        // useScroll: the values follow the scroll; what they move draws again
+        let scrolled = crate::motion::update_scroll(&frame);
+        if flipped {
+            // a layout animation starts where the element was seen: this frame too
+            self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp);
+        }
+        let container_changed = self.caches.after_layout(&frame) | in_view;
+        // `data-stick="bottom"`: a scroll container that grew goes to its end
+        // (`"bottom"`: only if it was at the end; `"always"`: whatever it showed)
+        let mut stuck = false;
+        let mut sticks = false;
+        for i in 0..frame.nodes.len() {
+            let Some(mode) = frame.attr(i, "data-stick") else { continue };
+            sticks = true;
+            let always = mode == "always";
+            let n = &frame.nodes[i];
+            let (key, range, pos) = (n.key, n.scroll_range.1, n.scroll_pos.1);
+            let prev = self.stuck.insert(key, range).unwrap_or(0.0);
+            if range > prev + 0.5 && (always || pos >= prev - 2.0) && pos < range - 0.5 {
+                self.state.scroll.insert(key, (n.scroll_pos.0, range));
+                stuck = true;
+            }
+        }
+        self.scroll_free = !sticks && !self.scroll_read.get() && !self.caches.anim.tracks_placement();
+        self.present(app, frame, None);
+        if stuck {
+            self.dirty = true;
+        }
+        // state of components that didn't render is freed; effects run now
+        crate::hooks::end();
+        if container_changed {
+            self.dirty = true;
+        }
+        if css {
+            self.request_animation_frame();
+        } else if motion || scrolled {
+            self.request_motion_frame();
+        }
+    }
+
+    /// A frame of Motion's values alone: the last frame's elements, with
+    /// their values set again and painted (no render, cascade or layout).
+    fn redraw(&mut self, app: &mut App) {
+        self.motion_frame = false;
+        let Some(mut frame) = self.frame.take() else { return };
+        let vp = self.viewport();
+        if !self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp) {
+            self.frame = Some(frame);
+            self.dirty = true;
+            return self.rebuild(app);
+        }
+        // no layout ran: the widgets are the last frame's
+        self.widgets.keep();
+        // the boxes the values changed: only they are painted again
+        let dirty = self.caches.anim.take_redrawn();
+        self.present(app, frame, Some(&dirty));
+        self.caches.anim.give_redrawn(dirty);
+        if crate::motion::active() {
+            self.request_motion_frame();
+        }
+    }
+
+    /// A frame after scrolling alone: the last frame placed again with the new offsets and painted
+    /// (no render, cascade or layout), unless something follows the scroll positions: then a render.
+    fn scroll_frame(&mut self, app: &mut App) {
+        self.scrolled = false;
+        let vp = self.viewport();
+        let placed = self.scroll_free && match self.frame.take() {
+            Some(mut frame) => {
+                let ok = crate::layout::replace(&mut frame, vp, &self.state, &mut self.caches);
+                self.frame = Some(frame);
+                ok
+            }
+            None => false,
+        };
+        if !placed {
+            self.dirty = true;
+            return self.rebuild(app);
+        }
+        let Some(frame) = self.frame.take() else { return };
+        self.widgets.keep(); // no layout ran: the widgets are the last frame's
+        self.same_frame = true; // the same boxes: the selection's index of them stays
+        self.present(app, frame, None);
+    }
+
+    /// Draw again on the next display refresh, for Motion's values alone.
+    fn request_motion_frame(&mut self) {
+        self.motion_frame = true;
+        self.animation_frame = true;
+    }
+
+    /// Render the window when it needs it: in full, or a redraw.
+    fn update(&mut self, app: &mut App) {
+        if self.dirty {
+            self.rebuild(app);
+        } else if self.scrolled {
+            self.scroll_frame(app);
+        } else if self.sel_repaint {
+            // the selection alone: the frame again, painted
+            if let Some(frame) = self.frame.take() {
+                self.widgets.keep(); // no layout ran: the widgets are the last frame's
+                self.same_frame = true;
+                self.present(app, frame, None);
+            }
+        } else if self.motion_frame {
+            self.redraw(app);
+        }
+    }
+
+    /// Paint `frame` and show it (the widgets placed, the hover updated).
+    /// `dirty`: a redraw's boxes to paint again (the rest kept), when it can.
+    fn present(&mut self, app: &mut App, frame: Frame, dirty: Option<&[bool]>) {
+        FRAMES_PRESENTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.sel_repaint = false; // whatever is painted has the selection
+        let vp = self.viewport();
+        let scale = self.scale;
+        // a selection follows its text into the new frame (and goes with it)
+        if !std::mem::take(&mut self.same_frame) {
+            self.selector.invalidate();
+        }
+        self.painter.sel = self.selector.paint(&frame, &self.caches.styles);
         {
             let _s = span(Phase::Paint);
-            paint_frame(&frame, &self.caches.styles, &mut self.caches.text, p, vp, self.scale, app);
+            let gpu = self.is_gpu();
+            let p = &mut self.painter;
+            p.set_gpu(gpu);
+            let kept = dirty.is_some_and(|d| p.repaint(&frame, &self.caches.styles, &mut self.caches.text, d, vp, app));
+            if !kept {
+                p.reset();
+                paint_frame(&frame, &self.caches.styles, &mut self.caches.text, p, vp, self.scale, app);
+            }
         }
         {
             let _s = span(Phase::Flush);
-            p.flush(canvas, scale);
+            self.grow_canvases(self.painter.segment_count());
+            self.painter.flush(&self.canvases, scale);
         }
         let _rest = span(Phase::Widgets);
         let mut at = HashMap::new(); // empty (no allocation) without form widgets
-        for n in &frame.nodes {
-            if matches!(n.content, Content::Widget(_)) {
-                at.insert(n.key, (n.bounds, n.clip, n.visible));
+        if frame.nodes.iter().any(|n| matches!(n.content, Content::Widget(_))) {
+            let order = self.painter.widget_order();
+            for n in &frame.nodes {
+                if matches!(n.content, Content::Widget(_)) {
+                    let (seg, rank) = order.get(&n.key).copied().unwrap_or((0, u32::MAX));
+                    at.insert(n.key, (n.bounds, n.clip, n.visible, seg, rank));
+                }
             }
         }
-        self.widgets.place(&at, scale);
+        self.widgets.place(&at, &self.canvases, scale);
         // an opaque <html> background covers the window: the kit can skip its clear
         let styles = &self.caches.styles;
         let opaque = frame.nodes.first()
@@ -1163,17 +1597,30 @@ impl Window {
         self.update_hover(app, false);
         drop(_rest);
         prof::frame_done();
-        // state of components that didn't render is freed; effects run now
-        crate::hooks::end();
-        if container_changed {
-            self.dirty = true;
-        }
-        if animating {
-            self.request_animation_frame();
-        }
     }
 
     // -- events ------------------------------------------------------------------------------
+
+    /// At least `n` canvases (the ones over the first are made here, above
+    /// the rest, and take the pointer only where they have items).
+    fn grow_canvases(&mut self, n: usize) {
+        while self.canvases.len() < n {
+            // SAFETY: a fresh canvas added to our root, like the first one.
+            let c = unsafe {
+                let c = sys::BK_node_new(c"canvas".as_ptr());
+                sys::BK_node_add(self.root, c, -1);
+                sys::BK_geom_set_manager(c, sys::BK_GEOM_PLACE);
+                sys::BK_geom_set(c, c"relwidth".as_ptr(), 1.0);
+                sys::BK_geom_set(c, c"relheight".as_ptr(), 1.0);
+                sys::BK_set_num(c, c"events".as_ptr(), 1.0);
+                sys::BK_set_num(c, c"hititems".as_ptr(), 1.0);
+                sys::BK_set_num(c, c"cursor".as_ptr(), f64::from(self.cursor));
+                c
+            };
+            self.overlays.push(c);
+            self.canvases.push(c);
+        }
+    }
 
     /// Element keys from the root to the deepest element under the pointer.
     fn path_at(&self, x: f32, y: f32) -> Vec<Key> {
@@ -1206,27 +1653,54 @@ impl Window {
         }
     }
 
+    /// The element keys under the pointer, and (when the pointer moved: `measure`) whether it is over
+    /// text that can be selected.
+    fn hover_target(&mut self, measure: bool) -> (Vec<Key>, Option<bool>) {
+        let Some(f) = &self.frame else { return (Vec::new(), Some(false)) };
+        let (x, y) = self.pointer;
+        let hit = f.hit_box(x, y, &self.caches.styles);
+        let path = f.path_to(hit).into_iter().map(|i| f.nodes[i].key).collect();
+        let over = measure.then(|| hit.is_some_and(|i| {
+            let mut cx = Cx { frame: f, styles: &self.caches.styles, text: &mut self.caches.text };
+            crate::selection::is_text(&mut cx, i, x, y)
+        }));
+        (path, over)
+    }
+
+    /// The pointer's cursor: that of the deepest element under it that sets one
+    /// (`cursor: auto` sets none), else the text cursor over selectable text.
+    /// `over_text` None: not measured (a frame, not a pointer move): keep the I-beam if it showed.
+    fn set_cursor(&mut self, path: &[Key], over_text: Option<bool>) {
+        let Some(f) = &self.frame else { return };
+        let text = over_text.unwrap_or(self.cursor == crate::style::CURSOR_TEXT);
+        let cursor = path.iter().rev()
+            .find_map(|k| f.by_key().get(k).and_then(|&i| self.caches.styles[f.nodes[i].style].cursor))
+            .unwrap_or(if text { crate::style::CURSOR_TEXT } else { 0 });
+        if cursor != self.cursor {
+            self.cursor = cursor;
+            for &c in &self.canvases {
+                unsafe { sys::BK_set_num(c, c"cursor".as_ptr(), cursor as f64) };
+            }
+        }
+    }
+
     fn update_hover(&mut self, app: &mut App, fire: bool) {
-        let path = self.path_at(self.pointer.0, self.pointer.1);
+        let (path, over_text) = self.hover_target(fire);
+        self.set_cursor(&path, over_text);
         let now: std::collections::HashSet<Key> = path.iter().copied().collect();
         if now == self.state.hovered {
             return;
         }
         let entered: Vec<Key> = now.difference(&self.state.hovered).copied().collect();
         let left: Vec<Key> = self.state.hovered.difference(&now).copied().collect();
+        // a restyle (a render) only where something answers to the pointer: a `:hover` rule in the
+        // sheet, or a `.hover()` refinement / Motion props on an element it entered or left
         let restyle = self.frame.as_ref().is_some_and(|f| {
-            entered.iter().chain(&left).any(|k| f.by_key().get(k).is_some())
+            entered.iter().chain(&left).any(|k| {
+                f.by_key().get(k).is_some_and(|&i| self.caches.state_rules || f.el(i).is_none_or(|e| e.reactive))
+            })
         });
         self.state.hovered = now;
-        // cursor of the deepest element that sets one
-        if let Some(f) = &self.frame {
-            let cursor = path.iter().rev()
-                .find_map(|k| f.by_key().get(k).and_then(|&i| self.caches.styles[f.nodes[i].style].cursor)).unwrap_or(0);
-            if cursor != self.cursor {
-                self.cursor = cursor;
-                unsafe { sys::BK_set_num(self.canvas, c"cursor".as_ptr(), cursor as f64) };
-            }
-        }
         if fire {
             // hover listeners don't bubble: each element hears its own enter / leave
             for (keys, on) in [(left, false), (entered, true)] {
@@ -1271,9 +1745,13 @@ impl Window {
     }
 
     fn dispatch(&mut self, ev: RawEvent, app: &mut App) {
-        if ev.node != self.canvas {
+        if !self.canvases.contains(&ev.node) {
             self.widget_event(ev, app);
             return;
+        }
+        // a text field took the focus: its own selection counts, the document's goes
+        if self.selector.has_selection() && self.text_field_focused() && self.selector.clear() {
+            self.selection_changed(app, true);
         }
         let (x, y) = (ev.a as f32 / self.scale, ev.b as f32 / self.scale);
         match ev.kind {
@@ -1286,7 +1764,17 @@ impl Window {
             }
             sys::BK_EV_MOTION | sys::BK_EV_ENTER => {
                 self.pointer = (x, y);
+                if self.sb_drag.is_some() {
+                    self.drag_scrollbar(y);
+                    return;
+                }
+                if self.caches.anim.pointer_move(x, y) {
+                    self.request_motion_frame(); // a drag: a redraw, no render
+                }
                 self.update_hover(app, true);
+                if self.select_drag(x, y) {
+                    self.selection_changed(app, true);
+                }
                 let (modifiers, _) = self.pointer_event(&ev.text);
                 let pressed = (!self.pressed.is_empty()).then_some(self.press_button);
                 let e = MouseMoveEvent { position: point(px(x), px(y)), pressed_button: pressed, modifiers };
@@ -1302,19 +1790,33 @@ impl Window {
                 self.pointer = (x, y);
                 let (modifiers, button) = self.pointer_event(&ev.text);
                 let path = self.path_at(x, y);
+                if button == MouseButton::Left && self.grab_scrollbar(&path, x, y) {
+                    return;
+                }
+                let selected = button == MouseButton::Left && self.select_press(x, y, modifiers.shift);
+                let quiet = self.press_is_quiet(&path);
+                self.press_quiet = quiet;
                 self.press_button = button;
                 self.state.active = path.iter().copied().collect();
                 self.set_focus(&path);
                 self.pressed = path.clone();
-                self.dirty = true;
+                self.dirty |= !quiet;
+                self.caches.anim.pointer_down(&path, x, y);
                 let e = MouseDownEvent { button, position: point(px(x), px(y)), modifiers,
                                          click_count: if ev.kind == sys::BK_EV_DOUBLE { 2 } else { 1 } };
                 if let Some(&deepest) = path.last() {
                     self.emit(app, deepest, &e, |l| l.mouse_down.iter()
                         .filter(|(b, _)| b.is_none_or(|b| b == button)).map(|(_, f)| f).collect());
                 }
+                if selected {
+                    // a press that renders draws the selection with it; a quiet one draws it now
+                    self.selection_changed(app, quiet);
+                }
             }
             sys::BK_EV_RELEASE => {
+                if self.sb_drag.take().is_some() {
+                    return;
+                }
                 let (modifiers, button) = self.pointer_event(&ev.text);
                 let path = self.path_at(x, y);
                 let up = MouseUpEvent { button, position: point(px(x), px(y)), modifiers };
@@ -1327,8 +1829,11 @@ impl Window {
                     .map(|(a, _)| *a).last();
                 self.pressed.clear();
                 self.state.active.clear();
-                self.dirty = true;
-                if let (Some(target), MouseButton::Left) = (common, button) {
+                self.dirty |= !std::mem::take(&mut self.press_quiet);
+                self.caches.anim.pointer_up();
+                // a press that selected text is a selection, not a click (as in a browser)
+                let dragged = button == MouseButton::Left && self.selector.release();
+                if let (Some(target), MouseButton::Left, false) = (common, button, dragged) {
                     self.toggle_details(target);
                     let down = MouseDownEvent { button, position: point(px(x), px(y)), modifiers, click_count: 1 };
                     let e = ClickEvent { down, up };
@@ -1354,7 +1859,16 @@ impl Window {
                 let target = self.state.focused.or_else(|| self.state_deepest())
                     .unwrap_or(crate::layout::ROOT_KEY);
                 if ev.kind == sys::BK_EV_KEY {
+                    self.selection_key(&ks, app);
+                    let page = match ks.key.to_ascii_lowercase().as_str() {
+                        "pagedown" => 1.0,
+                        "pageup" => -1.0,
+                        _ => 0.0,
+                    };
                     self.emit(app, target, &KeyDownEvent { keystroke: ks }, |l| l.key_down.iter().collect());
+                    if page != 0.0 {
+                        self.scroll_page(page);
+                    }
                 } else {
                     self.emit(app, target, &KeyUpEvent { keystroke: ks }, |l| l.key_up.iter().collect());
                 }
@@ -1387,6 +1901,63 @@ impl Window {
         }
     }
 
+    /// PageUp / PageDown: a page of the innermost scroll container under the pointer.
+    fn scroll_page(&mut self, dir: f32) {
+        let path = self.path_at(self.pointer.0, self.pointer.1);
+        let Some(f) = &self.frame else { return };
+        let page = path.iter().rev()
+            .filter_map(|k| f.by_key().get(k))
+            .map(|&i| &f.nodes[i])
+            .find(|n| n.scroll_range.1 > 0.0)
+            .map(|n| n.bounds.size.height * 0.9);
+        if let Some(page) = page {
+            self.scroll_by(&path, dir * page, false);
+        }
+    }
+
+    /// The vertical scrollbar of a container along `path`: (key, thumb top, thumb height, track top, track height).
+    fn scrollbar_at(&self, path: &[Key], x: f32) -> Option<(Key, f32, f32, f32, f32)> {
+        let f = self.frame.as_ref()?;
+        for key in path.iter().rev() {
+            let Some(&i) = f.by_key().get(key) else { continue };
+            let n = &f.nodes[i];
+            let ry = n.scroll_range.1;
+            let b = n.bounds;
+            if ry <= 0.0 || x < b.origin.x + b.size.width - 10.0 || x > b.origin.x + b.size.width {
+                continue;
+            }
+            let h = b.size.height;
+            let th = (h * h / (h + ry)).max(16.0);
+            let ty = b.origin.y + (h - th) * (n.scroll_pos.1 / ry);
+            return Some((*key, ty, th, b.origin.y, h));
+        }
+        None
+    }
+
+    /// A press on a scrollbar starts a drag (on the track it first centers the thumb there).
+    fn grab_scrollbar(&mut self, path: &[Key], x: f32, y: f32) -> bool {
+        let Some((key, ty, th, _, _)) = self.scrollbar_at(path, x) else { return false };
+        let grab = if y >= ty && y <= ty + th { y - ty } else { th / 2.0 };
+        self.sb_drag = Some((key, grab));
+        self.drag_scrollbar(y);
+        true
+    }
+
+    fn drag_scrollbar(&mut self, y: f32) {
+        let Some((key, grab)) = self.sb_drag else { return };
+        let Some(f) = &self.frame else { return };
+        let Some(&i) = f.by_key().get(&key) else { return };
+        let n = &f.nodes[i];
+        let (rx, ry) = n.scroll_range;
+        let h = n.bounds.size.height;
+        let th = (h * h / (h + ry)).max(16.0);
+        let free = (h - th).max(1.0);
+        let sy = (((y - grab - n.bounds.origin.y) / free) * ry).clamp(0.0, ry);
+        let sx = n.scroll_pos.0.clamp(0.0, rx);
+        self.state.scroll.insert(key, (sx, sy));
+        self.scrolled = true;
+    }
+
     /// Scroll the innermost scroll container along `path` that can move.
     fn scroll_by(&mut self, path: &[Key], dy: f32, horizontal: bool) {
         let Some(f) = &self.frame else { return };
@@ -1403,7 +1974,7 @@ impl Window {
             let (nx, ny) = snap(f, &self.caches.styles, i, (sx, sy), (nx, ny));
             if (nx, ny) != (sx, sy) {
                 self.state.scroll.insert(*key, (nx, ny));
-                self.dirty = true;
+                self.scrolled = true;
                 return;
             }
         }

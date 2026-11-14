@@ -1,5 +1,7 @@
 /* BUI Lua binding: module entry point and constant registration.
  * SPDX-License-Identifier: GPL-2.0-or-later */
+#include <ctype.h>
+
 #include "bui_internal.h"
 
 /* Numeric property keys (for node:get() dispatch) */
@@ -16,6 +18,7 @@ static const char *g_numeric_keys[] = {
   "rows", "cols", "wrap", "readonly", "password",
   "x", "y", "w", "h",
   "html", "editable",
+  "weight", "scroll", "tile", "current", "default",
   NULL
 };
 
@@ -50,6 +53,57 @@ static int l_set_scale(lua_State *L) {
 static int l_set_theme(lua_State *L) {
   int ok = BK_set_theme(luaL_checkstring(L, 1));
   lua_pushinteger(L, ok);
+  return 1;
+}
+
+/* bui.load_theme(source): register the themes of a theme file (a path) or of theme JSON text.
+ * Returns how many were added, or nil and the message (the line and column of a mistake). */
+static int l_load_theme(lua_State *L) {
+  const char *src = luaL_checkstring(L, 1);
+  while (isspace((unsigned char)*src)) src++;
+  const int n = (*src == '{') ? BK_theme_load_json(lua_tostring(L, 1)) : BK_theme_load_file(lua_tostring(L, 1));
+  if (n < 0) {
+    lua_pushnil(L);
+    lua_pushstring(L, BK_theme_error());
+    return 2;
+  }
+  lua_pushinteger(L, n);
+  return 1;
+}
+
+/* bui.themes(): the names of the loaded themes. */
+static int l_themes(lua_State *L) {
+  lua_newtable(L);
+  for (int i = 0; BK_theme_at(i); i++) {
+    lua_pushstring(L, BK_theme_at(i));
+    lua_rawseti(L, -2, i + 1);
+  }
+  return 1;
+}
+
+/* bui.set_theme_color(key, r, g, b [, a]): one color of the active theme (0..1); false for an unknown key. */
+static int l_set_theme_color(lua_State *L) {
+  const float rgba[4] = {(float)luaL_checknumber(L, 2), (float)luaL_checknumber(L, 3),
+                         (float)luaL_checknumber(L, 4), (float)luaL_optnumber(L, 5, 1.0)};
+  lua_pushboolean(L, BK_theme_set_color(luaL_checkstring(L, 1), rgba));
+  return 1;
+}
+
+/* bui.set_theme_value(key, number | boolean): roundness, border.width, corners.*, ...; false for an unknown key. */
+static int l_set_theme_value(lua_State *L) {
+  const double v = lua_isboolean(L, 2) ? (lua_toboolean(L, 2) ? 1.0 : 0.0) : luaL_checknumber(L, 2);
+  lua_pushboolean(L, BK_theme_set_num(luaL_checkstring(L, 1), v));
+  return 1;
+}
+
+/* bui.theme_value(key): a number of the active theme, or nil. */
+static int l_theme_value(lua_State *L) {
+  double v;
+  if (BK_theme_num(luaL_checkstring(L, 1), &v)) {
+    lua_pushnumber(L, v);
+    return 1;
+  }
+  lua_pushnil(L);
   return 1;
 }
 
@@ -340,6 +394,12 @@ static int l_new_window(lua_State *L) {
   wud->L = L;
   wud->on_close_ref = LUA_NOREF;
   wud->on_timer_ref = LUA_NOREF;
+  wud->on_frame_ref = LUA_NOREF;
+  wud->self_ref = LUA_NOREF;
+  wud->depth = 0;
+  wud->zombie = NULL;
+  lua_pushvalue(L, 1); /* the window draws this context: keep it alive as long as the window is */
+  wud->ctx_ref = luaL_ref(L, LUA_REGISTRYINDEX);
   luaL_getmetatable(L, LUABUI_WINDOW_MT);
   lua_setmetatable(L, -2);
   return 1;
@@ -391,6 +451,11 @@ static const struct luaL_Reg bui_module[] = {
   {"set_scale", l_set_scale},
   {"scale",     l_scale},
   {"set_theme", l_set_theme},
+  {"load_theme", l_load_theme},
+  {"themes", l_themes},
+  {"set_theme_color", l_set_theme_color},
+  {"set_theme_value", l_set_theme_value},
+  {"theme_value", l_theme_value},
   {"set_font",  l_set_font},
   {"theme_name",l_theme_name},
   {"theme_color",l_theme_color},
@@ -420,7 +485,7 @@ static const struct luaL_Reg bui_module[] = {
   {NULL, NULL}
 };
 
-LUAMOD_API int luaopen_bui(lua_State *L) {
+BUI_LUA_ENTRY int luaopen_bui(lua_State *L) {
   /* Version check: refuse to load if the kit version doesn't match the header */
   int kit_ver = BK_version();
   int hdr_ver = BUI_KIT_VERSION;
@@ -434,6 +499,9 @@ LUAMOD_API int luaopen_bui(lua_State *L) {
                      BUI_KIT_VERSION_STRING, BK_version_string());
     return lua_error(L);
   }
+
+  /* Menu/hotkey ref hooks (retain/release), as in the Python binding */
+  luabui_set_ref_state(L);
 
   /* Weak-keyed node map in registry */
   lua_newtable(L);
@@ -462,6 +530,7 @@ LUAMOD_API int luaopen_bui(lua_State *L) {
   /* Module table */
   lua_newtable(L);
   luaL_setfuncs(L, bui_module, 0);
+  luabui_register_anim(L);
 
   /* Version constants */
   lua_pushstring(L, BUI_KIT_VERSION_STRING); lua_setfield(L, -2, "KIT_VERSION");
@@ -535,4 +604,10 @@ LUAMOD_API int luaopen_bui(lua_State *L) {
   lua_pushinteger(L, BK_WS_EDITING); lua_setfield(L, -2, "WS_EDITING");   lua_pushinteger(L, BK_WS_OPEN); lua_setfield(L, -2, "WS_OPEN");
 
   return 1;
+}
+
+/* The loadable module is the CMake target `_bui` (the name avoids a clash with bui.lua), and Lua looks
+ * for luaopen_<file name> in it: luaopen__bui. */
+BUI_LUA_ENTRY int luaopen__bui(lua_State *L) {
+  return luaopen_bui(L);
 }

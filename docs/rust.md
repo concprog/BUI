@@ -33,7 +33,7 @@ capitalized Blender components.
 cargo add blenderui
 ```
 
-or, by hand, `blenderui = "0.2"` under `[dependencies]`. (The Dear ImGui crate is
+or, by hand, `blenderui = "0.5"` under `[dependencies]`. (The Dear ImGui crate is
 [`blenderui-imgui`](https://crates.io/crates/blenderui-imgui): `cargo add blenderui-imgui`.)
 
 Building needs **CMake** and a **C compiler**: `blenderui-sys` compiles the C
@@ -66,7 +66,7 @@ It follows gpui closely:
 | `impl Render for View`                    | the same: `fn render(&mut self, window, cx) -> impl IntoElement` |
 | `Entity<T>`, `WeakEntity<T>`, `cx.new`    | `Copy` handles into the app's entity slots: `read` (returns `&T`), `update`, `downgrade`; `cx.release(e)` drops a value |
 | `Context<T>`: `notify`, `listener`, `entity` | the same; it derefs to `App`                              |
-| `WindowOptions { window_bounds, titlebar, .. }`, `WindowBounds::Windowed(..)` | the same, plus `is_resizable`, `window_min_size` |
+| `WindowOptions { window_bounds, titlebar, .. }`, `WindowBounds::Windowed(..)` | the same, plus `is_resizable`, `window_min_size`, `gpu`, `window_background` (`WindowBackgroundAppearance::Transparent`), `kind` (`WindowKind::Floating` stays on top, `PopUp` is on top without a frame, `LayerShell(LayerShellOptions { layer, anchor, exclusive_zone, keyboard_interactivity })` is a Wayland layer-shell surface) and `window_decorations` (`WindowDecorations::Client`: no frame); `App::on_window_activation` reports focus. A Wayland toplevel cannot stay on top: use `LayerShell` |
 | `cx.set_global`, `cx.global`              | the same                                                       |
 | `cx.stop_propagation()`                   | the same                                                       |
 
@@ -240,7 +240,10 @@ Every element has `.child(..)`, `.children(..)`, `.id(..)`, `.class(..)`,
 `live` attribute (`<input live>`) reports every keystroke to `on_input` and
 `on_change`, not only on Enter or blur. `FluentBuilder` adds
 `.when(cond, |el| ..)`, `.when_some(opt, |el, v| ..)` and `.map(..)`.
-Text children are `&'static str`, `String` or `SharedString`.
+Text children are `&'static str`, `String` or `SharedString`. An `Option<T>`
+of any of these is a child too: `None` renders nothing and leaves its siblings
+in place, so `.child(cond.then(|| div()))` and, in `rsx!`,
+`{ cond.then(|| rsx! { <p>"hi"</p> }) }` or `{ maybe_title }` are one-liners.
 
 > `main()` (the `<main>` element) has the same name as your program's
 > `fn main`. Inside `fn main` call it as `blenderui::html::main()`.
@@ -365,7 +368,11 @@ Layout is computed with [taffy](https://github.com/DioxusLabs/taffy):
   inline-blocks and widgets sit on the line. `white-space` (`normal`,
   `nowrap`, `pre`, `pre-wrap`, `pre-line`), `text-align`, `text-indent`,
   `letter-spacing`, `word-spacing`, `vertical-align: sub | super`,
-  `text-transform` and `text-overflow: ellipsis` apply.
+  `text-transform` and `text-overflow: ellipsis` apply. `text-overflow`
+  works as in CSS: on a block whose `overflow-x` is not `visible` (usually with
+  `white-space: nowrap`, Tailwind's `truncate`), a line wider than the content
+  box is cut to it and ends with `…` (`clip` just cuts it); with `overflow:
+  visible` it does nothing.
 - **Flexbox** and **grid**: every property of both modules, including
   `grid-template-areas`, named lines, `repeat()`, `minmax()`, `fr`,
   `auto-fill` / `auto-fit`, spans and line placement.
@@ -435,6 +442,28 @@ gets `on_click`.
 Positions are logical pixels. Clicking an element focuses it; key events go
 to the focused element and bubble up. `cx.stop_propagation()` stops bubbling.
 
+### Selecting text
+
+Text in elements is selectable like on a web page: press and drag (across words,
+lines, elements and paragraphs), double-click a word, triple-click a block,
+`Shift`+click to extend, `Ctrl+A` for all, `Ctrl+C` to copy (Cmd on macOS),
+`Esc` or a click on empty space to clear. The highlight is the theme's
+`selection` color; over selectable text the pointer is the I-beam unless an
+element sets its own `cursor`. A drag that selected text is not a click.
+`user-select: none | auto | text | all` (and `select-none`, `select-auto`,
+`select-text`, `select-all`; `-webkit-user-select` is an alias) decides what
+takes part: `none` is skipped and a press on it starts nothing, `all` is taken
+whole by one click, `auto` follows the parent as in CSS UI 4. Block boundaries
+are newlines in the copied text and whitespace is as rendered. Text fields and
+the other form controls keep their own selection and keys; canvases and the
+painted lists (`vlist`, `chat_list`) are not selectable, and a drag does not
+autoscroll.
+
+On the `Window` (listeners get it): `selected_text() -> Option<String>`,
+`select_all()`, `clear_selection()`, `on_selection_change(|text, window, app| ..)`
+(fires for the user's changes) and `read_clipboard()` / `write_clipboard(text)`.
+`examples/selectable.rs` is a page of paragraphs; `tests/selection.rs` drives it
+headlessly with `simulate_drag`, `simulate_click` and `simulate_key_with`.
 ## Images
 
 `<img src>` and CSS background images read every format the kit reads (PNG,
@@ -451,8 +480,9 @@ play (paused while off screen); `<img frame="2">` holds a frame,
 yourself (`Image::update_texture` for Dear ImGui). See
 [Images](https://bui.preetham.top/docs/concepts/images/).
 
-`<video src="intro.mp4" loop poster="intro.jpg" />` plays a video file (muted
-autoplay; `autoplay="false"` holds the first frame): the OS decodes it at the
+`<video src="intro.mp4" loop poster="intro.jpg" />` plays a video file
+(autoplay with sound, `muted` for a silent one; `autoplay="false"` holds the first
+frame; an element that leaves the tree stops its sound): the OS decodes it at the
 size drawn, only while it shows. Keep a `blenderui::Video` to control it
 (`play`, `pause`, `seek`, `set_rate`, `time`, `duration`, `on_state`) and
 pass it with `video().video(rc.clone())` or `Painter::video`. Cargo features
@@ -504,9 +534,9 @@ Features: sticky header and pinned columns, resize and move by dragging headers,
 
 `blenderui::shadcn` puts the API of shadcn/ui's Data Table (TanStack Table's `ColumnDef`, table state and row models) on the same painted table, in `rsx!` and builder syntax: `<DataTable columns={columns} data={data} />` / `DataTable::new(columns, data)`, `ColumnDef::accessor_key` / `accessor_fn` (the row type implements `Record`), `select_column()` and `actions_column()`, `use_table()`, and the helper components `DataTableColumnHeader`, `DataTablePagination`, `DataTableViewOptions` and `DataTableToolbar`. Sorting, column and global filters, pagination, row selection and column visibility are TanStack's state, uncontrolled or controlled with `on_..._change` callbacks, over row models that are index lists. A shadcn `cell: ({ row }) => <JSX />` becomes a typed `CellRender` (text with a number format, checkbox, badge, progress, row actions) that the table paints straight from the data, so a steady frame still allocates nothing; there is no `flexRender`. The logic is in `blenderui_table::tanstack` (core, no framework); the components are in `blenderui/src/shadcn/`. Names, limits and numbers are on the website page "shadcn Data Table", and `examples/site_shadcn_table.rs` is the payments table of the recipe.
 
-## Variable-height lists and chat
+## Variable-height lists
 
-`blenderui::vlist` is a virtualized list whose items have different heights (wrapped text, images), built for chat and optimal from 100 items to 10M and beyond with one design. The logic lives once, in the dependency-free `blenderui-vlist` crate (on `blenderui-paint`, which also holds the `PaintSink` trait, the theme `Palette` and the bounded `TextCache` that `blenderui-table` uses):
+`blenderui::vlist` is a virtualized view for any app (feeds, logs, file lists, cards, chats) whose items have different heights (wrapped text, images), optimal from 100 items to 10M and beyond with one design. BUI keeps the engine; an app writes its own items on the public API, and the chat (`ChatStyle`) is one shipped look. The logic lives once, in the dependency-free `blenderui-vlist` crate (on `blenderui-paint`, which also holds the `PaintSink` trait, the theme `Palette` and the bounded `TextCache` that `blenderui-table` uses):
 
 - **`HeightIndex`**: blocks of up to 1024 items under a Fenwick tree with spare slots on both sides. A block is `Uniform` (a count and a height), `Estimated` (a count and the text bytes it holds; nothing per item) or `Measured` (`u32` prefix sums, 1/64 px, plus an exactness bit per item). A list of one block skips the tree. Offset to item and item to offset are O(log blocks) plus a binary search in a block; a height change is O(log blocks); adding or prepending a page adds blocks without shifting. Heights are fixed-point integers, so ten million rows of 60 px stay exact. Memory follows what was scrolled through.
 - **Anchor-based scrolling** (`ListView`): the position is (item, offset inside it), or the end of the list (`stick_to_bottom`, open at the newest item). Heights changing above the viewport, prepended history and edits can't move what is on screen; resize keeps the reader's place; `jump_to` re-aims until the target is measured; the scrollbar thumb comes from the estimate (`Estimator`, calibrated by every measurement).
@@ -522,7 +552,7 @@ let chat = cx.new(|cx| ListState::new(ChatList::from_messages(synth::messages(0,
 // elsewhere: chat.update(cx, |s, _| s.push(message));   // follows while at the bottom
 ```
 
-For items that are not messages, build a `List` from your own `ItemSource`, `Measurer` and `ItemPainter` and show it with `variable_list(&state)`. `bindings/rust/blenderui-vlist-gpui` is the same list for real gpui (outside the main workspace); its benchmark against gpui's `list` and gpui-component's `virtual_list` is in `bench/`. Measured numbers and the method are on the website page "Variable-height lists". Not built yet: selecting text across messages, a background measuring thread, damage regions, JavaScript and Python wrappers.
+For items that are not messages, build a `List` from your own `ItemSource`, `Measurer` and `ItemPainter` and show it with `variable_list(&state)`. A `Record` carries an `id`, `time` and `sender` values and `flags` bits (`FLAG_PLACEHOLDER` is the engine's, `FLAG_USER << n` is free), `text`, an image and opaque `data` bytes your look decodes (stored in the page's buffer, no allocation per item); `ItemPainter::hit` returns an item-local part id for a press, delivered by `VariableList::on_item_hit(|item, part, list| ..)` next to `on_item_click`; `Measurer::estimator` has a default. Everything a look needs (`PaintSink`, `Palette`, `Rect`, `Rgba`, `Lines`, `Record`, ...) is re-exported from `blenderui::vlist`. Items are painted, not elements: no buttons or text fields inside an item. `examples/vlist_cards.rs` is a non-chat feed of task cards and `tests/vlist_custom.rs` runs a custom look headlessly. `bindings/rust/blenderui-vlist-gpui` is the same list for real gpui (outside the main workspace); its benchmark against gpui's `list` and gpui-component's `virtual_list` is in `bench/`. Measured numbers and the method are on the website page "Variable-height lists". Not built yet: selecting text across messages, a background measuring thread, damage regions, JavaScript and Python wrappers.
 
 `blenderui::shadcn` also has `VirtualList` (`count` and an `item` closure that writes each item's text, so ten million rows cost a screenful) and `ChatList`, with TanStack Virtual's names: `estimate_size`, `overscan`, `get_item_key`, `on_range_change`, and `scroll_to_index` / `scroll_to_offset` / `measure_element` on the `ListHandle` that `use_virtual_list()` returns. They sit on `ListState` and `ItemSource` (the new `CountSource` and `RowStyle` in `blenderui-vlist`), so the file-backed source works under them. See the website page "Virtual list API" and `examples/site_shadcn_list.rs`.
 
@@ -542,7 +572,7 @@ Application::headless().run(|cx| {
 });
 ```
 
-Also `simulate_mouse_move`, `simulate_scroll` and `simulate_key(text, keysym)`.
+Also `simulate_mouse_move`, `simulate_scroll`, `simulate_key(text, keysym)`, `simulate_key_with` (Ctrl, Shift), `simulate_click_with`, and `simulate_press`, `simulate_release` and `simulate_drag(from, to)` for a held button.
 The kit has global state, so one `Application` runs at a time per process
 (`run` takes a lock; parallel tests queue up).
 
@@ -553,7 +583,7 @@ From `cargo test --test parity -- --nocapture`:
 | Area                                  | Coverage                                                                         |
 | ------------------------------------- | -------------------------------------------------------------------------------- |
 | HTML elements (WHATWG index)          | **113 / 113** constructible, plus `svg` / `math` roots; 9 are Blender widgets     |
-| CSS properties                        | **271** change layout or rendering; **137** more parse but have no effect         |
+| CSS properties                        | **275** change layout or rendering; **135** more parse but have no effect         |
 | W3C property index (745 properties)   | **261** rendered (35%), **129** parsed without effect (17%), **355** not recognized (48%): most of these are drafts, speech, paged media and SVG |
 | CSS 2.1, screen properties            | **90 / 90** rendered, 90 / 90 parsed                                              |
 | Flexbox                               | **12 / 12**                                                                       |
@@ -640,6 +670,10 @@ Not done yet:
 - **The rest of the W3C property index:** 355 entries this engine doesn't know, mostly drafts, speech, paged media and SVG.
 - **`all`:** counted as parsed-only. Its CSS-wide keywords (`all: initial`, `inherit`, `unset`, `revert`) reset an element's computed style; there's nothing else it can take.
 - **Box sizing:** the default is `border-box` (like Tailwind's preflight), not CSS's `content-box`.
+
+## GPU effects
+
+A canvas can run your own pixel shader on the GPU: `ShaderEffect::new(name, glsl_source, n_inputs, n_floats)` declares it, `painter.effect(bounds, &effect, &texture_ids, &floats, Some(&fallback_image))` draws it in paint order, and `effect.error()` returns the compile log. The source is GLSL with a small compat set (`vec4 effect(vec2 p)`, `box_size`, `U[i]`, `input_color(i, texel)`), compiled at run time by Direct3D 11 and OpenGL; the software renderer draws the fallback. See [GPU effects](../website/src/content/docs/rust/gpu-effects.mdx) and `examples/gpu_effect.rs`.
 
 ## Performance vs gpui
 

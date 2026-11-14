@@ -1,6 +1,6 @@
 {
   "name": "@blender-ui/react",
-  "version": "0.4.0",
+  "version": "0.5.1",
   "description": "React renderer for BUI: Blender's UI in native windows from JSX, with React's hooks backed by signals. Node.js and Bun.",
   "main": "index.js",
   "types": "index.d.ts",
@@ -17,12 +17,18 @@
       "types": "./jsx-dev-runtime.d.ts",
       "default": "./jsx-dev-runtime.js"
     },
+    "./motion": {
+      "types": "./motion.d.ts",
+      "default": "./motion.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
     "hooks.js",
+    "motion.js",
     "index.d.ts",
+    "motion.d.ts",
     "jsx-runtime.js",
     "jsx-runtime.d.ts",
     "jsx-dev-runtime.js",
@@ -41,7 +47,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@blender-ui/native": "^0.4.0",
+    "@blender-ui/native": "^0.5.1",
     "react-reconciler": "0.34.0"
   },
   "peerDependencies": {

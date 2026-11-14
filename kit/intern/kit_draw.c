@@ -34,9 +34,12 @@ int BK_unit(void)
 {
   return bk_unit();
 }
+static void measure_cache_clear(void);
+
 void BK_set_font(const char *family)
 {
   strncpy(g_font_family, family ? family : "", sizeof(g_font_family) - 1);
+  measure_cache_clear(); /* the cached widths are of the old family */
 }
 
 /* wm_window.cc WM_window_dpi_set_userdef: U.dpi = int(72 * ui_scale), pixelsize =
@@ -69,9 +72,20 @@ const char *bk_font_family(void)
   return g_font_family;
 }
 
+static float g_ui_points = 11.0f; /* UI_DEFAULT_TEXT_POINTS; a theme may change it */
+
+void BK_set_font_size(float points)
+{
+  g_ui_points = BK_CLAMP(points, 6.0f, 48.0f);
+}
+float BK_font_size_points(void)
+{
+  return g_ui_points;
+}
+
 float bk_font_size(void)
 {
-  return floorf(11.0f * bk_scale_fac * bk_text_scale + 0.5f); /* UI_DEFAULT_TEXT_POINTS */
+  return floorf(g_ui_points * bk_scale_fac * bk_text_scale + 0.5f);
 }
 
 /* Password fields: every UTF-8 character shows as `mask`. */
@@ -640,12 +654,20 @@ static void widgetbase_draw_ex(WidgetBase *wtb, const BKWCol *wcol, const float 
       bk_rgba(down, p->inner2);
     }
   }
-  if (wtb->draw_outline) {
+  if (wtb->draw_outline && wcol->border_extra > -1.0f) {
     bk_rgba(wcol->outline, p->outline);
   }
   /* Emboss only if the outline is not fully transparent (it looks like a gap). */
-  if (wtb->draw_emboss && wcol->outline[3] != 0) {
+  if (wtb->draw_emboss && wcol->outline[3] != 0 && !wcol->no_emboss) {
     bk_rgba(bk_theme.emboss, p->emboss);
+  }
+  /* The theme's own options (kit_theme.c): a wider outline, corners kept square. */
+  p->corners &= ~(int)wcol->square_corners;
+  if (wcol->border_extra != 0.0f) {
+    const float width = BK_CLAMP(1.0f + wcol->border_extra, 0.0f, 16.0f);
+    /* no outline: the fill reaches the edge (the rasterizer insets it by `pixelsize`, which may not be 0) */
+    p->pixelsize = width > 0.0f ? bk_px() * width : 0.01f;
+    p->radi = BK_MAX(0.0f, p->rad - p->pixelsize);
   }
   p->alpha_checker = alpha_checker;
   BUI_raster_widget_base(bk_draw.r, p);
@@ -1045,6 +1067,11 @@ typedef struct MeasureSlot {
 #define MEASURE_SLOTS 8192
 static MeasureSlot g_measure[MEASURE_SLOTS];
 
+static void measure_cache_clear(void)
+{
+  memset(g_measure, 0, sizeof(g_measure));
+}
+
 static uint64_t hash_str(const char *s, int len, bool bold)
 {
   uint64_t h = 1469598103934665603ull ^ (bold ? 0x9e37 : 0);
@@ -1092,6 +1119,17 @@ float bk_text_baseline(const BKRect *rect)
  * 0 none, 1 a sharp drop shadow (the widget style), 3 a 3x3 blurred one (panel
  * titles). Black at half the text's alpha, 1 px down (shady = -1). */
 int bk_text_shadow = 1;
+static bool g_text_shadow_on = true; /* BK_set_text_shadow */
+
+void BK_set_text_shadow(int on)
+{
+  g_text_shadow_on = on != 0;
+}
+
+int BK_text_shadow(void)
+{
+  return g_text_shadow_on;
+}
 
 void bk_text_f(float x, float baseline, const char *s, int len, const float c[4], bool bold)
 {
@@ -1106,11 +1144,12 @@ void bk_text_f(float x, float baseline, const char *s, int len, const float c[4]
   }
   BUI_raster_set_font(bk_draw.r, text_family(), bold ? BUI_FONT_BOLD : 0);
   const float px = floorf(x + 0.5f), py = floorf(baseline + 0.5f);
-  if (bk_text_shadow == 1) {
+  const int shadow = g_text_shadow_on ? bk_text_shadow : 0;
+  if (shadow == 1) {
     const float sc[4] = {0.0f, 0.0f, 0.0f, 0.5f * c[3]};
     BUI_raster_text(bk_draw.r, px, py + 1.0f, s, len, bk_font_size(), sc);
   }
-  else if (bk_text_shadow == 3) {
+  else if (shadow == 3) {
     /* BLF's 3x3 blur kernel (1 2 1 / 2 4 2 / 1 2 1) / 16 as weighted copies */
     static const float k[3] = {1.0f, 2.0f, 1.0f};
     for (int dy = -1; dy <= 1; dy++) {
@@ -1159,6 +1198,12 @@ float bk_line_height(void)
 }
 
 static int g_text_pad = -1; /* bk_text_in_pad: the margin instead of bk_pad() */
+static int g_text_ul = -1;  /* bk_text_underline: the byte to underline, -1 none */
+
+void bk_text_underline(int index)
+{
+  g_text_ul = index;
+}
 
 float bk_text_in_pad(const BKRect *rect, const char *s, const uchar color[4], int align, bool bold,
                      int pad)
@@ -1221,6 +1266,13 @@ float bk_text_in(const BKRect *rect, const char *s, const uchar color[4], int al
   }
   bk_clip_push(rect->xmin, rect->ymin, bk_rw(rect), bk_rh(rect));
   bk_text(x, bk_text_baseline(rect), buf, blen, color, bold);
+  if (g_text_ul >= 0 && g_text_ul < n) {
+    /* widget_draw_text: the menu key's underline, a "_" glyph centered under its character */
+    const float gx = bk_text_width(buf, g_text_ul, bold);
+    const float gw = bk_text_width(buf, g_text_ul + 1, bold) - gx;
+    const float uw = bk_text_width("_", 1, bold);
+    bk_text(x + gx + (gw - uw) * 0.5f, bk_text_baseline(rect) + bk_px(), "_", 1, color, bold);
+  }
   bk_clip_pop();
   return tw;
 }

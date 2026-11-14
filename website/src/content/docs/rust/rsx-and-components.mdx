@@ -159,6 +159,22 @@ rsx! {
 - **`if`** without an `else` renders nothing when the condition is false.
 - **`match`** arms can be markup, a `{ block }` that ends in markup, or any expression.
 
+## Optional children
+
+An `Option<T>` is an element: `None` renders nothing and leaves its siblings in place, `Some(x)` renders `x`. So a conditional is one expression, in `rsx!` and in the builder API.
+
+```rust
+rsx! {
+    <div class="flex items-center gap-2">
+        {maybe_title}                                   // Option<&str>, Option<String>, Option<Div> ...
+        {pinned.then(|| rsx! { <span>"pinned"</span> })}
+        {unread.then(|| div().w_2().h_2().rounded_full().bg_emerald_500())}
+    </div>
+}
+
+div().child(unread.then(|| div().id("dot")))   // the same in the builder API
+```
+
 ## Fragments
 
 `<>...</>` groups children without adding a box. It's an element with `display: contents`, so its children lay out as if they belonged to the parent. When `rsx!` contains more than one top-level node, it wraps them in a fragment for you.
@@ -321,6 +337,28 @@ impl IntoElement for Card {
     }
 }
 ```
+
+### Props as a struct
+
+Keep the props in a struct and destructure it in the signature. `#[derive(Props)]` gives the struct its builder, and `#[component]` makes the function the struct's `IntoElement`, with the function's name as the tag:
+
+```rust
+#[derive(Props)]
+struct ChatProps {
+    title: SharedString,
+    unread: bool,
+    note: Option<SharedString>,
+}
+
+#[component]
+fn chat(ChatProps { title, unread, note }: ChatProps) {
+    rsx! { <div class="flex">{title.to_string()}</div> }
+}
+
+// <chat title="Alice" unread={true} />
+```
+
+Use a struct pattern (`ChatProps { .. }: ChatProps`); a plain `props: ChatProps` is read as a single prop named `props`. Because the tag is an alias of the struct, one props struct serves one component.
 
 ## Three component styles
 

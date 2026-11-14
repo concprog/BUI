@@ -49,8 +49,8 @@ static int state_of(const BKNode *n)
   if (!(n->flags & NF_EMBOSS)) {
     st |= ST_NO_EMBOSS;
   }
-  if (n->flags & NF_SELECTED) {
-    st = (st & ~ST_HOVER) | ST_SELECT; /* part of a multi-drag */
+  if (n->flags & (NF_SELECTED | NF_SELECT)) {
+    st = (st & ~ST_HOVER) | ST_SELECT; /* part of a multi-drag, or held (UI_SELECT) */
   }
   if (n->flags & NF_ACTIVE_DEFAULT) {
     st |= ST_ACTIVE_DEFAULT;
@@ -241,13 +241,28 @@ static int vector_key(BKNode *n, BKEvent *e)
   }
   BKContext *ctx = bk_ctx(n);
   if (bk_keysym_is(e->keysym, "c")) {
-    char buf[512] = "[", num[64];
+    char num[64];
+    /* "[", every component (at most sizeof(num) - 1 characters) and ", " after it, "]", NUL */
+    char *buf = (char *)malloc((size_t)BK_MAX(n->nkids, 1) * (sizeof(num) + 1) + 3);
+    if (!buf) {
+      return 1;
+    }
+    size_t len = 0;
+    buf[len++] = '[';
     for (int i = 0; i < n->nkids; i++) {
       format_number(n->kids[i], n->kids[i]->value, num, sizeof(num));
-      strcat(buf, num);
-      strcat(buf, i + 1 < n->nkids ? ", " : "]");
+      const size_t k = strlen(num);
+      memcpy(buf + len, num, k);
+      len += k;
+      if (i + 1 < n->nkids) {
+        buf[len++] = ',';
+        buf[len++] = ' ';
+      }
     }
+    buf[len++] = ']';
+    buf[len] = '\0';
     bk_clipboard_set(ctx, buf);
+    free(buf);
     return 1;
   }
   if (bk_keysym_is(e->keysym, "v")) {
@@ -986,7 +1001,28 @@ static void tabs_draw(BKNode *n)
   bk_roundbox(n->x, n->y + th, n->w, n->h - th, rad, CNR_ALL & ~CNR_TL, c);
 }
 
+/* Like panels: paint the widget, then draw children clipped to the content
+ * region under the tab bar (tabs_arrange shows only the current page). */
+static void tabs_draw_tree(BKNode *n)
+{
+  if (!NODE_VISIBLE(n)) {
+    return;
+  }
+  BKRect r = bk_rect(n->x - 3, n->y - 3, n->w + 6, n->h + 6);
+  if (!bk_clip_visible(&r)) {
+    return;
+  }
+  tabs_draw(n);
+  const int th = tab_h();
+  bk_clip_push(n->x, n->y + th, n->w, BK_MAX(0, n->h - th));
+  for (int i = 0; i < n->nkids; i++) {
+    bk_draw_tree(n->kids[i]);
+  }
+  bk_clip_pop();
+}
+
 const BKClass bk_cls_tabs = {.name = "tabs",
+                             .draw_tree = tabs_draw_tree,
                              .flags = CLS_INTERACTIVE,
                              .measure = tabs_measure,
                              .arrange = tabs_arrange,
@@ -1481,8 +1517,11 @@ static void separator_init(BKNode *n)
 
 static void separator_measure(BKNode *n, int *rw, int *rh)
 {
-  *rw = 0;
-  *rh = BK_MAX(1, (int)(n->factor * u()));
+  /* "vertical": a line across a row (uiButSeparatorLine.is_vertical) */
+  const int size = BK_MAX(1, (int)(n->factor * u()));
+  const bool vertical = (n->flags & NF_VERTICAL) != 0;
+  *rw = vertical ? size : 0;
+  *rh = vertical ? 0 : size;
 }
 
 static void separator_draw(BKNode *n)
@@ -1490,7 +1529,12 @@ static void separator_draw(BKNode *n)
   if (n->flags & NF_LINE) {
     float c[4];
     bk_rgba_alpha(bk_theme.text, 0.15f, c);
-    bk_fill_f(n->x, n->y + n->h / 2, n->w, 1, c);
+    if (n->flags & NF_VERTICAL) {
+      bk_fill_f(n->x + n->w / 2, n->y, 1, n->h, c);
+    }
+    else {
+      bk_fill_f(n->x, n->y + n->h / 2, n->w, 1, c);
+    }
   }
 }
 
@@ -2033,7 +2077,7 @@ static int multi_drag(BKNode *n, BKEvent *e)
   /* DRAG_MULTINUM_THRESHOLD_DRAG_X: UI_UNIT_Y / 4 */
   const int threshold = BK_MAX(3, (int)(0.25f * u()));
   if (n->dragmode == 2) { /* collecting */
-    BKNode *under = bk_hit_at(ctx, n->x + n->w / 2, e->y);
+    BKNode *under = BK_hit_at(ctx, n->x + n->w / 2, e->y);
     if (under && under != n && is_number(under) && NODE_ENABLED(under) &&
         !(under->flags & NF_SELECTED) && ctx->nmulti < BK_MAX_MULTI)
     {
@@ -3374,7 +3418,8 @@ static float html_bw(void)
 static float html_font_begin(const BKNode *n)
 {
   const float saved = bk_text_scale;
-  bk_text_scale = (n->font_scale > 0.0f ? n->font_scale : 1.0f) * BK_HTML_FONT;
+  /* a form control keeps its 13.33 px whatever size the theme gives the UI text */
+  bk_text_scale = (n->font_scale > 0.0f ? n->font_scale : 1.0f) * BK_HTML_SCALE();
   bk_html_text_scale = bk_text_scale; /* text in this bracket uses the form-control font */
   return saved;
 }
@@ -3629,13 +3674,15 @@ static void html_check_measure(BKNode *n, int *rw, int *rh)
 
 /* -- text fields -- */
 
-static void html_field_frame(const BKRect *r, int hs, bool focused)
+/* `bg`: the CSS background-color of the field (NULL or alpha 0: the browser's Field white) */
+static void html_field_frame(const BKRect *r, int hs, bool focused, const uchar *bg)
 {
   const float rad = hp(2.0f), bw = html_bw();
   if (hs == HS_DISABLED) {
     html_box_r(r, rad, HTML_LIGHTEN, 0, 0);
   }
-  html_box_r(r, rad, kHtmlCheckBg[hs], kHtmlBorder[hs == HS_PRESSED ? HS_HOVER : hs], bw);
+  const uint32_t fill = (bg && bg[3] && hs != HS_DISABLED) ? ((uint32_t)bg[3] << 24 | (uint32_t)bg[0] << 16 | (uint32_t)bg[1] << 8 | bg[2]) : kHtmlCheckBg[hs];
+  html_box_r(r, rad, fill, kHtmlBorder[hs == HS_PRESSED ? HS_HOVER : hs], bw);
   if (focused) {
     html_focus_ring(r, rad);
   }
@@ -3646,7 +3693,7 @@ static void html_text_draw(BKNode *n)
   const BKRect r = bk_node_rect(n);
   const int hs = html_state(n);
   if (!(n->flags & NF_BARE)) { /* `border: none`: no frame and no focus ring, as in Chrome */
-    html_field_frame(&r, hs, n->edit != NULL);
+    html_field_frame(&r, hs, n->edit != NULL, n->field_bg);
   }
   const BKRect cr = html_inset(&r, 4, 3, 4, 3);
   const uchar *tc = hs == HS_DISABLED ? kHtmlFieldTextDisabled : n->text_color[3] ? n->text_color : kHtmlText;
@@ -3725,7 +3772,7 @@ static void html_number_draw(BKNode *n)
 {
   const BKRect r = bk_node_rect(n);
   const int hs = html_state(n);
-  html_field_frame(&r, hs, n->edit != NULL);
+  html_field_frame(&r, hs, n->edit != NULL, NULL);
   BKRect cr = html_inset(&r, 4, 3, 4, 3);
   cr.xmax = BK_MAX(cr.xmin, cr.xmax - hpi(15)); /* the spin button's space is always kept */
   const uchar *tc = hs == HS_DISABLED ? kHtmlFieldTextDisabled : kHtmlText;
@@ -4005,7 +4052,7 @@ static void html_select_draw(BKNode *n)
     hs = HS_PRESSED;
   }
   /* PaintMenuList without a CSS radius: PaintTextField, then the arrow */
-  html_field_frame(&r, hs, false);
+  html_field_frame(&r, hs, false, NULL);
   const uchar *tc = hs == HS_DISABLED ? kHtmlTextDisabled : kHtmlText;
   const BKRect cr = html_inset(&r, 5, 2, 19, 2);
   html_text(&cr, html_item(n, (int)n->value), -1, tc, BK_ALIGN_LEFT, false);

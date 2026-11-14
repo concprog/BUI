@@ -8,8 +8,9 @@ use taffy::prelude::*;
 
 use crate::color::Rgba;
 use crate::geometry::{rect, Bounds, Length, Units};
-use crate::layout::{BoxNode, Content, Frame, Replaced, StyleStore};
-use crate::style::{BorderStyle, BoxEdge, Computed, DecoStyle, DisplayKind, TextAlign, WhiteSpace};
+use crate::shader::ShaderEffect;
+use crate::layout::{BoxNode, Content, Frame, Key, Replaced, StyleStore};
+use crate::style::{key_hasher, BorderStyle, BoxEdge, Computed, DecoStyle, DisplayKind, TextAlign, WhiteSpace};
 use crate::text::{self, TextCache};
 use blenderui_sys as sys;
 
@@ -237,6 +238,18 @@ enum Kind {
     File { start: u32, fit: i32, frame: i32 },
     /// A video's current frame, fitted by `fit`.
     Video(std::rc::Rc<crate::video::Video>, i32),
+    /// A GPU shader over the box (see [`crate::shader`]).
+    Effect(Box<EffectItem>),
+}
+
+/// What [`Painter::effect`] records: the effect, its textures and floats, and the image drawn where
+/// the GPU cannot run it.
+#[derive(Clone)]
+struct EffectItem {
+    id: i32,
+    inputs: [i32; sys::BK_EFFECT_MAX_INPUTS],
+    floats: Vec<f32>,
+    fallback: Option<Arc<Image>>,
 }
 
 /// Coordinates: up to four inline (rects, ovals, text, images), more on the heap.
@@ -275,6 +288,8 @@ struct Item {
     coords: Coords,
     fill: Rgba,
     clip: Option<Bounds<f32>>,
+    /// Its element has `pointer-events: none`: the pointer goes through it.
+    through: bool,
 }
 
 /// Draws into a canvas display list, in logical pixels.
@@ -291,12 +306,37 @@ pub struct Painter {
     /// Every text item's bytes, NUL-terminated, back to back.
     text: Vec<u8>,
     clip: Option<Bounds<f32>>,
+    /// The box being painted has `pointer-events: none`.
+    through: bool,
     opacity: f32,
+    /// Retained painting (frames where only moving values changed): each
+    /// box's items (start, end; u32::MAX when it painted none), each item's
+    /// index in the canvas (-1: none), the text size after the full paint,
+    /// and the items repainted since (only they go to the canvas).
+    ranges: Vec<(u32, u32)>,
+    slots: Vec<i32>,
+    text_full: usize,
+    changed: Vec<u32>,
+    retained: bool,
+    partial: bool,
+    /// Layers over widgets: widgets are kit nodes drawn after the canvas
+    /// they sit on, so an item that overlaps a widget painted before it
+    /// starts a new segment (its own canvas, drawn over that widget).
+    /// `segments`: where each segment after the first starts in `items`;
+    /// `widgets`: each painted widget's segment and area; `over`: the areas
+    /// of the widgets in the segment being painted.
+    segments: Vec<u32>,
+    widgets: Vec<(Key, u32, Bounds<f32>)>,
+    over: Vec<Bounds<f32>>,
+    /// The window draws on the GPU (set before each paint).
+    gpu: bool,
+    /// The text selection to highlight (set before each paint; None: nothing is selected).
+    pub(crate) sel: Option<crate::selection::SelPaint>,
 }
 
 impl Painter {
     pub(crate) fn new() -> Painter {
-        Painter { items: Vec::new(), text: Vec::new(), clip: None, opacity: 1.0 }
+        Painter { opacity: 1.0, ..Painter::default() }
     }
 
     /// Empty for the next frame, keeping the buffers.
@@ -305,9 +345,103 @@ impl Painter {
         self.text.clear();
         self.clip = None;
         self.opacity = 1.0;
+        self.ranges.clear();
+        self.retained = false;
+        self.partial = false;
+        self.segments.clear();
+        self.widgets.clear();
+        self.over.clear();
+    }
+
+    /// How many canvases the items need (1 unless something overlaps a widget).
+    pub(crate) fn segment_count(&self) -> usize {
+        self.segments.len() + 1
+    }
+
+    /// Each painted widget's segment and its place in paint order.
+    pub(crate) fn widget_order(&self) -> HashMap<Key, (u32, u32)> {
+        self.widgets.iter().enumerate().map(|(rank, &(k, seg, _))| (k, (seg, rank as u32))).collect()
+    }
+
+    /// A widget is painted here (in paint order): it draws on top of its
+    /// segment's items, and what overlaps it from now on goes in a later one.
+    pub(crate) fn note_widget(&mut self, key: Key, area: Bounds<f32>) {
+        self.widgets.push((key, self.segments.len() as u32, area));
+        self.over.push(area);
+    }
+
+    /// Where an item is, generously (text: a full em per byte): `None` when it has no place.
+    fn item_area(&self, kind: &Kind, coords: &Coords) -> Option<[f32; 4]> {
+        let c = coords.as_slice();
+        if c.len() < 2 {
+            return None;
+        }
+        if let Kind::Text { start, size, .. } = kind {
+            let len = self.text[*start as usize..].iter().position(|&b| b == 0).unwrap_or(0);
+            return Some([c[0], c[1], c[0] + len as f32 * size, c[1] + size * 1.5]);
+        }
+        let (mut x0, mut y0, mut x1, mut y1) = (c[0], c[1], c[0], c[1]);
+        for xy in c.chunks_exact(2) {
+            x0 = x0.min(xy[0]);
+            x1 = x1.max(xy[0]);
+            y0 = y0.min(xy[1]);
+            y1 = y1.max(xy[1]);
+        }
+        Some([x0 - 2.0, y0 - 2.0, x1 + 2.0, y1 + 2.0]) // edges, antialiasing
+    }
+
+    /// Whether an item overlaps a widget painted before it in this segment.
+    fn overlaps_widget(&self, kind: &Kind, coords: &Coords) -> bool {
+        !self.over.is_empty()
+            && self.item_area(kind, coords).is_some_and(|[x0, y0, x1, y1]| {
+                self.over.iter().any(|w| {
+                    x0 < w.origin.x + w.size.width && w.origin.x < x1 && y0 < w.origin.y + w.size.height
+                        && w.origin.y < y1
+                })
+            })
+    }
+
+    /// Paint again only the boxes marked in `dirty` (with what they paint
+    /// over: nothing, their items stay in place). False when that can't be
+    /// done (the last paint had layers, a box paints a different number of
+    /// items now, the text grew too much): paint the frame in full instead.
+    pub(crate) fn repaint(&mut self, frame: &Frame, styles: &StyleStore, tc: &mut TextCache, dirty: &[bool],
+                          vp: (f32, f32), app: &crate::window::App) -> bool {
+        if !self.retained || self.ranges.len() != frame.nodes.len() || self.text.len() > 2 * self.text_full + 4096 {
+            return false;
+        }
+        self.changed.clear();
+        for (i, _) in dirty.iter().enumerate().filter(|(_, d)| **d) {
+            let (start, end) = self.ranges[i];
+            let n = &frame.nodes[i];
+            let at = self.items.len();
+            if n.visible && n.opacity > 0.0 {
+                self.opacity = n.opacity;
+                self.clip = n.clip;
+                paint_node(frame, styles, tc, i, self, vp, app);
+            }
+            let painted = (self.items.len() - at) as u32;
+            let had = if start == u32::MAX { 0 } else { end - start };
+            if painted != had {
+                return false;
+            }
+            for k in 0..painted {
+                self.items.swap((start + k) as usize, at + k as usize);
+                self.changed.push(start + k);
+            }
+            self.items.truncate(at);
+        }
+        self.opacity = 1.0;
+        self.clip = None;
+        self.partial = true;
+        true
     }
 
     fn push(&mut self, kind: Kind, coords: Coords, fill: Rgba) {
+        if self.overlaps_widget(&kind, &coords) {
+            self.segments.push(self.items.len() as u32); // drawn over that widget: a canvas above it
+            self.over.clear();
+        }
         let fill = fill.opacity(self.opacity);
         let kind = match kind {
             Kind::Rect { radius, outline, width } => {
@@ -316,7 +450,7 @@ impl Painter {
             Kind::Oval { outline, width } => Kind::Oval { outline: outline.opacity(self.opacity), width },
             k => k,
         };
-        self.items.push(Item { kind, coords, fill, clip: self.clip });
+        self.items.push(Item { kind, coords, fill, clip: self.clip, through: self.through });
     }
 
     fn corners(b: Bounds<f32>) -> Coords {
@@ -330,6 +464,11 @@ impl Painter {
             self.push(Kind::Rect { radius: 0.0, outline: Rgba::TRANSPARENT, width: 0.0 },
                       Self::corners(bounds), c);
         }
+    }
+
+    /// A selection highlight: a rectangle that is pushed even when transparent (see `paint_selection`).
+    fn highlight(&mut self, bounds: Bounds<f32>, color: Rgba) {
+        self.push(Kind::Rect { radius: 0.0, outline: Rgba::TRANSPARENT, width: 0.0 }, Self::corners(bounds), color);
     }
 
     /// A rounded rectangle with an optional border (gpui's `quad`).
@@ -410,6 +549,35 @@ impl Painter {
         self.push(Kind::Video(video.clone(), fit), Self::corners(bounds), Rgba::TRANSPARENT);
     }
 
+    /// Whether the window being painted is drawn by a GPU renderer right now (the first frames
+    /// of a GPU window use the software raster while the device starts; off-screen drawing is
+    /// software). A paint callback that has both a GPU effect and a CPU way to draw picks one.
+    #[must_use]
+    pub const fn is_gpu(&self) -> bool {
+        self.gpu
+    }
+
+    /// Set by the window before it paints.
+    pub(crate) const fn set_gpu(&mut self, on: bool) {
+        self.gpu = on;
+    }
+
+    /// A GPU effect over `bounds` (see [`crate::shader`]): `inputs` are the BUI textures it samples
+    /// (`Image::texture`; at most [`ShaderEffect::MAX_INPUTS`], the rest are ignored), `floats` its
+    /// `U[..]` (at most [`ShaderEffect::MAX_FLOATS`]). The shader sees device pixels. Where the GPU
+    /// cannot run it, `fallback` is drawn fitted into `bounds` (nothing when `None`). Floats that
+    /// change every frame repaint the canvas every frame.
+    pub fn effect(&mut self, bounds: Bounds<f32>, effect: &ShaderEffect, inputs: &[i32], floats: &[f32],
+                  fallback: Option<&Arc<Image>>) {
+        let mut slots = [0; sys::BK_EFFECT_MAX_INPUTS];
+        for (slot, id) in slots.iter_mut().zip(inputs) {
+            *slot = *id;
+        }
+        let floats = floats[..floats.len().min(ShaderEffect::MAX_FLOATS)].to_vec();
+        let item = EffectItem { id: effect.id(), inputs: slots, floats, fallback: fallback.cloned() };
+        self.push(Kind::Effect(Box::new(item)), Self::corners(bounds), Rgba::TRANSPARENT);
+    }
+
     fn file(&mut self, bounds: Bounds<f32>, src: &str, fit: i32, frame: Option<u32>) {
         if !src.is_empty() {
             let start = self.text.len() as u32;
@@ -446,7 +614,7 @@ impl Painter {
                   -> Option<sys::BKCanvasItem> {
         coords.clear();
         coords.extend(it.coords.as_slice().iter().map(|v| v * scale));
-        let mut ci = sys::BKCanvasItem { fill: it.fill.to_array(), ..Default::default() };
+        let mut ci = sys::BKCanvasItem { fill: it.fill.to_array(), no_hit: i32::from(it.through), ..Default::default() };
         match &it.kind {
             Kind::Rect { radius, outline, width } => {
                 ci.type_ = if *radius > 0.0 { sys::BK_ITEM_ROUNDRECT } else { sys::BK_ITEM_RECT };
@@ -490,6 +658,15 @@ impl Painter {
                 ci.video = v.as_ptr();
                 ci.fit = *fit;
             }
+            Kind::Effect(e) => {
+                ci.type_ = sys::BK_ITEM_EFFECT;
+                ci.effect = e.id;
+                ci.effect_inputs = e.inputs;
+                ci.effect_floats = e.floats.as_ptr();
+                ci.n_effect_floats = e.floats.len() as i32;
+                ci.fit = sys::BK_FIT_FILL;
+                ci.imbuf = e.fallback.as_ref().map_or(std::ptr::null(), |img| img.as_ptr());
+            }
             Kind::File { start, fit, frame } => {
                 ci.type_ = sys::BK_ITEM_IMAGE;
                 ci.fit = *fit;
@@ -513,20 +690,50 @@ impl Painter {
         Some(ci)
     }
 
-    /// Replace the canvas display list with these items, scaled to device pixels.
-    pub(crate) fn flush(&self, canvas: *mut sys::BKNode, scale: f32) {
+    /// Replace the canvas display list with these items, scaled to device
+    /// pixels (after a [`repaint`](Self::repaint): only the items it changed).
+    pub(crate) fn flush(&mut self, canvases: &[*mut sys::BKNode], scale: f32) {
+        let canvas = canvases[0];
         let mut coords: Vec<f32> = Vec::new();
-        let mut count: i32 = 0;
-        for it in &self.items {
-            let Some(mut ci) = self.build_item(it, scale, &mut coords, None) else { continue };
-            ci.coords = coords.as_ptr();
-            // SAFETY: every pointer in `ci` outlives the call; the kit copies
-            // them into the slot's existing buffers.
-            unsafe { sys::BK_canvas_put_item(canvas, count, &ci) };
-            count += 1;
+        if std::mem::take(&mut self.partial) {
+            let partial_ok = self.changed.iter().all(|&k| {
+                let slot = self.slots[k as usize];
+                let Some(mut ci) = self.build_item(&self.items[k as usize], scale, &mut coords, None) else {
+                    return slot < 0;
+                };
+                if slot < 0 {
+                    return false; // it shows now: indices shift, send everything
+                }
+                ci.coords = coords.as_ptr();
+                // SAFETY: as below
+                unsafe { sys::BK_canvas_put_item(canvas, slot, &ci) };
+                true
+            });
+            if partial_ok {
+                return;
+            }
         }
-        // SAFETY: `canvas` is a live kit canvas node owned by the window.
-        unsafe { sys::BK_canvas_truncate(canvas, count) };
+        self.slots.clear();
+        // segment k is items[lo..hi] on canvas k (canvases past the last one empty)
+        for (k, &canvas) in canvases.iter().enumerate() {
+            let lo = if k == 0 { 0 } else { self.segments.get(k - 1).map_or(self.items.len(), |&s| s as usize) };
+            let hi = self.segments.get(k).map_or(self.items.len(), |&s| s as usize);
+            let mut count: i32 = 0;
+            for it in &self.items[lo..hi.max(lo)] {
+                let Some(mut ci) = self.build_item(it, scale, &mut coords, None) else {
+                    self.slots.push(-1);
+                    continue;
+                };
+                ci.coords = coords.as_ptr();
+                // SAFETY: every pointer in `ci` outlives the call; the kit copies
+                // them into the slot's existing buffers.
+                unsafe { sys::BK_canvas_put_item(canvas, count, &ci) };
+                self.slots.push(count);
+                count += 1;
+            }
+            // SAFETY: `canvas` is a live kit canvas node owned by the window.
+            unsafe { sys::BK_canvas_truncate(canvas, count) };
+        }
     }
 
     /// Draw the items offscreen into a `w` x `h` device-pixel region whose
@@ -583,6 +790,12 @@ impl Painter {
                 Kind::Image(img) => (6u8, Arc::as_ptr(img) as usize).hash(h),
                 Kind::File { start, fit, frame } => (7u8, self.arena_str(*start), fit, frame).hash(h),
                 Kind::Video(v, fit) => (8u8, std::rc::Rc::as_ptr(v) as usize, fit).hash(h),
+                Kind::Effect(e) => {
+                    // the floats move every frame: a changed value is a changed layer
+                    let fallback = e.fallback.as_ref().map_or(0, |img| Arc::as_ptr(img) as usize);
+                    (9u8, e.id, e.inputs, fallback).hash(h);
+                    e.floats.iter().for_each(|v| v.to_bits().hash(h));
+                }
             }
             if let Some(c) = it.clip {
                 (c.origin.x.to_bits(), c.origin.y.to_bits(), c.size.width.to_bits(), c.size.height.to_bits()).hash(h);
@@ -626,6 +839,9 @@ pub(crate) fn paint_frame(frame: &Frame, styles: &StyleStore, tc: &mut TextCache
     }
     let has_effects = frame.nodes.iter().any(|n| styles[n.style].effects.is_some());
     if !has_effects {
+        // each box's items, for redraws that paint only what moved
+        p.ranges.clear();
+        p.ranges.resize(frame.nodes.len(), (u32::MAX, 0));
         for i in order {
             let n = &frame.nodes[i];
             if !n.visible || n.opacity <= 0.0 {
@@ -633,8 +849,16 @@ pub(crate) fn paint_frame(frame: &Frame, styles: &StyleStore, tc: &mut TextCache
             }
             p.opacity = n.opacity;
             p.clip = n.clip;
+            if matches!(n.content, Content::Widget(_)) {
+                p.note_widget(n.key, n.clip.map_or(n.bounds, |c| c.intersect(&n.bounds)));
+            }
+            let start = p.items.len() as u32;
             paint_node(frame, styles, tc, i, p, vp, app);
+            p.ranges[i] = (start, p.items.len() as u32);
         }
+        // redraws that paint only what moved: one canvas only (items map to canvas slots)
+        p.retained = p.segments.is_empty();
+        p.text_full = p.text.len();
     } else {
         let mut cx = LayerCx { frame, styles, tc, vp, scale, app, done: vec![false; frame.nodes.len()] };
         paint_list(&mut cx, &order, p, None, 1.0);
@@ -722,6 +946,9 @@ fn paint_list(cx: &mut LayerCx, list: &[usize], p: &mut Painter, root: Option<us
         cx.done[i] = true;
         p.opacity = (n.opacity / base.max(1e-6)).min(1.0);
         p.clip = n.clip;
+        if matches!(n.content, Content::Widget(_)) {
+            p.note_widget(n.key, n.clip.map_or(n.bounds, |c| c.intersect(&n.bounds)));
+        }
         let (frame, styles, vp) = (cx.frame, cx.styles, cx.vp);
         paint_node(frame, styles, cx.tc, i, p, vp, cx.app);
     }
@@ -766,6 +993,16 @@ fn device_rect(b: Bounds<f32>, scale: f32) -> (f32, f32, usize, usize) {
 
 /// Paint element `root` and its subtree `list` through its effects.
 fn paint_layer(cx: &mut LayerCx, root: usize, list: &[usize], p: &mut Painter, base: f32) {
+    let mut inside = Vec::new();
+    paint_layer_inner(cx, root, list, p, base, &mut inside);
+    // widgets in a layer are kit nodes (no effects): on top of the layer's image
+    for (key, _, area) in inside {
+        p.note_widget(key, area);
+    }
+}
+
+fn paint_layer_inner(cx: &mut LayerCx, root: usize, list: &[usize], p: &mut Painter, base: f32,
+                     inside: &mut Vec<(Key, u32, Bounds<f32>)>) {
     use crate::effects as fx;
     use std::hash::{Hash, Hasher};
     let n = &cx.frame.nodes[root];
@@ -775,6 +1012,7 @@ fn paint_layer(cx: &mut LayerCx, root: usize, list: &[usize], p: &mut Painter, b
     // the content, painted at full opacity relative to the root
     let mut sub = Painter::new();
     paint_list(cx, list, &mut sub, Some(root), n.opacity);
+    inside.append(&mut sub.widgets);
     let n = &cx.frame.nodes[root];
     let c = &cx.styles[n.style];
     let screen = rect(-cx.vp.0, -cx.vp.1, cx.vp.0 * 3.0, cx.vp.1 * 3.0);
@@ -805,7 +1043,7 @@ fn paint_layer(cx: &mut LayerCx, root: usize, list: &[usize], p: &mut Painter, b
         fx::mul(&fx::mul(&[1.0, 0.0, 0.0, 1.0, ox, oy], &lin), &[1.0, 0.0, 0.0, 1.0, -ox, -oy])
     };
     let key = {
-        let mut hh = Fnv64::default();
+        let mut hh = key_hasher();
         sub.content_hash(&mut hh);
         format!("{e:?}").hash(&mut hh);
         (x0.to_bits(), y0.to_bits(), w, h, cx.scale.to_bits(), rel_opacity.to_bits(),
@@ -966,23 +1204,6 @@ fn paint_source(p: &mut Painter, src: &crate::effects::ImageSource, area: Bounds
     }
 }
 
-/// FNV-1a for layer keys.
-#[derive(Default)]
-struct Fnv64(u64);
-
-impl std::hash::Hasher for Fnv64 {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        let mut h = if self.0 == 0 { 0xcbf29ce484222325 } else { self.0 };
-        for b in bytes {
-            h = (h ^ *b as u64).wrapping_mul(0x100000001b3);
-        }
-        self.0 = h;
-    }
-}
-
 /// A background that repaints exactly the pixels already under it: an opaque
 /// plain fill with the colour and bounds of the nearest painted ancestor, with
 /// only undecorated same-sized boxes in between (so nothing else can show).
@@ -1016,6 +1237,7 @@ fn paint_node(frame: &Frame, styles: &StyleStore, tc: &mut TextCache, i: usize, 
               vp: (f32, f32), app: &crate::window::App) {
     let n = &frame.nodes[i];
     let c = &styles[n.style];
+    p.through = !c.pointer_events;
     let b = n.bounds;
     match &n.content {
         Content::Word { .. } => {
@@ -1024,40 +1246,21 @@ fn paint_node(frame: &Frame, styles: &StyleStore, tc: &mut TextCache, i: usize, 
             if owner.taffy.is_none() {
                 p.fill(b, styles[owner.style].background);
             }
-            paint_text_line(p, tc, c, frame.text(i), b.origin.x, b.origin.y, b.size.height, None);
+            let text = frame.text(i);
+            if let Some(sel) = p.sel {
+                let line = RunLine { text, x: b.origin.x, y: b.origin.y, lh: b.size.height, w: b.size.width, at: 0 };
+                paint_selection(p, tc, c, &sel, n.seq, text.len(), &line, true);
+            }
+            paint_text_line(p, tc, c, text, b.origin.x, b.origin.y, b.size.height, None);
         }
         // a text run as a flex/grid item (in line boxes its words paint instead)
         Content::Text(t) if n.taffy.is_some() || n.folded => {
-            let flags = text::flags(c);
-            let nowrap = matches!(c.white_space, WhiteSpace::NoWrap | WhiteSpace::Pre);
-            if !c.ellipsis && !t.contains([' ', '\n']) && text::break_mode(c) == 0 {
-                // one word: one line (the common label case)
-                let lw = tc.width(t, c.font_size, flags);
-                let x = match c.text_align {
-                    TextAlign::Center => b.origin.x + (b.size.width - lw) / 2.0,
-                    TextAlign::Right => b.origin.x + b.size.width - lw,
-                    _ => b.origin.x,
-                };
-                paint_text_line(p, tc, c, t, x, b.origin.y, c.line_px(), Some(lw));
-                return;
-            }
-            let lines = if nowrap {
-                vec![t.clone()]
-            } else {
-                tc.wrap(t, c.font_size, flags, b.size.width + 0.5, text::break_mode(c))
-            };
-            let lh = c.line_px();
-            for (k, line) in lines.iter().enumerate() {
-                let line = if c.ellipsis { tc.ellipsize(line, c.font_size, flags, b.size.width) }
-                           else { line.clone() };
-                let lw = tc.width(&line, c.font_size, flags);
-                let x = match c.text_align {
-                    TextAlign::Center => b.origin.x + (b.size.width - lw) / 2.0,
-                    TextAlign::Right => b.origin.x + b.size.width - lw,
-                    _ => b.origin.x,
-                };
-                paint_text_line(p, tc, c, &line, x, b.origin.y + lh * k as f32, lh, Some(lw));
-            }
+            each_run_line(tc, c, t, b, p.sel.is_some(), |tc, line| {
+                if let Some(sel) = p.sel {
+                    paint_selection(p, tc, c, &sel, n.seq, t.len(), line, false);
+                }
+                paint_text_line(p, tc, c, line.text, line.x, line.y, line.lh, Some(line.w));
+            });
         }
         Content::Element | Content::Replaced(_) if n.taffy.is_some() => {
             let hidden_cell = c.empty_cells_hide && c.display == DisplayKind::TableCell
@@ -1124,6 +1327,89 @@ fn paint_node(frame: &Frame, styles: &StyleStore, tc: &mut TextCache, i: usize, 
         }
         _ => {}
     }
+}
+
+/// One line of a text run (a flex / grid item, or text folded into its
+/// box) as it is drawn: what paint draws, and what text selection measures.
+pub(crate) struct RunLine<'a> {
+    pub text: &'a str,
+    pub x: f32,
+    pub y: f32,
+    pub lh: f32,
+    pub w: f32,
+    /// Byte offset of `text` in the run (only when asked for: 0 otherwise).
+    pub at: usize,
+}
+
+/// Call `f` with each line of text run `t` laid out in `b`: wrapped, cut with
+/// an ellipsis, aligned. `offsets`: find where each line starts in `t`.
+pub(crate) fn each_run_line(tc: &mut TextCache, c: &Computed, t: &str, b: Bounds<f32>, offsets: bool,
+                            mut f: impl FnMut(&mut TextCache, &RunLine)) {
+    let flags = text::flags(c);
+    let ellipsis = c.ellipsizes();
+    let align = |lw: f32| match c.text_align {
+        TextAlign::Center => b.origin.x + (b.size.width - lw) / 2.0,
+        TextAlign::Right => b.origin.x + b.size.width - lw,
+        _ => b.origin.x,
+    };
+    if !ellipsis && !t.contains([' ', '\n']) && text::break_mode(c) == 0 {
+        // one word: one line (the common label case)
+        let lw = tc.width(t, c.font_size, flags);
+        f(tc, &RunLine { text: t, x: align(lw), y: b.origin.y, lh: c.line_px(), w: lw, at: 0 });
+        return;
+    }
+    let nowrap = matches!(c.white_space, WhiteSpace::NoWrap | WhiteSpace::Pre);
+    let (wrapped, wrapped_run);
+    let lines: &[String] = if nowrap {
+        wrapped = [t.to_owned()];
+        &wrapped
+    } else {
+        wrapped_run = tc.wrap(t, c.font_size, flags, b.size.width + 0.5, text::break_mode(c));
+        &wrapped_run.lines
+    };
+    let lh = c.line_px();
+    let mut from = 0;
+    for (k, line) in lines.iter().enumerate() {
+        let line: std::borrow::Cow<str> = if ellipsis {
+            tc.ellipsize(line, c.font_size, flags, b.size.width + 0.5).into()
+        } else {
+            line.as_str().into()
+        };
+        let lw = tc.width(&line, c.font_size, flags);
+        let mut at = 0;
+        if offsets {
+            // lines are pieces of the run, whitespace between them dropped
+            let shown = line.strip_suffix('\u{2026}').filter(|_| ellipsis).unwrap_or(&line);
+            at = from + (t[from..].len() - t[from..].trim_start().len());
+            if !t[at..].starts_with(shown) {
+                at = t[from..].find(shown).map_or(at, |k| from + k);
+            }
+            from = (at + shown.len()).min(t.len());
+        }
+        f(tc, &RunLine { text: &line, x: align(lw), y: b.origin.y + lh * k as f32, lh, w: lw, at });
+    }
+}
+
+/// The selection highlight behind one line of text: the selected part of
+/// the line (`word`: through the space after the word when the selection
+/// goes on). While anything is selected every line pushes one rectangle
+/// (transparent when not selected), so items keep their canvas slots and a
+/// selection change damages only the lines whose state changed.
+#[allow(clippy::too_many_arguments)]
+fn paint_selection(p: &mut Painter, tc: &mut TextCache, c: &Computed, sel: &crate::selection::SelPaint, seq: u32,
+                   len: usize, line: &RunLine, word: bool) {
+    let none = rect(line.x, line.y, 0.0, 0.0);
+    let Some((s, e, goes_on)) = sel.range(seq, len) else {
+        return p.highlight(none, Rgba::TRANSPARENT);
+    };
+    let (rs, re) = (s.saturating_sub(line.at).min(line.text.len()), e.saturating_sub(line.at).min(line.text.len()));
+    if re <= rs {
+        return p.highlight(none, Rgba::TRANSPARENT);
+    }
+    let x0 = line.x + crate::selection::advance(tc, c, line.text, rs);
+    let x1 = if word && goes_on && re == line.text.len() { line.x + line.w }
+             else { line.x + crate::selection::advance(tc, c, line.text, re) };
+    p.highlight(rect(x0, line.y, (x1 - x0).max(0.0), line.lh), sel.color);
 }
 
 pub(crate) fn content_box(c: &Computed, b: Bounds<f32>) -> Bounds<f32> {

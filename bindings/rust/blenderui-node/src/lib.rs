@@ -23,6 +23,8 @@ use napi::threadsafe_function::{
 use napi::{Env, JsFunction, JsObject};
 use napi_derive::napi;
 
+mod motion;
+
 type Tsfn = ThreadsafeFunction<BuiEvent, ErrorStrategy::Fatal>;
 
 // ==========================================================================
@@ -51,6 +53,9 @@ pub struct BuiEvent {
     pub shift: bool,
     pub ctrl: bool,
     pub alt: bool,
+    /// `motion` (`target`: the motion, `button`: the event bit, `number`: a
+    /// value target's value): a plain object's values.
+    pub values: Option<Vec<f64>>,
 }
 
 impl From<view::Event> for BuiEvent {
@@ -58,7 +63,7 @@ impl From<view::Event> for BuiEvent {
         BuiEvent {
             kind: e.kind, window: e.window, target: e.target, x: e.x, y: e.y, button: e.button,
             click_count: e.click_count, delta: e.delta, key: e.key, key_char: e.key_char, value: e.value,
-            checked: e.checked, number: e.number, shift: e.shift, ctrl: e.ctrl, alt: e.alt,
+            checked: e.checked, number: e.number, shift: e.shift, ctrl: e.ctrl, alt: e.alt, values: e.values,
         }
     }
 }
@@ -83,6 +88,19 @@ pub struct WindowConfig {
     pub height: Option<f64>,
     pub resizable: Option<bool>,
     pub gpu: Option<bool>,
+    pub transparent: Option<bool>,
+    pub always_on_top: Option<bool>,
+    pub frame: Option<bool>,
+    pub layer_shell: Option<LayerShellConfig>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct LayerShellConfig {
+    pub layer: Option<String>,
+    pub anchor: Option<Vec<String>>,
+    pub exclusive_zone: Option<f64>,
+    pub keyboard: Option<String>,
 }
 
 #[napi(object)]
@@ -142,6 +160,19 @@ fn sink(tsfn: &Tsfn) -> view::Sink {
 pub struct NativeApp {
     link: Link,
     headless: bool,
+}
+
+impl NativeApp {
+    /// Run `f` on the UI thread and wait for its answer (None: the thread is gone).
+    fn ask<T: Send + 'static>(&self, f: impl FnOnce(&mut App) -> T + Send + 'static) -> Option<T> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        if !self.link.send(move |cx| {
+            let _ = tx.send(f(cx));
+        }) {
+            return None;
+        }
+        rx.recv().ok()
+    }
 }
 
 #[napi]
@@ -222,6 +253,10 @@ impl NativeApp {
     pub fn open_window(&self, id: u32, config: Option<WindowConfig>) {
         let c = config.map(|c| view::WindowConfig {
             title: c.title, width: c.width, height: c.height, resizable: c.resizable, gpu: c.gpu,
+            transparent: c.transparent, always_on_top: c.always_on_top, frame: c.frame,
+            layer_shell: c.layer_shell.map(|l| view::LayerShellConfig {
+                layer: l.layer, anchor: l.anchor, exclusive_zone: l.exclusive_zone, keyboard: l.keyboard,
+            }),
         }).unwrap_or_default();
         self.link.send(move |cx| {
             let s = sink(cx.global::<Tsfn>());
@@ -231,11 +266,15 @@ impl NativeApp {
 
     /// Apply a batch of ops to window `window` and re-render it: right away,
     /// or (`animated`, during requestAnimationFrame) on the next vsync.
+    /// `motion`: the Motion props its `MOTION` ops set (`[which, value, ...]`).
     #[napi]
-    pub fn commit(&self, window: u32, ops: Int32Array, strings: Vec<String>, animated: Option<bool>) {
+    pub fn commit(&self, window: u32, ops: Int32Array, strings: Vec<String>, animated: Option<bool>,
+                  motion: Option<JsObject>) -> Result<()> {
         let ops: Vec<i32> = ops.to_vec();
         let animated = animated.unwrap_or(false);
-        self.link.send(move |cx| view::commit(cx, window, &ops, &strings, animated));
+        let (props, bad) = motion::props(motion)?;
+        self.link.send(move |cx| view::commit(cx, window, &ops, &strings, props, animated));
+        bad.map_or(Ok(()), Err) // the batch is applied; the prop that couldn't be read is reported
     }
 
     /// Ask for a `frame` event when window `window` next renders (vsync).
@@ -269,6 +308,68 @@ impl NativeApp {
             });
         }
         ok
+    }
+
+    /// Switch to a theme loaded with `loadTheme`: resolves with whether the name is known.
+    #[napi(ts_return_type = "Promise<boolean>")]
+    pub fn set_custom_theme(&self, env: Env, name: String) -> Result<JsObject> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.link.send(move |cx| {
+            let ok = blenderui::set_theme(&name);
+            cx.notify_all();
+            deferred.resolve(move |_| Ok(ok));
+        });
+        Ok(promise)
+    }
+
+    /// Register the themes of a theme file's text (`file` false) or of the file at that path
+    /// (`file` true): resolves with how many were added, rejects with where the mistake is.
+    #[napi(ts_return_type = "Promise<number>")]
+    pub fn load_theme(&self, env: Env, source: String, file: bool) -> Result<JsObject> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.link.send(move |_cx| {
+            let r = if file { blenderui::load_theme_file(&source) } else { blenderui::load_theme(&source) };
+            match r {
+                Ok(n) => deferred.resolve(move |_| Ok(n as u32)),
+                Err(e) => deferred.reject(Error::from_reason(e)),
+            }
+        });
+        Ok(promise)
+    }
+
+    /// The names of the loaded themes.
+    #[napi(ts_return_type = "Promise<string[]>")]
+    pub fn themes(&self, env: Env) -> Result<JsObject> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.link.send(move |_cx| {
+            let names = blenderui::themes();
+            deferred.resolve(move |_| Ok(names));
+        });
+        Ok(promise)
+    }
+
+    /// One color of the active theme (`rgba` 0..1): resolves with whether the key exists.
+    #[napi(ts_return_type = "Promise<boolean>")]
+    pub fn set_theme_color(&self, env: Env, key: String, r: f64, g: f64, b: f64, a: f64) -> Result<JsObject> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.link.send(move |cx| {
+            let ok = blenderui::set_theme_color(&key, [r as f32, g as f32, b as f32, a as f32]);
+            cx.notify_all();
+            deferred.resolve(move |_| Ok(ok));
+        });
+        Ok(promise)
+    }
+
+    /// One number of the active theme (roundness, border width, ...): resolves with whether the key exists.
+    #[napi(ts_return_type = "Promise<boolean>")]
+    pub fn set_theme_value(&self, env: Env, key: String, value: f64) -> Result<JsObject> {
+        let (deferred, promise) = env.create_deferred()?;
+        self.link.send(move |cx| {
+            let ok = blenderui::set_theme_value(&key, value);
+            cx.notify_all();
+            deferred.resolve(move |_| Ok(ok));
+        });
+        Ok(promise)
     }
 
     /// End the UI thread (closes every window).
@@ -310,6 +411,12 @@ impl NativeApp {
     #[napi]
     pub fn simulate_click(&self, window: u32, x: f64, y: f64) {
         self.link.send(move |cx| view::simulate_click(cx, window, x, y));
+    }
+
+    /// The pointer in window `window` (tests; logical pixels): `kind` 0 moves it, 1 presses the left button, 2 lets go.
+    #[napi]
+    pub fn simulate_pointer(&self, window: u32, kind: u32, x: f64, y: f64) {
+        self.link.send(move |cx| view::simulate_pointer(cx, window, kind, x, y));
     }
 }
 

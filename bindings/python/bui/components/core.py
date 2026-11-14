@@ -45,13 +45,33 @@ def unit() -> int:
 
 class Component(buipy.KitNode):
     """Base of every component. ``x, y, w, h`` / ``rect`` come from the last
-    layout (provided by the C node)."""
+    layout (provided by the C node).
+
+    Motion's props (:mod:`bui.motion`): ``initial`` / ``animate`` (dicts of property ->
+    value) and ``transition`` (the options) animate the component from its first frame, e.g.
+    ``NumberSlider("Volume", initial={"value": 0}, animate={"value": 0.8})``; the motion is
+    ``self.motion``. Kit widgets animate values, colors and sizes: they have no transforms or
+    opacity. ``while_hover``, ``while_tap`` and ``exit`` aren't supported yet and raise."""
 
     TYPE = "column"
+    #: The keyword arguments this base class takes (subclasses that read the rest pass these on).
+    KWARGS = frozenset(("description", "enabled", "visible", "weight", "fill", "initial", "animate",
+                        "transition", "while_hover", "while_tap", "while_focus", "while_drag",
+                        "while_in_view", "exit", "variants", "layout"))
 
     def __init__(self, *, description: str = "", enabled: bool = True,
-                 visible: bool = True, weight: float = 1.0, fill: bool = False):
+                 visible: bool = True, weight: float = 1.0, fill: bool = False,
+                 initial: Optional[dict] = None, animate: Optional[dict] = None,
+                 transition: Optional[dict] = None, **unsupported):
+        for name in unsupported:
+            if name in Component.KWARGS:
+                raise NotImplementedError(f"the motion prop '{name}' is not supported on components yet")
+            raise TypeError(f"{type(self).__name__}() got an unexpected keyword argument '{name}'")
         super().__init__(self.TYPE)
+        self.motion = None
+        if initial or animate:
+            from bui import motion
+            self.motion = motion.mount(self, initial, animate, transition)
         if fill:  # in a column: grow into the spare height (a region filling its area)
             self.set("fill", True)
         if description:
@@ -100,10 +120,44 @@ class Component(buipy.KitNode):
     def corners(self) -> int:
         return int(self.get("corners"))
 
+    # -- children (a Panel or Popover keeps them in its body) ----------------------------
+    def _content(self) -> buipy.KitNode:
+        """The node that holds this component's children."""
+        return self
+
     def add(self, *components: "Component"):
+        content = self._content()
         for c in components:
-            buipy.KitNode.add(self, c)
+            buipy.KitNode.add(content, c)
         return components[0] if len(components) == 1 else self
+
+    def insert(self, index: int, component: "Component") -> "Component":
+        """Put ``component`` at ``index`` (negative or past the end: last). A
+        component that has a parent moves here."""
+        return buipy.KitNode.add(self._content(), component, int(index))
+
+    def remove(self, component: "Component") -> "Component":
+        """Take a child out; it can be added again later."""
+        buipy.KitNode.remove(self._content(), component)
+        return component
+
+    def clear(self):
+        """Remove every child."""
+        content = self._content()
+        for c in content.children:
+            buipy.KitNode.remove(content, c)
+        return self
+
+    def replace(self, old: "Component", new: "Component") -> "Component":
+        """Put ``new`` where the child ``old`` is."""
+        content = self._content()
+        # `new` leaves its old place first when it is already a child, so count without it
+        kids = [c for c in content.children if c is not new]
+        index = next((i for i, c in enumerate(kids) if c is old), None)
+        if index is None:
+            raise ValueError("replace(): old is not a child of this component")
+        buipy.KitNode.remove(content, old)
+        return buipy.KitNode.add(content, new, index)
 
     def _on_event(self, kind, ref, a, b):
         pass

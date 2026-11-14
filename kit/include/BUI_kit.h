@@ -39,8 +39,8 @@
  * the two can differ (a shared build, a binding). */
 #define BUI_KIT_VERSION_MAJOR 0
 #define BUI_KIT_VERSION_MINOR 5
-#define BUI_KIT_VERSION_PATCH 0
-#define BUI_KIT_VERSION_STRING "0.5.0"
+#define BUI_KIT_VERSION_PATCH 1
+#define BUI_KIT_VERSION_STRING "0.5.1"
 /* One number to compare: 0.4.0 is 400, 1.2.3 is 10203. */
 #define BUI_KIT_VERSION \
   (BUI_KIT_VERSION_MAJOR * 10000 + BUI_KIT_VERSION_MINOR * 100 + BUI_KIT_VERSION_PATCH)
@@ -133,8 +133,15 @@ void BK_set_ref_hooks(void (*retain)(void *ref), void (*release)(void *ref));
 /* -- global look ------------------------------------------------------------ */
 void BK_set_scale(float scale); /* Blender's resolution scale (1 = 20 px widgets) */
 float BK_scale(void);
+/* Blender's UI text shadows (drop shadow, soft one on panel titles); on by default */
+void BK_set_text_shadow(int on);
+int BK_text_shadow(void);
 int BK_unit(void);              /* U.widget_unit in pixels */
 void BK_set_font(const char *family);
+/* The UI text size in points (Blender's UI_DEFAULT_TEXT_POINTS is 11, the default). Browser-look
+ * controls keep their own 13.33 px. */
+void BK_set_font_size(float points);
+float BK_font_size_points(void);
 /* Themes: Blender's two presets, "dark" (Blender_Dark.xml = the built-in
  * default) and "light" (Blender_Light.xml), any case ("Blender Light" works
  * too). Every context relayouts and redraws (its host gets a request).
@@ -153,6 +160,50 @@ const char *BK_theme_name(void); /* "dark" or "light" */
  * scroll progress tooltip tab pie_menu curve; outline outline_sel inner
  * inner_sel item text text_sel), e.g. "regular.inner". 0 when unknown. */
 int BK_theme_color(const char *key, float r_rgba[4]);
+/* Custom themes. A theme file is JSON in the shape of gpui-kit's, with Blender's own color names:
+ *
+ *   { "name": "My themes", "themes": [ { "name": "My Dark", "mode": "dark",
+ *       "font.family": "Inter", "font.size": 11, "radius": 0.4, "shadow": true,
+ *       "colors": { "background": "#181825", "primary.background": "#89b4fa",
+ *                   "button.background": "#302d41", "button.corners.top_left": false,
+ *                   "button.border.width": 2, "node_editor.grid": "#1e1e2e" } } ] }
+ *
+ * A theme starts from the built-in theme named by "mode" ("dark" or "light") and changes what it
+ * lists. "colors" takes plain-English keys ("button.background"), Blender's names
+ * ("user_interface.wcol_regular.inner") and short palette names ("primary.background"), which fill
+ * in several keys; keys the theme sets itself win over the short names. Keys BUI has no use for yet
+ * are ignored (BK_theme_ignored counts them). docs/theming.md lists every key, and
+ * docs/theme-schema.json is a JSON Schema for editors.
+ *
+ * Per widget (button, tool_button, toggle_button, radio_button, checkbox, text_field, number_field,
+ * slider, menu, dropdown, popup, menu_item, list_item, box, scrollbar, progress_bar, tooltip, tab,
+ * pie_menu): border, border.selected, background, background.selected, fill, text, text.selected
+ * (colors), gradient.enabled, gradient.top, gradient.bottom, roundness, border.width (pixels, 0 for
+ * none), emboss.enabled, and corners.top_left / top_right / bottom_left / bottom_right (false keeps
+ * that corner square). */
+/* Register the themes of a theme file's text (or file). Returns how many were added (a theme with
+ * the name of an earlier one replaces it) or -1 with a message in BK_theme_error(). Nothing is added
+ * from a file with an error in it. Choose one with BK_set_theme(its name). */
+int BK_theme_load_json(const char *json);
+int BK_theme_load_file(const char *path);
+const char *BK_theme_error(void);
+int BK_theme_ignored(void);        /* keys of the last load that BUI has no use for */
+/* Those keys are not lost: a color ("#rrggbb") or a number a theme lists that BUI has no field for
+ * is the theme's own, and BK_theme_color / BK_theme_num read it by that key while the theme is in
+ * use ("muted.foreground": "#8696A0"; the application decides what it means). */
+int BK_theme_count(void);          /* registered themes */
+const char *BK_theme_at(int index); /* their names, NULL past the end */
+/* Set one value of the active theme now (until the next BK_set_theme): a color by key as above, or
+ * a number / boolean (roundness, border.width, gradient.top, emboss.enabled, corners.*, ...).
+ * Return 0 for an unknown key. BK_theme_color reads colors by these keys too. */
+int BK_theme_set_color(const char *key, const float rgba[4]);
+int BK_theme_set_num(const char *key, double value);
+int BK_theme_num(const char *key, double *r_value);
+/* For hosts that derive their own colors from the theme (a stylesheet, say): a number that changes
+ * whenever any theme value does, and the built-in theme ("dark" or "light") the active one is
+ * based on. */
+int BK_theme_generation(void);
+const char *BK_theme_mode(void);
 int BK_icon_id(const char *name); /* 0 when unknown */
 int BK_icon_count(void);
 const char *BK_icon_name(int id);
@@ -268,7 +319,12 @@ void BK_open_menu(BKContext *ctx,
                   const char *title,
                   int at_x,
                   int at_y);
-void BK_open_pie(BKContext *ctx, const BKMenuSpec *items, int n, const char *title);
+/* The interactive node under (x, y) in window pixels (ui_but_find_mouse_over): the top popup
+ * first, then the header and the root. NULL over nothing. A pie answers for the whole window. */
+BKNode *BK_hit_at(BKContext *ctx, int x, int y);
+/* The pie centre is (at_x, at_y) in window pixels, or the pointer when either is -100000. */
+void BK_open_pie(
+    BKContext *ctx, const BKMenuSpec *items, int n, const char *title, int at_x, int at_y);
 
 /* -- geometry managers (children of a "frame") ------------------------------------
  * Tk's pack / grid / place, also used for Qt layouts. Keys (numbers):
@@ -354,13 +410,17 @@ void BK_anim_free(BKAnim *anim);
  * streamed from the file at
  * the size it is drawn, frames in one GPU texture updated in place (NV12:
  * YCbCr converted in the shader; the CPU raster converts what it draws).
- * It loads when first drawn and plays only while it shows: off screen,
- * clipped, in a hidden window, nothing is decoded. Muted (no audio yet).
+ * It loads when first drawn; its frames are decoded only while it shows (off
+ * screen, clipped, in a hidden window: none). Its sound plays on the default
+ * output (WASAPI, CoreAudio, PulseAudio / PipeWire) and the frames follow it;
+ * the sound plays on off screen, and the picture catches up when it shows
+ * again. At a rate other than 1 the sound pauses.
  * UI-thread API; the state listener runs on the UI thread. */
 typedef struct BKVideo BKVideo;
 enum { BK_VIDEO_LOADING = 0, BK_VIDEO_PLAYING, BK_VIDEO_PAUSED, BK_VIDEO_ENDED, BK_VIDEO_ERROR };
-/* Autoplays (a muted autoplay, as browsers allow); BK_video_pause before the
- * first draw shows the first frame instead. NULL for an empty src. */
+/* Autoplays with sound (BK_video_set_muted first for a silent autoplay);
+ * BK_video_pause before the first draw shows the first frame instead. NULL
+ * for an empty src. */
 BKVideo *BK_video_new(const char *src);
 void BK_video_free(BKVideo *v);
 void BK_video_play(BKVideo *v); /* an ended video starts over */
@@ -370,8 +430,24 @@ void BK_video_set_rate(BKVideo *v, double rate); /* playback speed, 1/16 .. 16 *
 void BK_video_set_loop(BKVideo *v, int loop);
 /* An image file shown until the first frame (HTML poster); NULL: none. */
 void BK_video_set_poster(BKVideo *v, const char *src);
-/* Blender-style controls over it (play/pause, scrubber, time) in "video" nodes. */
+/* Blender-style controls over it (play/pause, scrubber, time, and mute when it
+ * has sound) in "video" nodes. */
 void BK_video_set_controls(BKVideo *v, int on);
+/* Sound: muted (the clock still follows it), and the volume (0 .. 1).
+ * Audio effects: on Windows the sound plays RAW, without the system's effects chain
+ * (Realtek, Dolby, Nahimic "enhancements"), which opens the output in half the time; turn
+ * them on for a video that should have them (before it is drawn, or later: the output
+ * opens again). Other systems ignore it. The environment variable BUI_AUDIO_EFFECTS=1
+ * does it for every video. */
+void BK_video_set_muted(BKVideo *v, int muted);
+int BK_video_muted(const BKVideo *v);
+void BK_video_set_audio_effects(BKVideo *v, int on); /* default off, see below */
+int BK_video_audio_effects(const BKVideo *v);
+void BK_video_set_volume(BKVideo *v, double volume);
+double BK_video_volume(const BKVideo *v);
+/* Its sound plays (the file has an audio track this system decodes, and an
+ * output device): 0 until it has started. */
+int BK_video_has_audio(const BKVideo *v);
 int BK_video_state(const BKVideo *v);        /* BK_VIDEO_* */
 double BK_video_time(const BKVideo *v);      /* seconds */
 double BK_video_duration(const BKVideo *v);  /* seconds; 0 until loaded or unknown */
@@ -414,9 +490,25 @@ void BK_image_prefetch(const char *src, int w, int h, int fit);
 void BK_image_clear_cache(void); /* drops every settled entry */
 void BK_image_exit(void);        /* joins the workers, frees the cache */
 
-/* -- canvas (Tk Canvas, QPainter) -------------------------------------------------- */
+/* -- GPU effects: application shaders ------------------------------------------------
+ * A canvas item (BK_ITEM_EFFECT) that runs a pixel shader of the app's over its box on the GPU
+ * renderers (Direct3D 11, OpenGL), in paint order. GPU_raster.h has the dialect and the
+ * BUI_effect_* calls; these are the kit's names for the same functions. Create an effect once,
+ * draw it every frame with its inputs and floats, free it when done. BK_effect_create returns an
+ * id > 0, or 0 for bad arguments (n_inputs 0..BK_EFFECT_MAX_INPUTS, n_floats
+ * 0..BK_EFFECT_MAX_FLOATS, a non-empty source of at most BK_EFFECT_MAX_SOURCE bytes); nothing
+ * compiles until a GPU frame draws it. BK_effect_error: the compile/link log of the last GPU
+ * attempt, "" when fine or not tried yet, NULL for an unknown id. */
+#define BK_EFFECT_MAX_INPUTS BUI_EFFECT_MAX_INPUTS
+#define BK_EFFECT_MAX_FLOATS BUI_EFFECT_MAX_FLOATS
+#define BK_EFFECT_MAX_SOURCE BUI_EFFECT_MAX_SOURCE
+#define BK_effect_create BUI_effect_create
+#define BK_effect_free BUI_effect_free
+#define BK_effect_error BUI_effect_error
+
+/* -- canvas (Tk Canvas, QPainter)-------------------------------------------------- */
 enum { BK_ITEM_RECT, BK_ITEM_OVAL, BK_ITEM_LINE, BK_ITEM_POLYGON, BK_ITEM_TEXT, BK_ITEM_ARC,
-       BK_ITEM_IMAGE, BK_ITEM_ROUNDRECT };
+       BK_ITEM_IMAGE, BK_ITEM_ROUNDRECT, BK_ITEM_EFFECT };
 typedef struct BKCanvasItem {
   int id, type;
   const float *coords; /* x0 y0 x1 y1 ... in canvas space */
@@ -444,12 +536,22 @@ typedef struct BKCanvasItem {
   int frame; /* animated src: 0 plays (each frame for its delay, looping as the file
               * says; paused while off screen); n > 0 shows frame n - 1 */
   BKVideo *video; /* images: a video's current frame (borrowed, as imbuf) */
+  int no_hit;     /* a canvas with `hititems` lets the pointer through this item */
+  /* BK_ITEM_EFFECT: a GPU shader (BK_effect_create) over the box x0 y0 x1 y1 (4 coords): the BUI
+   * textures it samples (BUI_texture_*; unused slots 0) and its floats (copied; the effect's
+   * n_floats are read, missing ones are 0). Where the GPU cannot run it (software raster, no
+   * shader compiler, a compile error: BK_effect_error) the image of this item is drawn instead:
+   * rgba / imbuf / src / video as for BK_ITEM_IMAGE, fitted into the box by `fit`; none: nothing. */
+  int effect;
+  int effect_inputs[BK_EFFECT_MAX_INPUTS];
+  const float *effect_floats;
+  int n_effect_floats;
 } BKCanvasItem;
 void BK_canvas_set_item(BKNode *canvas, const BKCanvasItem *item); /* insert or replace by id */
 void BK_canvas_add_item(BKNode *canvas, const BKCanvasItem *item);
 /* Immediate-mode hosts that rebuild the whole list each frame: overwrite the
  * item at `index` (index == count appends), reusing its buffers, then call
- * BK_canvas_truncate with the new count (drops the rest, redraws once). */
+ * BK_canvas_truncate with the new count (drops the rest). Only items that changed are redrawn. */
 void BK_canvas_put_item(BKNode *canvas, int index, const BKCanvasItem *item);
 void BK_canvas_truncate(BKNode *canvas, int count); /* append, ids not checked */
 void BK_canvas_delete(BKNode *canvas, int id);                     /* id < 0: all */
@@ -576,6 +678,10 @@ BKNode *BK_context_root(BKContext *ctx);
 /* Render into `r` (w x h). Redraws only damaged regions unless `full`.
  * Returns the number of redrawn regions (0 = nothing changed). */
 int BK_render(BKContext *ctx, BuiRaster *r, int w, int h, int full);
+/* The window is now w x h: lays out and reports the geometry (BK_EV_CONFIGURE) without drawing,
+ * so a host whose handlers rebuild the tree does that before the first draw at the new size.
+ * Returns 1 when the size changed. BK_render does the same, so calling this is optional. */
+int BK_configure(BKContext *ctx, int w, int h);
 int BK_needs_render(BKContext *ctx);
 
 /* Input; each returns non-zero when something changed. */
@@ -661,6 +767,8 @@ typedef struct BKWindowCallbacks {
   /* BK_window_request_frame: called right before the frame renders, so a host
    * can rebuild its UI for exactly the frame that presents it. */
   void (*on_frame)(void *data, BKWindow *win);
+  /* The window got (1) or lost (0) the keyboard focus (GHOST_kEventWindowActivate). */
+  void (*on_focus)(void *data, BKWindow *win, int active);
 } BKWindowCallbacks;
 int BK_window_supported(void);
 BKWindow *BK_window_new(BKContext *ctx, const char *title, int width, int height);
@@ -690,7 +798,17 @@ void BK_window_cancel_timer(BKWindow *win, int id);
 void *BK_window_handle(BKWindow *win);       /* HWND / X11 Window / NSWindow * */
 /* Window-manager requests (Tk's wm): "pos" (x, y), "minsize"/"maxsize" (w, h),
  * "resizable" (w, h), "topmost" (a), "alpha" (a), "override" (a), "state"
- * (0 normal, 1 iconic, 2 withdrawn, 3 zoomed), "lift", "lower", "focus". */
+ * (0 normal, 1 iconic, 2 withdrawn, 3 zoomed), "lift", "lower", "focus".
+ * "transparent" (a): per-pixel alpha, no region background. On Linux set it
+ * before show (X11 makes the window again; the OpenGL renderer uses its 32-bit visual). On Windows
+ * the window has no frame: with the Direct3D 11 renderer DWM blends the alpha of its frames
+ * (blur-behind), else the raster is shown with UpdateLayeredWindow (the window is made again). On macOS it is a
+ * non-opaque window with a clear background.
+ * "layer" (layer, keyboard; Wayland with wlr-layer-shell): a layer surface instead of a
+ * toplevel, layer 0 background .. 3 overlay (-1: a toplevel again), keyboard 0 none,
+ * 1 exclusive, 2 on demand. "anchor" (edges, exclusive zone): edges top 1, bottom 2, left 4,
+ * right 8; anchored at both edges of an axis, the surface fills it. wm_get("layer") gives
+ * (1 when the compositor has layer shell, the window's layer). */
 void BK_window_wm(BKWindow *win, const char *key, double a, double b);
 /* Queries: "pos", "state", "screen" (w, h), "pointer" (x, y), "scale". */
 int BK_window_wm_get(BKWindow *win, const char *key, double *r_a, double *r_b);

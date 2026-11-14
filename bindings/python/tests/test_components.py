@@ -487,6 +487,151 @@ def test_pie_menu():
     assert got == ["N"] and not d.popups()
 
 
+def _pie_on_q(got):
+    from bui.components import MenuItem, PieMenu
+    d = Driver(Label("x"), size=(600, 500))
+    d.ctx.set_pointer(300, 250)
+    d.app.bind("q", lambda: PieMenu.show(d.ctx, [
+        MenuItem(n, (lambda n=n: got.append(n))) for n in "WESN"]))
+    d.app.key("q", "q", 0, mods())
+    d.frame()
+    return d
+
+
+def test_pie_hold_release():
+    import time
+    got = []
+    d = _pie_on_q(got)
+    d.app.key("q", "q", 0, mods())                     # auto-repeat is ignored
+    d.app.motion(301, 249, mods())                     # still inside the click threshold
+    time.sleep(0.25)                                   # past pie_tap_timeout
+    d.app.motion(300, 120, mods())
+    d.ctx.key_release("q")
+    assert got == ["N"] and not d.popups()
+
+
+def test_pie_drag_release():
+    got = []
+    d = _pie_on_q(got)
+    d.app.motion(430, 250, mods())                     # a drag: release picks at once
+    d.ctx.key_release("q")
+    assert got == ["E"] and not d.popups()
+
+
+def test_pie_tap_stays_open():
+    got = []
+    d = _pie_on_q(got)
+    d.ctx.key_release("q")                             # a quick tap: click style
+    assert d.popups() == 1 and not got
+    d.app.motion(170, 250, mods())
+    d.app.press(170, 250, mods())
+    assert got == ["W"] and not d.popups()
+
+
+def test_pie_sub_menu():
+    from bui.components import MenuItem, PieMenu
+    got = []
+    d = Driver(Label("x"), size=(600, 500))
+    d.ctx.set_pointer(300, 250)
+    leaf = [MenuItem(n, (lambda n=n: got.append(n))) for n in "wesn"]
+    PieMenu.show(d.ctx, [MenuItem("W"), MenuItem("Sub", submenu=leaf)])
+    d.frame()
+    d.app.motion(430, 250, mods())                     # east: "Sub"
+    d.app.press(430, 250, mods())
+    assert d.popups() == 1 and not got                 # the sub-pie, centred at the pointer
+    d.frame()
+    d.app.motion(430, 120, mods())                     # north of the new centre
+    d.app.press(430, 120, mods())
+    assert got == ["n"] and not d.popups()
+
+
+def test_pie_more_level():
+    from bui.components import MenuItem, PieMenu
+    got = []
+    d = Driver(Label("x"), size=(600, 500))
+    d.ctx.set_pointer(300, 250)
+    PieMenu.show(d.ctx, [MenuItem(str(i), (lambda i=i: got.append(i))) for i in range(10)])
+    d.frame()
+    d.app.key("3", "3", 0, mods())                     # numpad SE: the 8th slot, "More"
+    d.frame()
+    assert d.popups() == 1 and not got
+    d.app.key("2", "2", 0, mods())                     # items 7, 8, 9 at W, E, S: S is 9
+    assert got == [9] and not d.popups()
+
+
+def test_pie_number_keys():
+    from bui.components import MenuItem, PieMenu
+    got = []
+    d = Driver(Label("x"), size=(600, 500))
+    PieMenu.show(d.ctx, [MenuItem(n, (lambda n=n: got.append(n))) for n in "WESN"], at=(300, 250))
+    d.frame()
+    d.app.key("5", "5", 0, mods())                     # the centre: no item
+    d.app.key("1", "1", 0, mods())                     # SW: no item there
+    assert d.popups() == 1
+    d.app.key("8", "8", 0, mods())                     # numpad 8 is north
+    assert got == ["N"] and not d.popups()
+
+
+def test_pie_accelerator_keys():
+    from bui.components import MenuItem, PieMenu
+    got = []
+    d = Driver(Label("x"), size=(600, 500))
+    names = ["Object Mode", "Edit Mode", "Sculpt", "Open Shading"]
+    PieMenu.show(d.ctx, [MenuItem(n, (lambda n=n: got.append(n))) for n in names], at=(300, 250))
+    d.frame()
+    # first letters of words: o, e, s; both of "Open Shading"'s are taken, so the second pass
+    # gives it its first free letter, p
+    d.app.key("m", "m", 0, mods())                     # no item has m
+    assert d.popups() == 1
+    d.app.key("p", "p", 0, mods())
+    assert got == ["Open Shading"] and not d.popups()
+
+
+def test_pie_open_animation():
+    import time
+    from bui.components import MenuItem, PieMenu
+
+    def east_x(d):
+        d.frame()
+        x, y, w, h = dict(d.ctx.menu_rows(-1))["E"]
+        return x + w / 2
+
+    d = Driver(Label("x"), size=(600, 500))
+    buipy.kit_set_animations(True)
+    try:
+        PieMenu.show(d.ctx, [MenuItem(n) for n in "WESN"], at=(300, 250))
+        start = east_x(d)                              # items start at the center
+        time.sleep(0.1)                                # past pie_animation_timeout
+        end = east_x(d)
+        assert start < 330 < 380 < end, (start, end)
+    finally:
+        buipy.kit_set_animations(False)
+    d.ctx.close_popups()
+    PieMenu.show(d.ctx, [MenuItem(n) for n in "WESN"], at=(300, 250))
+    assert east_x(d) == end                            # reduced motion: no animation
+
+
+def test_pie_menu_at():
+    from bui.components import MenuItem, PieMenu
+    got = []
+    d = Driver(Label("x"), size=(600, 500))
+    d.ctx.set_pointer(10, 10)
+    PieMenu.show(d.ctx, [MenuItem(n, (lambda n=n: got.append(n))) for n in "WESN"], at=(300, 250))
+    d.frame()
+    d.app.motion(430, 250, mods())                     # east of the given centre
+    d.app.press(430, 250, mods())
+    assert got == ["E"] and not d.popups()
+
+
+def test_hit():
+    from bui.components import Button
+    btn = Button("x")
+    d = Driver(btn, size=(300, 200))
+    x, y, w, h = btn.rect
+    assert d.ctx.hit(x + w // 2, y + h // 2) is btn
+    assert d.ctx.hit(-5, -5) is None
+
+
 # -- color ------------------------------------------------------------------------------
 
 
@@ -861,6 +1006,149 @@ def test_textarea_editing():
     assert ta.get_str("value") == "b\nc"
     ctx.render(300, 200, r, False)
 
+
+def test_textarea_component():
+    from bui.components import TextArea
+    got = []
+    ta = TextArea("one", rows=3, on_change=got.append)
+    tall = TextArea(rows=6)
+    d = Driver(ta, tall)
+    assert ta.type == "textarea" and ta.value == "one"
+    assert tall.h > ta.h                                  # rows sets the natural height
+    d.click(ta)
+    d.key("End")
+    d.key("Return")
+    d.type("two")
+    assert ta.value == "one\ntwo", repr(ta.value)
+    assert got[-1] == "one\ntwo"                          # on_change on every edit
+    got.clear()
+    ta.set_value("a\nb", notify=False)
+    assert ta.value == "a\nb" and got == []
+    ta.value = "c"
+    assert got == ["c"]
+    ta.value = "c"                                        # unchanged: no callback
+    assert got == ["c"]
+    ta.reset()
+    assert ta.value == "" and got == ["c", ""]
+
+
+def test_file_browser_component():
+    import shutil
+    import tempfile
+    from bui.components import FileBrowser
+    tmp = tempfile.mkdtemp(prefix="bui_fbc_")
+    saved = os.environ.get("BUI_BOOKMARKS")
+    os.environ["BUI_BOOKMARKS"] = os.path.join(tmp, "bookmarks.txt")
+    try:
+        root = os.path.join(tmp, "files")
+        os.makedirs(os.path.join(root, "sub"))
+        open(os.path.join(root, "a.txt"), "w").close()
+        folders, chosen = [], []
+        fb = FileBrowser(root, filters=["Text\t*.txt"], on_change=folders.append,
+                         on_submit=chosen.append, fill=True)
+        d = Driver(Label("Pick a file"), fb, size=(900, 600))
+        assert fb.type == "filebrowser" and fb.directory == root + os.sep
+        assert fb.w > 0 and fb.h > 0 and fb.y > 0             # laid out below the label
+        assert fb.get("count") == 3                           # "..", sub, a.txt
+        fb.directory = os.path.join(root, "sub")
+        assert folders == [os.path.join(root, "sub") + os.sep]
+        fb.directory = root
+        fb.file = "a.txt"
+        fb.execute()
+        assert fb.state == 1 and chosen == [[os.path.join(root, "a.txt")]]
+        assert fb.result == [os.path.join(root, "a.txt")]
+        d.frame()
+
+        saver = FileBrowser(root, mode="save", file="new.txt", on_submit=chosen.append)
+        Driver(saver, size=(900, 600))
+        saver.cancel()
+        assert saver.state == -1 and chosen[-1] == []
+        try:
+            FileBrowser(mode="load")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unknown mode accepted")
+    finally:
+        if saved is None:
+            os.environ.pop("BUI_BOOKMARKS", None)
+        else:
+            os.environ["BUI_BOOKMARKS"] = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_editing_children():
+    a, b, c = Label("a"), Label("b"), Label("c")
+    col = Column(a, b)
+    panel = Panel("Panel", Label("x"))
+    d = Driver(col, panel)
+    texts = lambda node: [n.get_str("text") for n in node.children]  # noqa: E731
+    assert col.insert(1, c) is c and texts(col) == ["a", "c", "b"]
+    d.frame()
+    assert a.y < c.y < b.y                                # relaid out in the new order
+    assert col.remove(a) is a and texts(col) == ["c", "b"] and a.parent is None
+    assert col.insert(-1, a) is a and texts(col) == ["c", "b", "a"]
+    new = Label("n")
+    assert col.replace(b, new) is new and texts(col) == ["c", "n", "a"]
+    try:
+        col.replace(b, Label("z"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("replace() of a non-child accepted")
+    assert col.clear() is col and col.children == []
+    # a Panel edits its body, like add()
+    y = panel.insert(0, Label("y"))
+    assert texts(panel.body) == ["y", "x"] and len(panel.children) == 1
+    panel.replace(y, a)                                   # moves a from nowhere into the body
+    assert texts(panel.body) == ["a", "x"]
+    col.add(a)                                            # adding elsewhere moves it
+    assert texts(panel.body) == ["x"] and texts(col) == ["a"]
+    panel.clear()
+    assert panel.body.children == [] and len(panel.children) == 1
+    d.frame()
+
+
+
+def test_editing_review_fixes():
+    from bui.components import Node, NodeEditor
+    # replace(): an earlier sibling takes old's place, not the slot after it
+    a, b, c, d_ = Label("a"), Label("b"), Label("c"), Label("d")
+    col = Column(a, b, c, d_)
+    col.replace(c, a)
+    assert [n.get_str("text") for n in col.children] == ["b", "a", "d"]
+    # a NodeEditor follows every way of editing its children, and its links follow their nodes
+    n1, n2, n3 = (Node(t, outputs=[("o", "float")], inputs=[("i", "float")]) for t in "xyz")
+    ed = NodeEditor([n1, n2], links=[(n1, 0, n2, 0)])
+    ed.add(n3)
+    assert ed.nodes == [n1, n2, n3] and ed.links == [(n1, 0, n2, 0)]
+    first = Node("w", inputs=[("i", "float")])
+    ed.insert(0, first)                                   # every index moves up by one
+    assert ed.nodes == [first, n1, n2, n3] and ed.links == [(n1, 0, n2, 0)]
+    ed.remove(first)
+    assert ed.nodes == [n1, n2, n3] and ed.links == [(n1, 0, n2, 0)]
+    other = Node("v", outputs=[("o", "float")], inputs=[("i", "float")])
+    ed.replace(n3, other)
+    assert ed.nodes == [n1, n2, other]
+    ed.remove(n1)                                         # a link to a removed node goes with it
+    assert ed.nodes == [n2, other] and ed.links == []
+    assert ed.clear() is ed and ed.nodes == [] and ed.links == []
+    # a TextArea written with the text it holds keeps its selection
+    from bui.components import TextArea
+    ta = TextArea("hello")
+    ta.set_value("hello")
+    assert ta.value == "hello"
+
+
+def test_node_editor_height():
+    from bui.components import Node, NodeEditor
+    u = buipy.kit_unit()
+    short = NodeEditor([Node("Value", outputs=[("Value", "float")])], height=8)
+    default = NodeEditor()
+    assert short.natural()[1] == 8 * u
+    assert default.natural()[1] == 14 * u
+    Driver(short, default, size=(500, 900))
+    assert short.h == 8 * u and default.h == 14 * u
 
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

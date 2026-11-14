@@ -11,13 +11,10 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
-#define PY_SSIZE_T_CLEAN
-#include <Python.h>
+#include "buipy.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-#include "BUI_kit.h"
 
 BuiRaster *buipy_current_raster(void);
 BuiRaster *buipy_raster_of(PyObject *obj);
@@ -28,7 +25,7 @@ BuiRaster *buipy_raster_of(PyObject *obj);
 
 static PyObject *g_err_type, *g_err_value, *g_err_tb;
 
-static void stash_error(void)
+void buipy_stash_error(void)
 {
   if (!PyErr_Occurred()) {
     return;
@@ -40,8 +37,7 @@ static void stash_error(void)
   PyErr_Fetch(&g_err_type, &g_err_value, &g_err_tb);
 }
 
-/* Returns 1 (with the exception restored) when a callback failed. */
-static int restore_error(void)
+int buipy_restore_error(void)
 {
   if (!g_err_type) {
     return 0;
@@ -64,10 +60,9 @@ static void ref_release(void *ref)
 /* The kit calls back into Python from places where the GIL may not be held: a native window's
  * message can be dispatched by another toolkit sharing the thread (Tk's update() releases the GIL
  * around Tcl, and Tcl's notifier dispatches every window message of the thread, BUI's included).
- * Every callback the kit gets is therefore one of these wrappers, which take the GIL first;
- * PyGILState_Ensure is cheap and nests, so it also does no harm when the GIL is already held. */
-#define GIL_ENTER PyGILState_STATE gil_ = PyGILState_Ensure()
-#define GIL_LEAVE PyGILState_Release(gil_)
+ * Every callback the kit gets is therefore one of these wrappers, which take the GIL first
+ * (GIL_ENTER, buipy.h); PyGILState_Ensure is cheap and nests, so it also does no harm when the
+ * GIL is already held. */
 
 static void ref_retain_gil(void *ref)
 {
@@ -145,7 +140,6 @@ static int kitnode_init(KitNodeObject *self, PyObject *args, PyObject *kw)
   return 0;
 }
 
-/* The node of a KitNode (buipy_video.c attaches videos); NULL with an error. */
 BKNode *buipy_kit_node(PyObject *obj)
 {
   if (!obj || !PyObject_TypeCheck(obj, &KitNode_Type) || !((KitNodeObject *)obj)->node) {
@@ -247,7 +241,7 @@ static PyObject *kitnode_set(KitNodeObject *self, PyObject *args)
     PyErr_Format(PyExc_TypeError, "unsupported value for '%s'", key);
     return NULL;
   }
-  if (restore_error()) {
+  if (buipy_restore_error()) {
     return NULL;
   }
   if (!ok) {
@@ -1314,7 +1308,7 @@ static void call_quiet(PyObject *fn, PyObject *args)
   }
   PyObject *r = PyObject_CallObject(fn, args);
   if (!r) {
-    stash_error();
+    buipy_stash_error();
   }
   Py_XDECREF(r);
 }
@@ -1433,7 +1427,7 @@ static void host_emit(void *data, BKNode *node, int kind, void *ref, double a, d
                             a, b);
   }
   if (!r) {
-    stash_error();
+    buipy_stash_error();
   }
   Py_XDECREF(r);
 }
@@ -1641,7 +1635,7 @@ static PyObject *kitctx_render(KitContextObject *self, PyObject *args, PyObject 
     return NULL;
   }
   const int regions = BK_render(self->ctx, r, w, h, full);
-  if (restore_error()) {
+  if (buipy_restore_error()) {
     return NULL;
   }
   return PyLong_FromLong(regions);
@@ -1655,7 +1649,7 @@ static PyObject *kitctx_render(KitContextObject *self, PyObject *args, PyObject 
       return NULL; \
     } \
     const int r = call(self->ctx, x, y, mods); \
-    if (restore_error()) { \
+    if (buipy_restore_error()) { \
       return NULL; \
     } \
     return PyBool_FromLong(r); \
@@ -1673,7 +1667,7 @@ static PyObject *kitctx_wheel(KitContextObject *self, PyObject *args)
     return NULL;
   }
   const int r = BK_wheel(self->ctx, x, y, delta, mods);
-  if (restore_error()) {
+  if (buipy_restore_error()) {
     return NULL;
   }
   return PyBool_FromLong(r);
@@ -1687,7 +1681,7 @@ static PyObject *kitctx_key(KitContextObject *self, PyObject *args)
     return NULL;
   }
   const int r = BK_key(self->ctx, text ? text : "", keysym ? keysym : "", mods);
-  if (restore_error()) {
+  if (buipy_restore_error()) {
     return NULL;
   }
   return PyBool_FromLong(r);
@@ -1701,7 +1695,7 @@ static PyObject *kitctx_key_release(KitContextObject *self, PyObject *args)
     return NULL;
   }
   const int r = BK_key_release(self->ctx, keysym, mods);
-  if (restore_error()) {
+  if (buipy_restore_error()) {
     return NULL;
   }
   return PyBool_FromLong(r);
@@ -1714,7 +1708,7 @@ static PyObject *kitctx_button(KitContextObject *self, PyObject *args)
     return NULL;
   }
   const int r = BK_button(self->ctx, x, y, button, release, mods);
-  if (restore_error()) {
+  if (buipy_restore_error()) {
     return NULL;
   }
   return PyBool_FromLong(r);
@@ -1731,7 +1725,7 @@ static PyObject *kitctx_focus_node(KitContextObject *self, PyObject *arg)
     n = ((KitNodeObject *)arg)->node;
   }
   BK_focus_node(self->ctx, n);
-  if (restore_error()) {
+  if (buipy_restore_error()) {
     return NULL;
   }
   Py_RETURN_NONE;
@@ -1758,7 +1752,7 @@ static PyObject *kitctx_clipboard_set(KitContextObject *self, PyObject *arg)
 static PyObject *kitctx_timer(KitContextObject *self, PyObject *arg)
 {
   BK_timer(self->ctx, (int)PyLong_AsLong(arg));
-  if (restore_error()) {
+  if (buipy_restore_error()) {
     return NULL;
   }
   Py_RETURN_NONE;
@@ -1843,6 +1837,15 @@ static PyObject *kitctx_picker_part(KitContextObject *self, PyObject *args)
   return node_wrap(p ? BK_picker_part(p, name) : NULL);
 }
 
+static PyObject *kitctx_hit(KitContextObject *self, PyObject *args)
+{
+  int x, y;
+  if (!PyArg_ParseTuple(args, "ii:hit", &x, &y)) {
+    return NULL;
+  }
+  return node_wrap(BK_hit_at(self->ctx, x, y));
+}
+
 static PyObject *kitctx_open_menu(KitContextObject *self, PyObject *args, PyObject *kw)
 {
   static char *kwlist[] = {"owner", "items", "title", "at", NULL};
@@ -1872,11 +1875,17 @@ static PyObject *kitctx_open_menu(KitContextObject *self, PyObject *args, PyObje
   Py_RETURN_NONE;
 }
 
-static PyObject *kitctx_open_pie(KitContextObject *self, PyObject *args)
+static PyObject *kitctx_open_pie(KitContextObject *self, PyObject *args, PyObject *kw)
 {
+  static char *kwlist[] = {"items", "title", "at", NULL};
   PyObject *items;
   const char *title = NULL;
-  if (!PyArg_ParseTuple(args, "O|z:open_pie", &items, &title)) {
+  PyObject *at = Py_None;
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "O|zO:open_pie", kwlist, &items, &title, &at)) {
+    return NULL;
+  }
+  int ax = -100000, ay = -100000;
+  if (at != Py_None && !PyArg_ParseTuple(at, "ii", &ax, &ay)) {
     return NULL;
   }
   BKMenuSpec *specs;
@@ -1884,7 +1893,7 @@ static PyObject *kitctx_open_pie(KitContextObject *self, PyObject *args)
   if (!build_specs(items, &specs, &n)) {
     return NULL;
   }
-  BK_open_pie(self->ctx, specs, n, title);
+  BK_open_pie(self->ctx, specs, n, title, ax, ay);
   free_specs(specs, n);
   Py_RETURN_NONE;
 }
@@ -1913,7 +1922,7 @@ static PyObject *kitctx_tooltip(KitContextObject *self, void *c)
 static PyObject *kitctx_undo(KitContextObject *self, PyObject *unused)
 {
   const int r = BK_undo(self->ctx);
-  if (restore_error()) {
+  if (buipy_restore_error()) {
     return NULL;
   }
   return PyBool_FromLong(r);
@@ -1922,7 +1931,7 @@ static PyObject *kitctx_undo(KitContextObject *self, PyObject *unused)
 static PyObject *kitctx_redo(KitContextObject *self, PyObject *unused)
 {
   const int r = BK_redo(self->ctx);
-  if (restore_error()) {
+  if (buipy_restore_error()) {
     return NULL;
   }
   return PyBool_FromLong(r);
@@ -1974,9 +1983,11 @@ static PyMethodDef kitctx_methods[] = {
     {"popup_owner", (PyCFunction)kitctx_popup_owner, METH_O, ""},
     {"menu_rows", (PyCFunction)kitctx_menu_rows, METH_O, "[(text, rect)] of menu popup i"},
     {"picker_part", (PyCFunction)kitctx_picker_part, METH_VARARGS, "Color picker part."},
+    {"hit", (PyCFunction)kitctx_hit, METH_VARARGS, "hit(x, y): the node under the point, or None"},
     {"open_menu", (PyCFunction)(void (*)(void))kitctx_open_menu, METH_VARARGS | METH_KEYWORDS,
      "open_menu(owner, items, title=None, at=None)"},
-    {"open_pie", (PyCFunction)kitctx_open_pie, METH_VARARGS, "open_pie(items, title=None)"},
+    {"open_pie", (PyCFunction)(void (*)(void))kitctx_open_pie, METH_VARARGS | METH_KEYWORDS,
+     "open_pie(items, title=None, at=None)"},
     {NULL, NULL, 0, NULL},
 };
 
@@ -2015,6 +2026,16 @@ static PyObject *kit_set_scale(PyObject *m, PyObject *arg)
   Py_RETURN_NONE;
 }
 
+static PyObject *kit_set_text_shadow(PyObject *m, PyObject *arg)
+{
+  const int on = PyObject_IsTrue(arg);
+  if (on < 0) {
+    return NULL;
+  }
+  BK_set_text_shadow(on);
+  Py_RETURN_NONE;
+}
+
 static PyObject *kit_scale(PyObject *m, PyObject *unused)
 {
   return PyFloat_FromDouble(BK_scale());
@@ -2032,7 +2053,7 @@ static PyObject *kit_set_theme(PyObject *m, PyObject *arg)
     return NULL;
   }
   if (!BK_set_theme(name)) {
-    PyErr_Format(PyExc_ValueError, "unknown theme %R (expected 'dark' or 'light')", arg);
+    PyErr_Format(PyExc_ValueError, "unknown theme %R (expected 'dark', 'light' or a theme loaded with load_theme)", arg);
     return NULL;
   }
   Py_RETURN_NONE;
@@ -2060,6 +2081,113 @@ static PyObject *kit_theme_color(PyObject *m, PyObject *arg)
     return NULL;
   }
   return Py_BuildValue("(dddd)", (double)c[0], (double)c[1], (double)c[2], (double)c[3]);
+}
+
+/* Theme files (kit_theme.c): register the themes of a JSON text or file; ValueError says why not. */
+static PyObject *theme_loaded(int n)
+{
+  if (n < 0) {
+    PyErr_SetString(PyExc_ValueError, BK_theme_error());
+    return NULL;
+  }
+  return Py_BuildValue("(ii)", n, BK_theme_ignored());
+}
+
+static PyObject *kit_theme_load_json(PyObject *m, PyObject *arg)
+{
+  const char *text = PyUnicode_AsUTF8(arg);
+  return text ? theme_loaded(BK_theme_load_json(text)) : NULL;
+}
+
+static PyObject *kit_theme_load_file(PyObject *m, PyObject *arg)
+{
+  PyObject *path = PyOS_FSPath(arg);
+  if (!path) {
+    return NULL;
+  }
+  PyObject *enc = PyUnicode_EncodeFSDefault(path);
+  Py_DECREF(path);
+  if (!enc) {
+    return NULL;
+  }
+  PyObject *r = theme_loaded(BK_theme_load_file(PyBytes_AS_STRING(enc)));
+  Py_DECREF(enc);
+  return r;
+}
+
+static PyObject *kit_theme_names(PyObject *m, PyObject *unused)
+{
+  PyObject *list = PyList_New(0);
+  for (int i = 0; list && BK_theme_at(i); i++) {
+    PyObject *s = PyUnicode_FromString(BK_theme_at(i));
+    if (!s || PyList_Append(list, s) < 0) {
+      Py_XDECREF(s);
+      Py_CLEAR(list);
+      break;
+    }
+    Py_DECREF(s);
+  }
+  return list;
+}
+
+static PyObject *kit_theme_set_color(PyObject *m, PyObject *args)
+{
+  const char *key;
+  PyObject *rgba;
+  if (!PyArg_ParseTuple(args, "sO:kit_theme_set_color", &key, &rgba)) {
+    return NULL;
+  }
+  PyObject *seq = PySequence_Fast(rgba, "a color is (r, g, b) or (r, g, b, a)");
+  if (!seq) {
+    return NULL;
+  }
+  const Py_ssize_t n = PySequence_Fast_GET_SIZE(seq);
+  float f[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+  if (n != 3 && n != 4) {
+    Py_DECREF(seq);
+    PyErr_SetString(PyExc_ValueError, "a color is (r, g, b) or (r, g, b, a)");
+    return NULL;
+  }
+  for (Py_ssize_t i = 0; i < n; i++) {
+    f[i] = (float)PyFloat_AsDouble(PySequence_Fast_GET_ITEM(seq, i));
+  }
+  Py_DECREF(seq);
+  if (PyErr_Occurred()) {
+    return NULL;
+  }
+  if (!BK_theme_set_color(key, f)) {
+    PyErr_Format(PyExc_KeyError, "no theme color %s", key);
+    return NULL;
+  }
+  Py_RETURN_NONE;
+}
+
+static PyObject *kit_theme_set_num(PyObject *m, PyObject *args)
+{
+  const char *key;
+  double v;
+  if (!PyArg_ParseTuple(args, "sd:kit_theme_set_num", &key, &v)) {
+    return NULL;
+  }
+  if (!BK_theme_set_num(key, v)) {
+    PyErr_Format(PyExc_KeyError, "no theme number %s", key);
+    return NULL;
+  }
+  Py_RETURN_NONE;
+}
+
+static PyObject *kit_theme_num(PyObject *m, PyObject *arg)
+{
+  const char *key = PyUnicode_AsUTF8(arg);
+  double v;
+  if (!key) {
+    return NULL;
+  }
+  if (!BK_theme_num(key, &v)) {
+    PyErr_Format(PyExc_KeyError, "%R", arg);
+    return NULL;
+  }
+  return PyFloat_FromDouble(v);
 }
 
 static PyObject *kit_set_font(PyObject *m, PyObject *arg)
@@ -2338,12 +2466,20 @@ static PyMethodDef kit_functions[] = {
     {"image_set_budget", kit_image_set_budget, METH_O, "Image cache budget in bytes."},
     {"kit_set_scale", kit_set_scale, METH_O, "UI scale (1.0 = 20 px widgets)."},
     {"kit_scale", kit_scale, METH_NOARGS, ""},
+    {"kit_set_text_shadow", kit_set_text_shadow, METH_O,
+     "Blender's UI text shadows (off in Python by default)."},
     {"kit_unit", kit_unit, METH_NOARGS, "U.widget_unit in pixels."},
     {"kit_set_font", kit_set_font, METH_O, "UI font family."},
     {"kit_set_theme", kit_set_theme, METH_O, "Theme: 'dark' (default) or 'light' (Blender's presets)."},
     {"kit_version", kit_version, METH_NOARGS, "The kit's version, 'MAJOR.MINOR.PATCH' (the same as BUI's)."},
     {"kit_theme_name", kit_theme_name, METH_NOARGS, "The active theme: 'dark' or 'light'."},
-    {"kit_theme_color", kit_theme_color, METH_O, "A theme color as (r, g, b, a) 0..1, e.g. 'region_bg', 'regular.inner'."},
+    {"kit_theme_color", kit_theme_color, METH_O, "A theme color as (r, g, b, a) 0..1: 'button.background', 'user_interface.wcol_regular.inner', 'region_bg'."},
+    {"kit_theme_load_json", kit_theme_load_json, METH_O, "Register the themes of a theme file's text: (added, ignored keys)."},
+    {"kit_theme_load_file", kit_theme_load_file, METH_O, "Register the themes of a theme file: (added, ignored keys)."},
+    {"kit_theme_names", kit_theme_names, METH_NOARGS, "The registered (custom) themes."},
+    {"kit_theme_set_color", kit_theme_set_color, METH_VARARGS, "kit_theme_set_color(key, (r, g, b[, a])): one color of the active theme."},
+    {"kit_theme_set_num", kit_theme_set_num, METH_VARARGS, "kit_theme_set_num(key, value): a number of the active theme (roundness, border.width, ...)."},
+    {"kit_theme_num", kit_theme_num, METH_O, "A number of the active theme."},
     {"kit_icon_names", kit_icon_names, METH_NOARGS, "All icon names."},
     {"kit_eval_number", kit_eval_number, METH_O, "Evaluate number input ('2*pi')."},
     {"kit_link_fields", kit_link_fields, METH_O, "Link number fields for Alt editing."},
@@ -2362,6 +2498,7 @@ typedef struct KitWindowObject {
   PyObject *ctx;      /* KitContext (kept alive) */
   PyObject *timers;   /* id -> callable */
   PyObject *on_close; /* callable -> bool, or None */
+  PyObject *on_focus; /* callable(active: bool), or None */
 } KitWindowObject;
 
 static int stop_check(void)
@@ -2382,7 +2519,7 @@ static void win_on_timer(void *data, BKWindow *w, int id)
   }
   Py_XDECREF(key);
   if (PyErr_Occurred()) {
-    stash_error();
+    buipy_stash_error();
   }
 }
 
@@ -2394,12 +2531,45 @@ static int win_on_close(void *data, BKWindow *w)
   }
   PyObject *r = PyObject_CallObject(self->on_close, NULL);
   if (!r) {
-    stash_error();
+    buipy_stash_error();
     return 1;
   }
   const int allow = (r == Py_None) ? 0 : PyObject_IsTrue(r); /* Tk protocol: handler decides */
   Py_DECREF(r);
   return allow;
+}
+
+static void win_on_focus(void *data, BKWindow *w, int active)
+{
+  KitWindowObject *self = (KitWindowObject *)data;
+  if (self->on_focus && self->on_focus != Py_None) {
+    PyObject *r = PyObject_CallOneArg(self->on_focus, active ? Py_True : Py_False);
+    if (!r) {
+      buipy_stash_error();
+    }
+    Py_XDECREF(r);
+  }
+}
+
+static void win_on_focus_gil(void *data, BKWindow *w, int active)
+{
+  KitWindowObject *self = (KitWindowObject *)data;
+  GIL_ENTER;
+  if (g_py_depth > 0) { /* queued behind the running callback, like the timers */
+    PyObject *args = PyTuple_Pack(1, active ? Py_True : Py_False);
+    if (args) {
+      defer_call(self->on_focus, args);
+    }
+    Py_XDECREF(args);
+    PyErr_Clear();
+  }
+  else {
+    g_py_depth++;
+    win_on_focus(data, w, active);
+    g_py_depth--;
+    run_deferred();
+  }
+  GIL_LEAVE;
 }
 
 /* The timer's callable, taken off the table (one-shot) and queued behind the running callback. */
@@ -2433,15 +2603,38 @@ static void win_on_timer_gil(void *data, BKWindow *w, int id)
   GIL_LEAVE;
 }
 
+/* The close that was queued behind a running callback: ask the handler now, close if it agrees. */
+static PyObject *win_deferred_close(PyObject *self, PyObject *unused)
+{
+  KitWindowObject *win = (KitWindowObject *)self;
+  if (win->win && BK_window_is_open(win->win) && win_on_close(win, win->win)) {
+    BK_window_close(win->win);
+  }
+  Py_RETURN_NONE;
+}
+
+static PyMethodDef win_deferred_close_def = {"close", win_deferred_close, METH_NOARGS, NULL};
+
+static void win_defer_close(void *data)
+{
+  PyObject *fn = PyCFunction_New(&win_deferred_close_def, (PyObject *)data);
+  defer_call(fn, NULL);
+  Py_XDECREF(fn);
+  PyErr_Clear();
+}
+
 static int win_on_close_gil(void *data, BKWindow *w)
 {
   GIL_ENTER;
-  int allow = 0; /* the handler answers now: a close that arrives while a callback runs is refused */
+  int allow = 0; /* a close that arrives while a callback runs is answered after it */
   if (g_py_depth == 0) {
     g_py_depth++;
     allow = win_on_close(data, w);
     g_py_depth--;
     run_deferred();
+  }
+  else {
+    win_defer_close(data);
   }
   GIL_LEAVE;
   return allow;
@@ -2471,7 +2664,9 @@ static int kitwin_init(KitWindowObject *self, PyObject *args, PyObject *kw)
   }
   Py_XSETREF(self->ctx, Py_NewRef(ctx));
   Py_XSETREF(self->timers, PyDict_New());
-  BKWindowCallbacks cb = {self, win_on_timer_gil, win_on_close_gil};
+  BKWindowCallbacks cb = {
+      .data = self, .on_timer = win_on_timer_gil, .on_close = win_on_close_gil,
+      .on_focus = win_on_focus_gil};
   BK_window_set_callbacks(self->win, &cb);
   return 0;
 }
@@ -2486,6 +2681,7 @@ static void kitwin_dealloc(KitWindowObject *self)
   Py_CLEAR(self->ctx);
   Py_CLEAR(self->timers);
   Py_CLEAR(self->on_close);
+  Py_CLEAR(self->on_focus);
   Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -2494,6 +2690,7 @@ static int kitwin_traverse(KitWindowObject *self, visitproc visit, void *arg)
   Py_VISIT(self->ctx);
   Py_VISIT(self->timers);
   Py_VISIT(self->on_close);
+  Py_VISIT(self->on_focus);
   return 0;
 }
 
@@ -2501,6 +2698,7 @@ static int kitwin_clear(KitWindowObject *self)
 {
   Py_CLEAR(self->timers);
   Py_CLEAR(self->on_close);
+  Py_CLEAR(self->on_focus);
   return 0;
 }
 
@@ -2602,7 +2800,7 @@ static PyObject *kitwin_hwnd(KitWindowObject *self, void *c)
 static PyObject *kitwin_render_now(KitWindowObject *self, PyObject *unused)
 {
   BK_window_render_now(self->win);
-  if (restore_error()) {
+  if (buipy_restore_error()) {
     return NULL;
   }
   Py_RETURN_NONE;
@@ -2653,14 +2851,16 @@ static PyObject *kitwin_after_cancel(KitWindowObject *self, PyObject *arg)
   Py_RETURN_NONE;
 }
 
-static PyObject *kitwin_get_on_close(KitWindowObject *self, void *c)
+/* A callback attribute; `offset` is the field's offsetof in KitWindowObject. */
+static PyObject *kitwin_get_cb(KitWindowObject *self, void *offset)
 {
-  return Py_NewRef(self->on_close ? self->on_close : Py_None);
+  PyObject *v = *(PyObject **)((char *)self + (size_t)offset);
+  return Py_NewRef(v ? v : Py_None);
 }
 
-static int kitwin_set_on_close(KitWindowObject *self, PyObject *v, void *c)
+static int kitwin_set_cb(KitWindowObject *self, PyObject *v, void *offset)
 {
-  Py_XSETREF(self->on_close, Py_NewRef(v ? v : Py_None));
+  Py_XSETREF(*(PyObject **)((char *)self + (size_t)offset), Py_NewRef(v ? v : Py_None));
   return 0;
 }
 
@@ -2672,9 +2872,9 @@ static PyMethodDef kitwin_methods[] = {
     {"set_size", (PyCFunction)kitwin_set_size, METH_VARARGS, "Logical size (DPI scaled)."},
     {"wm", (PyCFunction)kitwin_wm, METH_VARARGS,
      "wm(key, a=0, b=0): pos, minsize, maxsize, resizable, topmost, alpha, override, state, "
-     "lift, lower, focus."},
+     "lift, lower, focus, transparent (Linux, before show), layer, anchor (Wayland layer shell)."},
     {"wm_get", (PyCFunction)kitwin_wm_get, METH_VARARGS,
-     "wm_get(key) -> (a, b) or None: pos, state, screen, pointer, scale."},
+     "wm_get(key) -> (a, b) or None: pos, state, screen, pointer, scale, layer."},
     {"render_now", (PyCFunction)kitwin_render_now, METH_NOARGS, "Render + present now."},
     {"pixel", (PyCFunction)kitwin_pixel, METH_VARARGS, "Frame buffer pixel (r, g, b)."},
     {"after", (PyCFunction)kitwin_after, METH_VARARGS, "after(ms, fn) -> id (one-shot)."},
@@ -2688,8 +2888,12 @@ static PyGetSetDef kitwin_getset[] = {
     {"gpu", (getter)kitwin_get_gpu, (setter)kitwin_set_gpu,
      "True once frames are drawn on the GPU; set True to switch this window to the GPU", NULL},
     {"hwnd", (getter)kitwin_hwnd, NULL, "native handle", NULL},
-    {"on_close", (getter)kitwin_get_on_close, (setter)kitwin_set_on_close,
-     "called on the close button; return True to close", NULL},
+    {"on_close", (getter)kitwin_get_cb, (setter)kitwin_set_cb,
+     "called on the close button; return True to close",
+     (void *)offsetof(KitWindowObject, on_close)},
+    {"on_focus", (getter)kitwin_get_cb, (setter)kitwin_set_cb,
+     "called with True when the window gets the keyboard focus, False when it loses it",
+     (void *)offsetof(KitWindowObject, on_focus)},
     {NULL, NULL, NULL, NULL, NULL},
 };
 
@@ -2710,7 +2914,7 @@ static PyTypeObject KitWindow_Type = {
 static PyObject *kit_run(PyObject *m, PyObject *unused)
 {
   BK_window_run();
-  if (restore_error()) {
+  if (buipy_restore_error()) {
     return NULL;
   }
   Py_RETURN_NONE;
@@ -2719,7 +2923,7 @@ static PyObject *kit_run(PyObject *m, PyObject *unused)
 static PyObject *kit_pump(PyObject *m, PyObject *unused)
 {
   const int open = BK_window_pump();
-  if (restore_error()) {
+  if (buipy_restore_error()) {
     return NULL;
   }
   return PyLong_FromLong(open);
@@ -2755,6 +2959,7 @@ static PyMethodDef window_functions[] = {
 
 int buipy_kit_init(PyObject *module)
 {
+  BK_set_text_shadow(0); /* Python: crisp text without Blender's UI shadow */
   if (PyType_Ready(&KitNode_Type) < 0 || PyType_Ready(&KitTreeItem_Type) < 0 ||
       PyType_Ready(&KitContext_Type) < 0 || PyType_Ready(&KitWindow_Type) < 0)
   {

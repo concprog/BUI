@@ -77,17 +77,19 @@ int main(void)
 | **Nodes** | `BK_node_new(type)`, `BK_node_add(parent, child, index)`, `BK_node_remove`, `BK_node_child(_count)`, `BK_node_parent`, `BK_node_rect`, `BK_node_natural`, `BK_node_invalidate`, `BK_node_relayout`, `BK_node_free` |
 | **Properties** | `BK_set_num / BK_set_str / BK_set_color / BK_set_strs` and `BK_get_*`, by name (`"value"`, `"text"`, `"label"`, `"min"`, `"items"`, `"enabled"` ...). `"set_value"` sets a value *and* notifies. |
 | **Geometry** | `BK_geom_set_manager(node, BK_GEOM_PACK / GRID / PLACE)`, `BK_geom_set(node, key, v)` (`side`, `fill`, `expand`, `anchor`, `padx0`..., `row`, `column`, `sticky`, `x`, `relx`, `reqwidth` ...), `BK_frame_grid_weight`. Children of `frame` and `canvas` nodes. |
-| **Context** | `BK_context_new(root)`: input state, popups, focus, undo. Input goes in with `BK_press`, `BK_release`, `BK_motion`, `BK_wheel`, `BK_key`, `BK_key_release`, `BK_button`, `BK_context_menu` (input methods: `BK_ime_event`, `BK_ime_state`, see below); frames come out of `BK_render(ctx, raster, w, h, full)`, which returns the number of redrawn regions (0 means nothing changed). |
+| **Context** | `BK_context_new(root)`: input state, popups, focus, undo. Input goes in with `BK_press`, `BK_release`, `BK_motion`, `BK_wheel`, `BK_key`, `BK_key_release`, `BK_button`, `BK_context_menu` (input methods: `BK_ime_event`, `BK_ime_state`, see below); frames come out of `BK_render(ctx, raster, w, h, full)`, which returns the number of redrawn regions (0 means nothing changed). `BK_configure(ctx, w, h)` reports a new window size (`BK_EV_CONFIGURE`) without drawing, so a host whose handlers rebuild the tree (the Rust binding) can do that before the first draw at the new size; `BK_render` calls it itself. |
 | **Host** | `BKHost`: `request` (schedule a render), `set_cursor`, `warp`, clipboard, `schedule` (timers), `emit` (events). A `BKWindow` provides all of them. |
 | **Events** | `emit(data, node, kind, ref, a, b)`. Kinds: `BK_EV_CHANGE`, `CLICK`, `CALL` (menu item or hotkey), `RENAME`, `ACTIVATE`, `TOGGLE`, `BROWSE`, `SUBMIT`. With the `"events"` property you also get raw `PRESS` / `RELEASE` / `DOUBLE` / `MOTION` / `ENTER` / `LEAVE` / `KEY` / `KEYRELEASE` / `WHEEL` / `CONFIGURE`, plus `VIEW` and `SCROLL` for scrolling. |
-| **Windows** | `BK_window_new`, `show`, `close`, `set_title`, `set_size`, `wm(key, a, b)` (position, topmost, alpha, resizable, minsize, state ...), `timer`, `run`, `pump`, `quit` |
+| **Windows** | `BK_window_new`, `show`, `close`, `set_title`, `set_size`, `wm(key, a, b)` (position, topmost, alpha, override, transparent, resizable, minsize, state; on Wayland also layer and anchor for wlr-layer-shell), callbacks `on_timer`, `on_close`, `on_frame`, `on_focus`, `timer`, `run`, `pump`, `quit` |
 | **GPU rendering** | `BUI_gpu_set_default(1)` (all new windows), `BK_window_set_gpu(win, 1)` (one window), `BK_window_gpu(win)` (1 once frames draw on the GPU). `BUI_GPU=1/0` overrides. For your own rasters: `BUI_raster_gpu_attach(r, hwnd_or_NULL, wait)`, `BUI_raster_gpu_poll`, `BUI_raster_is_gpu`. |
-| **Theme** | `BK_set_theme("dark" / "light")` (Blender's Dark or Light preset; every context relayouts and redraws), `BK_theme_name()`, `BK_theme_color(key, rgba)` (`"region_bg"`, `"text"`, `"regular.inner"` ...). Without a call, `BUI_THEME=dark|light` picks the theme. `BK_set_scale` sets the UI scale. |
+| **Theme** | `BK_set_theme("dark" / "light")` (Blender's Dark or Light preset; every context relayouts and redraws), `BK_theme_name()`, `BK_theme_color(key, rgba)` (`"region_bg"`, `"text"`, `"regular.inner"`, or the plain-English and Blender keys of a theme file: `"button.background"`, `"user_interface.wcol_regular.inner"`). Your own themes: `BK_theme_load_file(path)` / `BK_theme_load_json(text)` register the themes of a JSON theme file (-1 and `BK_theme_error()` on a mistake), `BK_set_theme(name)` chooses one, `BK_theme_set_color(key, rgba)` / `BK_theme_set_num(key, v)` change one value of the active theme (colors, `roundness`, `border.width`, `corners.top_left`, ...), `BK_set_font_size(points)` sets the UI text size; see [theming.md](theming.md). Without a call, `BUI_THEME=dark\|light` picks the theme. `BK_set_scale` sets the UI scale; `BK_set_text_shadow(0)` turns off Blender's UI text shadows (on by default; Python turns them off). |
 | **Text** | `BUI_text_measure`, `BUI_raster_text`, `BUI_text_add_font(family, flags, data, len)` (register a font; needed on wasm) |
-| **Specialised** | Canvas display list (`BK_canvas_set_item`), text area (`BK_textarea_*`), trees (`BK_tree_item_*`), menus (`BK_open_menu`, `BK_open_pie`), color ramps and curves, `BK_undo` / `BK_redo` |
+| **Raster alpha** | `BUI_raster_set_alpha(r, 1)` keeps premultiplied alpha in a CPU raster, `BUI_raster_clear` makes it transparent, `BUI_raster_alpha` reads the setting. An opaque raster draws the same bytes as before. |
+| **Specialised** | Canvas display list (`BK_canvas_set_item`), text area (`BK_textarea_*`), trees (`BK_tree_item_*`), menus (`BK_open_menu`, `BK_open_pie`), the hit test (`BK_hit_at`), color ramps and curves, `BK_undo` / `BK_redo` |
 | **Custom nodes** | A `custom` node draws and handles input itself: `BK_custom_set(node, &cls, data)` with `event` (pointer with all three buttons and a grab, precise wheel via `BK_scroll`, keys and text while focused, key releases, focus), `frame` (called by `BK_render` when requested with `BK_custom_request_frame(node, ms)`: immediate-mode UIs build their frame there) and `draw` (raster + rect). `BK_custom_set_cursor`, `BK_node_context`. Dear ImGui runs on it: [../bindings/imgui](../bindings/imgui/README.md). |
 | **File browser** | `BK_node_new("filebrowser")`: Blender's File Browser in any window. Strings `dir`, `file`, `button`, `search`; numbers `mode` (0 open, 1 save, 2 directory), `multiple`, `hidden`, `sort`, `invert`; list `filters` (`"Label\tpattern ..."`); read `state` and `result`. `BK_file_dialog(title, mode, dir, file, filters, n, multiple, &paths)` runs one in its own window and returns the number of chosen paths (free them with `BK_file_dialog_free`). |
 | **Meshes and textures** | `BUI_texture_create/update/free` (RGBA8, shared by every raster and GPU device), `BUI_raster_mesh(r, vertices, n, indices, n_idx, flags, tex, clip, ox, oy)`: indexed triangles with position, UV and color, straight-alpha blending, per-call clip; the same pixels on the software raster, Direct3D 11 and OpenGL. |
+| **GPU effects** | Your own pixel shader over a canvas item: `BK_effect_create(name, source, n_inputs, n_floats)` (an id > 0, 0 for bad arguments), `BK_effect_free`, `BK_effect_error(id)` (the compile/link log of the last GPU attempt: "" when fine, NULL for an unknown id), then a `BK_ITEM_EFFECT` canvas item (`effect`, `effect_inputs[8]` BUI textures, `effect_floats`; its image is the fallback), or `BUI_raster_effect` on a raster. The source is GLSL with a small compat set, compiled at run time by Direct3D 11 (`d3dcompiler_47.dll`, loaded dynamically) and OpenGL; the software raster draws the fallback. See [GPU effects](../website/src/content/docs/rust/gpu-effects.mdx). |
 
 Node types: `frame column row grid box panel tabs sidetabs scroll scrollbar
 label separator progress button toggle checkbox radio decorator text search
@@ -134,7 +136,16 @@ and `BK_set_animations(0)` holds them all. To step one yourself:
 `BK_video_*` (kit/intern/image/video.c) plays video files through the OS
 decoders (Media Foundation, GStreamer, AVFoundation; loaded at run time),
 decoded at the size drawn, in one GPU texture per player, and only while it
-shows. Muted autoplay; no audio yet.
+shows. It autoplays with its sound, played on the default output (WASAPI,
+CoreAudio, PulseAudio / PipeWire); the frames follow the sound, which plays on
+while the video is off screen (the picture catches up when it shows again).
+Only the file's first audio track plays, and each video with sound owns one
+output stream and thread, so many videos are many streams. The output opens on
+that thread (up to about 2 s on some drivers; the readers wait at most 3 s to
+preroll and 2 s per block), never on the UI thread: `BK_video_free` returns at
+once and the stream is released on a thread of its own (`BK_image_exit` waits
+up to 2 s for those at shutdown). With no output device a video plays silent
+and tries again every 5 s.
 
 ```c
 BKVideo *v = BK_video_new("intro.mp4");     /* loads when first drawn */
@@ -144,7 +155,9 @@ BK_video_set_listener(v, on_state, app);    /* BK_VIDEO_LOADING .. ENDED, ERROR 
 BKNode *n = BK_node_new("video");
 BK_node_set_video(n, v, BK_FIT_CONTAIN);    /* or a canvas item's .video */
 BK_video_seek(v, 10.0);
-BK_video_set_rate(v, 2.0);
+BK_video_set_rate(v, 2.0);                  /* the sound pauses at rates other than 1 */
+BK_video_set_muted(v, 1);                   /* or BK_video_set_volume(v, 0.5) */
+BK_video_set_audio_effects(v, 1);           /* keep the system's audio effects (Windows plays RAW otherwise) */
 int tex = BK_video_texture(v, 0, 640, 360); /* Dear ImGui: the frame in a texture */
 BK_video_free(v);                           /* after nodes / items let go */
 ```

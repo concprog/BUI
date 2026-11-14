@@ -9,7 +9,7 @@
     BUI
   </h1>
 
-**Blender's user interface, as a library you can use from Python, Rust, JavaScript (React, Svelte), C, C++ and Dear ImGui.**
+**Blender's user interface, as a library you can use from Python, Rust, JavaScript (React, Svelte, Vue), C, C++, D and Dear ImGui.**
 
 People spent decades building and optimizing Blender's GUI. It's battery and memory efficient, and super duper fast. We decoupled it, to give everyone a chance to build their own products with it. It supports multiple languages and frameworks, so you won't miss a beat!
 
@@ -71,51 +71,52 @@ more to say.
 12. [First app: JavaScript and React](#12-first-app-javascript-and-react)
 13. [First app: Dear ImGui](#13-first-app-dear-imgui)
 14. [First app: C](#14-first-app-c)
+15. [First app: Lua](#15-first-app-lua)
 
 **[Part III: Concepts](#part-iii-concepts)**
 
-15. [How it works](#15-how-it-works)
-16. [Blender's widgets and interactions](#16-blenders-widgets-and-interactions)
-17. [Three looks: HTML, styled and Blender components](#17-three-looks-html-styled-and-blender-components)
-18. [Rendering on the CPU and the GPU](#18-rendering-on-the-cpu-and-the-gpu)
-19. [Damage rendering](#19-damage-rendering)
-20. [Window hosts](#20-window-hosts)
-21. [Text and fonts](#21-text-and-fonts)
-22. [Themes: dark and light](#22-themes-dark-and-light)
+16. [How it works](#16-how-it-works)
+17. [Blender's widgets and interactions](#17-blenders-widgets-and-interactions)
+18. [Three looks: HTML, styled and Blender components](#18-three-looks-html-styled-and-blender-components)
+19. [Rendering on the CPU and the GPU](#19-rendering-on-the-cpu-and-the-gpu)
+20. [Damage rendering](#20-damage-rendering)
+21. [Window hosts](#21-window-hosts)
+22. [Text and fonts](#22-text-and-fonts)
+23. [Themes: dark and light](#23-themes-dark-and-light)
 
 **[Part IV: Guides by language](#part-iv-guides-by-language)**
 
-23. [Python](#23-python)
-24. [Rust](#24-rust)
-25. [JavaScript and React](#25-javascript-and-react)
-26. [Dear ImGui](#26-dear-imgui)
-27. [C and embedding](#27-c-and-embedding)
-28. [Lua](#28-lua)
-29. [Where the docs live](#29-where-the-docs-live)
+24. [Python](#24-python)
+25. [Rust](#25-rust)
+26. [JavaScript and React](#26-javascript-and-react)
+27. [Dear ImGui](#27-dear-imgui)
+28. [C and embedding](#28-c-and-embedding)
+29. [Lua](#29-lua)
+30. [Where the docs live](#30-where-the-docs-live)
 
 **[Part V: Performance](#part-v-performance)**
 
-30. [Before you read the numbers](#30-before-you-read-the-numbers)
-31. [Start time and battery](#31-start-time-and-battery)
-32. [Frame times](#32-frame-times)
-33. [JavaScript and React: startup and animation](#33-javascript-and-react-startup-and-animation)
-34. [Run the benchmarks yourself](#34-run-the-benchmarks-yourself)
+31. [Before you read the numbers](#31-before-you-read-the-numbers)
+32. [Start time and battery](#32-start-time-and-battery)
+33. [Frame times](#33-frame-times)
+34. [JavaScript and React: startup and animation](#34-javascript-and-react-startup-and-animation)
+35. [Run the benchmarks yourself](#35-run-the-benchmarks-yourself)
 
 **[Part VI: Reference](#part-vi-reference)**
 
-35. [Platforms](#35-platforms)
-36. [Environment variables](#36-environment-variables)
-37. [Building from source and CMake options](#37-building-from-source-and-cmake-options)
-38. [Coverage](#38-coverage)
-39. [Repository layout](#39-repository-layout)
-40. [Examples](#40-examples)
+36. [Platforms](#36-platforms)
+37. [Environment variables](#37-environment-variables)
+38. [Building from source and CMake options](#38-building-from-source-and-cmake-options)
+39. [Coverage](#39-coverage)
+40. [Repository layout](#40-repository-layout)
+41. [Examples](#41-examples)
 
 **[Part VII: The project](#part-vii-the-project)**
 
-41. [Status and roadmap](#41-status-and-roadmap)
-42. [FAQ](#42-faq)
-43. [Contributing and publishing](#43-contributing-and-publishing)
-44. [License and credits](#44-license-and-credits)
+42. [Status and roadmap](#42-status-and-roadmap)
+43. [FAQ](#43-faq)
+44. [Contributing and publishing](#44-contributing-and-publishing)
+45. [License and credits](#45-license-and-credits)
 
 ---
 
@@ -186,9 +187,10 @@ all get the same widgets and interactions:
 | **Qt-style** Python (`QWidget`, layouts, `clicked.connect`)                                                                                              | The common subset of Qt widgets                                                                                                                 | Partial               |
 | **Blender components** (`Panel`, `NumberSlider`, `PieMenu`, the node editor ...)                                                                         | 45 native Blender widgets and editors, from Python; ten of them also from Rust and JavaScript                                                   | Complete              |
 | **Rust**: HTML + CSS + Tailwind, HTML-like markup (`rsx!` / `view!`), hooks, or [gpui](https://www.gpui.rs) / [zopra](https://zopra.preetham.top) syntax | A web-like framework: HTML that looks like a browser's, Blender's look with `styled`, and Blender components (`<NumberSlider>`, `<Button>` ...) | Working               |
-| **JavaScript / React / Svelte** on Node.js or Bun: a DOM-like API, JSX or Svelte components                                                              | The same engine and components in native windows, over napi-rs; React's hooks backed by signals; Svelte 5 components                            | Working               |
+| **JavaScript / React / Svelte / Vue** on Node.js or Bun: a DOM-like API, JSX, Svelte or Vue components                                                   | The same engine and components in native windows, over napi-rs; React's hooks backed by signals; Svelte 5 and Vue 3 components                  | Working               |
 | **Dear ImGui** from C++, C, Python or Rust                                                                                                               | The real Dear ImGui on BUI windows in Blender's theme, or a build where ImGui's widgets _are_ Blender's widgets                                 | Working               |
 | **C** (`BUI_kit.h`)                                                                                                                                      | The kit itself: nodes, widgets, windows                                                                                                         | Working               |
+| **D** (the `bui` DUB package in `bindings/d`)                                                                                                            | Idiomatic D wrappers, the complete raw C API and an HTML/CSS/RSX authoring layer                                                                                                | Working               |
 | **MyGo**                                                                                                                                                 | MyGo                                                                                                                                            | Not yet (coming soon) |
 
 Not sure which to pick? If you already have code, use the row that matches it.
@@ -202,11 +204,11 @@ If you're starting fresh in Python, the Blender components are the friendliest.
 - **Math in number fields**, with Blender's own expression evaluator: `2*pi`, `min(4, 3)`, `round(1.7)`, `x if c else y`.
 - Ctrl+Wheel steps values, Ctrl+C / Ctrl+V copy values, Backspace resets.
 - **Drag across checkboxes** to set them all.
-- Press-drag-release menus, pie menus, and **Blender's fuzzy menu search**: "ad cu" finds "Add Cube", typos are forgiven, recent picks rank first.
+- Press-drag-release menus, pie menus that pick on key release as in Blender (sub-pies, a "More" level, numpad directions, underlined letters), and **Blender's fuzzy menu search**: "ad cu" finds "Add Cube", typos are forgiven, recent picks rank first.
 - **Ctrl+Z / Ctrl+Shift+Z** on every UI edit, and inside a text field while you type; Tab between fields.
 - Blender's float display precision, multi-field vertical drags, and panels that collapse with Blender's animation.
 - The HSV color wheel, color ramps, curves, trees, lists, text areas, canvases, a node editor and Blender's File Browser.
-- **Blender's Dark and Light themes**, switchable at run time.
+- **Blender's Dark and Light themes**, switchable at run time, and **your own themes** from a JSON file (gpui-kit's format, Blender's color names, per-widget corners and borders; [docs/theming.md](docs/theming.md)).
 
 ### Python
 
@@ -226,10 +228,19 @@ If you're starting fresh in Python, the Blender components are the friendliest.
 - **gpui-compatible syntax** too: `div().flex().gap_2()`, `Render`, `cx.listener`.
 - On [crates.io](https://crates.io/crates/blenderui): `cargo add blenderui`.
 
+### Animation: GSAP and Motion
+
+- **Both APIs, one engine.** `<motion.div initial animate exit whileHover whileTap whileInView drag layout>` in Rust's `rsx!`, `gsap.to / from / fromTo / timeline` and `motion.animate` in Rust, JavaScript, Python and Lua, and Motion's props in React. One C engine in the kit runs them all, so no language carries its own.
+- **Real springs.** Springs and inertia are solved in closed form (the damped spring equation, all three damping cases), so a frame reads the value at its time and the frame rate doesn't change the result. An interrupted motion hands its position and velocity to the next.
+- **Every ease by name**: GSAP's, Motion's, CSS's and Blender's, plus `cubic-bezier()`, `steps()`, `linear()` and SVG paths.
+- **Cheap**: a frame that only animates skips the view render, the style cascade and layout and repaints only the elements that changed, an object of literals is a `static` read once per call site in Rust, and an idle window costs no CPU. It is not allocation-free yet: calls build their values once, and a callback or `onUpdate` costs an event per call (the Rust side is being tightened). [What a frame costs](docs/animation-api.md#what-a-frame-costs).
+- A feature (`anim`, on by default). Docs: [Rust](https://bui.preetham.top/docs/rust/motion/), [JavaScript](https://bui.preetham.top/docs/javascript/animation/), [Python](https://bui.preetham.top/docs/python/animation/).
+
 ### Fast by design
 
 - **Damage rendering**: an idle UI costs 0% CPU, and a hover redraws only the widget it touches.
 - **Opt-in GPU renderer** (Direct3D 11 on Windows, OpenGL 3.3 on Linux), modeled on Blender's instanced widget drawing. It draws the same pixels as the CPU raster.
+- **GPU effects**: your own GLSL pixel shader in a canvas (`BK_ITEM_EFFECT`, Rust `Painter::effect`), run on Direct3D 11 and OpenGL in paint order with an image as the fallback; the compile log comes back as a string.
 - In the benchmark, **2–4× less CPU per frame than gpui-fast**, with **less RAM** and a **~5 ms first frame**.
 - **Blender's text**: Inter (Blender's UI font) is embedded and rendered with FreeType the way Blender renders it, so text looks the same on every platform. On the GPU, glyphs are drawn from their outlines with [Slug](https://github.com/EricLengyel/Slug), falling back to a per-glyph atlas like Blender's.
 
@@ -248,7 +259,8 @@ If you're starting fresh in Python, the Blender components are the friendliest.
 - **React 19.3** renders to BUI: HTML host components, CSS and Tailwind, events, Suspense, transitions, actions, and Blender components (`<NumberSlider>`, `<Button>` ...). BUI draws them, on the CPU or the GPU; there's no browser and no webview.
 - **React's hooks, by React's names**, holding signals: pass one into JSX (`{count}`) and a change updates that one node without re-rendering; read it while rendering (`count.value`) and the component re-renders, as with React. A conformance suite checks each hook against React's own.
 - **Svelte 5** (`@blender-ui/svelte`): components with runes, snippets, bindings and scoped styles, mounted into native windows; Svelte's compiled code runs on BUI's DOM, so a `$state` change updates the one node that shows it.
-- **`@blender-ui/native`**: a DOM-like API (`createElement`, `appendChild`, `addEventListener`) with the same signals, for apps without a framework, and the shared layer the React and Svelte bindings are thin adapters over.
+- **Vue 3** (`@blender-ui/vue`): single-file components with refs, `v-model`, slots and scoped styles, mounted into native windows through Vue's own `createRenderer`; Vue's compiler compiles your `.vue` files.
+- **`@blender-ui/native`**: a DOM-like API (`createElement`, `appendChild`, `addEventListener`) with the same signals, for apps without a framework, and the shared layer the React, Svelte and Vue bindings are thin adapters over.
 - **Node.js and Bun**, through a napi-rs addon, with headless mode for tests.
 
 ### Small standalone apps
@@ -394,6 +406,7 @@ default MSVC target), and on Linux the X11 headers (`libx11-dev` or
 ```sh
 npm install @blender-ui/react react     # or: bun add @blender-ui/react react
 npm install @blender-ui/svelte svelte   # Svelte 5
+npm install @blender-ui/vue vue         # Vue 3
 npm install @blender-ui/native          # the DOM-like API, without React
 ```
 
@@ -577,9 +590,15 @@ A bigger program in the same syntax, a material editor (not the output of the sn
 <br><sub>Qt syntax (<code>examples/site/qt_material.py</code>)</sub>
 </p>
 
-Qt syntax is **partial** (about 24% of Qt's method names on the main widget
-classes); anything missing raises `AttributeError`. Guide:
-[docs/qt.md](docs/qt.md).
+Qt syntax is **partial**: 57% of Qt's public methods, signals and slots on
+the 36 core widget classes, measured from Qt's headers by
+`tools/qt_coverage.py` ([per class](docs/qt-coverage.md)). It has containers
+(docks, toolbars, splitters, Blender-panel tool boxes), actions shared by
+menus, tool buttons and shortcuts, Qt's full layout API, model/view on
+Blender's tree list, validators, date and time editors and a calendar, real
+`QDialogButtonBox` / `QMessageBox` / `QInputDialog`, `QSettings` and shortcuts.
+Missing names raise `AttributeError`; a few setters are accepted and ignored
+(listed in the guide). Guide: [docs/qt.md](docs/qt.md).
 
 </details>
 
@@ -755,6 +774,17 @@ These snippets are small. This is a larger example, a task list in React, and no
   <img src="https://raw.githubusercontent.com/ppmpreetham/BUI/main/website/public/images/shots/js-react-tasks-dark.png" width="440" alt="A task list in React on BUI: a Blender text field, button, checkboxes and a progress bar">
 </picture>
 <br><sub>A task list in React (<code>examples/site/js/todo_react.js</code>); the DOM-like version draws the same</sub>
+</p>
+
+The same task list in Vue 3 (`examples/site/js/TodoVue.vue`, state in refs, `v-model` on the Blender widgets):
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ppmpreetham/BUI/main/website/public/images/shots/js-vue-tasks-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/ppmpreetham/BUI/main/website/public/images/shots/js-vue-tasks-light.png">
+  <img src="https://raw.githubusercontent.com/ppmpreetham/BUI/main/website/public/images/shots/js-vue-tasks-dark.png" width="440" alt="A task list in Vue on BUI: a Blender text field, button, checkboxes and a progress bar">
+</picture>
+<br><sub>A task list in Vue (<code>examples/site/js/TodoVue.vue</code>)</sub>
 </p>
 
 Node.js 18+ or Bun. Prebuilt for Windows x64, Linux x64 (glibc 2.35 or later)
@@ -935,11 +965,78 @@ screenshots work. Guide: [docs/c-api.md](docs/c-api.md).
 
 </details>
 
+<details>
+<summary><h2 id="15-first-app-lua">15. First app: Lua</h2></summary>
+
+The `bui-lua` host embeds Lua 5.4 and exposes the whole kit as a native
+module — every widget, every event. This is a shortened
+[`bindings/lua/examples/counter.lua`](bindings/lua/examples/counter.lua): a
+label and buttons in a native window.
+
+```lua
+local bui = require("bui")
+
+local root = bui.Node("frame")
+root:set("padding", 12)
+
+local label = bui.Node("label")
+label:set("text", "Count: 0")
+root:add(label)
+label:geom(bui.GEOM_PACK, {side = 0, fill = 1})
+
+local count = 0
+
+local inc = bui.Node("button")
+inc:set("text", "Increment")
+inc:set("icon", bui.icon_id("ADD"))
+inc:on(bui.EV_CLICK, function()
+    count = count + 1
+    label:set("text", "Count: " .. count)
+end)
+root:add(inc)
+inc:geom(bui.GEOM_PACK, {fill = 1, pady0 = 4})
+
+local ctx = bui.Context(root)
+local win = bui.Window(ctx, "Counter", 240, 200)
+if win then
+    win:show()
+    bui.run()
+else
+    local px, _, w, h = ctx:render(240, 200, 1)
+    print("No window system. Headless render: " .. w .. "x" .. h .. " " .. #px .. " bytes")
+end
+```
+
+```sh
+cmake -S . -B build -DBUI_BUILD_LUA_BINDINGS=ON
+cmake --build build --target bui-lua
+./build/bindings/lua/bui-lua bindings/lua/examples/counter.lua
+```
+
+The window below is a bigger program than the one above, an interactive Lua
+table editor with a tree view, search, undo/redo and export:
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ppmpreetham/BUI/main/website/public/images/shots/lua-editor-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/ppmpreetham/BUI/main/website/public/images/shots/lua-editor-light.png">
+  <img src="https://raw.githubusercontent.com/ppmpreetham/BUI/main/website/public/images/shots/lua-editor-dark.png" width="420" alt="The interactive Lua table editor: tree view with three columns, toolbar with demo selector, search, add/delete/export/undo/redo buttons, collapsible editor panel">
+</picture>
+<br><sub>A bigger Lua program: the interactive table editor (<code>bindings/lua/examples/lua_table_editor.lua</code>)</sub>
+</p>
+
+Without a window system the same script renders headless (`bui-lua --headless
+app.lua`), which is also how the Lua tests and documentation screenshots
+work; all 27 examples run this way. Guide:
+[bindings/lua/README.md](bindings/lua/README.md).
+
+</details>
+
 ---
 
 # Part III: Concepts
 
-## 15. How it works
+## 16. How it works
 
 ```
  your code:   tkinter   Qt   components   Dear ImGui (C++/C/Python/Rust)   Rust: rsx! / HTML / CSS / Tailwind / hooks   JS / React
@@ -981,7 +1078,7 @@ What's under the hood:
 More: [ARCHITECTURE.md](ARCHITECTURE.md) and
 [How it works](https://bui.preetham.top/docs/concepts/how-it-works/).
 
-## 16. Blender's widgets and interactions
+## 17. Blender's widgets and interactions
 
 These rules live in the C kit, so they work the same everywhere Blender
 widgets are drawn: the Python components, tkinter and Qt syntax, the Rust and
@@ -1023,7 +1120,7 @@ Coming soon: typing values with units ("2 m"), Blender's search-as-you-type
 popups, and widget drag and drop. More:
 [Blender's widgets](https://bui.preetham.top/docs/concepts/blender-widgets/).
 
-## 17. Three looks: HTML, styled and Blender components
+## 18. Three looks: HTML, styled and Blender components
 
 In Rust and JavaScript you pick the look per element:
 
@@ -1086,7 +1183,7 @@ import { render, NumberSlider, Button } from "@blender-ui/react"
 Python's [Blender components](docs/components.md) (`Panel`, `PieMenu`, the node
 editor ...) are a separate, larger set.
 
-## 18. Rendering on the CPU and the GPU
+## 19. Rendering on the CPU and the GPU
 
 BUI has two renderers, and they draw **the same pixels**.
 
@@ -1134,7 +1231,7 @@ RAM plus GPU memory). Servers and tests: the CPU. macOS: the CPU, for now
 
 More: [Rendering](https://bui.preetham.top/docs/concepts/rendering/).
 
-## 19. Damage rendering
+## 20. Damage rendering
 
 Leave a BUI window open and walk away: it uses no CPU at all. Hover a button,
 and BUI redraws that button, not the window.
@@ -1156,7 +1253,7 @@ about **0.05 ms** for a hover or number-scrub frame. Animations run only while
 something moves, paced to the display. More:
 [Damage rendering](https://bui.preetham.top/docs/concepts/damage-rendering/).
 
-## 20. Window hosts
+## 21. Window hosts
 
 A **window host** puts a kit context in a top-level window and feeds it input.
 
@@ -1173,7 +1270,7 @@ A **window host** puts a kit context in a top-level window and feeds it input.
 Blender's default, 20 px widgets). More:
 [Window hosts](https://bui.preetham.top/docs/concepts/window-hosts/).
 
-## 21. Text and fonts
+## 22. Text and fonts
 
 Your app's text looks the same on Windows, Linux and macOS, and it looks like
 Blender's:
@@ -1200,7 +1297,7 @@ as boxes), IME on Windows only (X11 and macOS are coming), right-to-left text is
 reordered but not shaped, no OpenType features. Font fallback is coming soon. More:
 [Text and fonts](https://bui.preetham.top/docs/concepts/text-and-fonts/).
 
-## 22. Themes: dark and light
+## 23. Themes: dark and light
 
 BUI looks like Blender because it uses Blender's theme. It ships two:
 Blender's **Dark** theme (the default) and its **Light** preset. Both are
@@ -1216,6 +1313,16 @@ run time, and every open window relayouts and redraws:
 | JavaScript              | `new App({ theme: "light" })`, `app.setTheme("light")`, or React's `render(..., { theme: "light" })`        |
 | Dear ImGui              | Its Blender style follows the kit's theme (pick it before the backend starts)                               |
 | Any app, no code change | `BUI_THEME=light` (or `dark`)                                                                               |
+
+**Your own themes.** A theme file is JSON in the shape of gpui-kit's, with Blender's names for the colors
+(`user_interface.wcol_regular.inner`, or in plain English `button.background`). It starts from Dark or Light and
+lists only what it changes: colors, a few short palette names (`background`, `primary.background`) that fill in
+many keys at once, and per widget the roundness, which corners are round, the border width, the emboss and the
+gradient. `bui.load_theme("my-themes.json")` (Python), `blenderui::load_theme_file` (Rust), `app.loadTheme`
+(JavaScript), `bui.load_theme` (Lua) and `BK_theme_load_file` (C) load it; `set_theme(name)` chooses it, and
+`set_theme_color(key, "#rrggbb")` changes one color. [docs/theming.md](docs/theming.md) has the format,
+[docs/theme-keys.md](docs/theme-keys.md) lists all 782 of Blender's keys and which BUI uses, and
+[docs/themes/catppuccin.json](docs/themes/catppuccin.json) is an example.
 
 Widgets, panels, the region background, the `styled` HTML sheet and ImGui's
 Blender style all follow the theme. Plain HTML keeps a browser's look either
@@ -1235,7 +1342,7 @@ Coming soon: loading any Blender theme file, beyond Dark and Light. More:
 # Part IV: Guides by language
 
 <details>
-<summary><h2 id="23-python">23. Python</h2></summary>
+<summary><h2 id="24-python">24. Python</h2></summary>
 
 `pip install blenderui` gives you four APIs in one package:
 
@@ -1266,7 +1373,7 @@ On the website: [tkinter](https://bui.preetham.top/docs/python/tkinter/),
 </details>
 
 <details>
-<summary><h2 id="24-rust">24. Rust</h2></summary>
+<summary><h2 id="25-rust">25. Rust</h2></summary>
 
 The `blenderui` crate is a web-like framework drawn by BUI: every HTML element,
 CSS, Tailwind, HTML-like markup (`rsx!` / `view!`) or gpui-style builders,
@@ -1283,6 +1390,7 @@ rsx! {
     // control flow right in the markup
     <ul>{for item in items { <li class="py-1">{item}</li> }}</ul>
     {if dirty { <p text-amber-400>"Unsaved changes"</p> }}
+    {maybe_title}   // an Option<T> is an element: None renders nothing
 
     // real CSS, evaluated by the engine
     <div style="width: calc(100% - 2 * var(--gap)); background: color-mix(in oklch, var(--brand) 60%, white)" />
@@ -1326,7 +1434,7 @@ transforms, OpenType features, multi-column layout. Guide:
 </details>
 
 <details>
-<summary><h2 id="25-javascript-and-react">25. JavaScript and React</h2></summary>
+<summary><h2 id="26-javascript-and-react">26. JavaScript and React</h2></summary>
 
 - **`@blender-ui/react`**: a React 19.3 renderer. HTML host components, CSS and
   Tailwind, events, Suspense, transitions, actions, and the Blender components.
@@ -1337,6 +1445,10 @@ transforms, OpenType features, multi-column layout. Guide:
   keyed blocks, context, scoped `<style>`) and the Blender components, on
   Node.js (`--import @blender-ui/svelte/register`), Bun and `bui build`.
   README: [bindings/svelte](bindings/svelte/README.md).
+- **`@blender-ui/vue`**: Vue 3 single-file components (refs, `v-model`, slots,
+  `provide` / `inject`, scoped `<style>`, TypeScript) and the Blender
+  components, on Node.js (`--import @blender-ui/vue/register`), Bun and
+  `bui build`. README: [bindings/vue](bindings/vue/README.md).
 - **`@blender-ui/native`**: a DOM-like API (`createElement`, `appendChild`,
   `addEventListener`, `className` with Tailwind, `style`) with signals,
   `memo`, `effect` and `batch`. README: [bindings/node](bindings/node/README.md).
@@ -1360,7 +1472,7 @@ JavaScript after BUI handled them (no native `preventDefault`), and
 </details>
 
 <details>
-<summary><h2 id="26-dear-imgui">26. Dear ImGui</h2></summary>
+<summary><h2 id="27-dear-imgui">27. Dear ImGui</h2></summary>
 
 | Language | What you use                               | Built by                                |
 | -------- | ------------------------------------------ | --------------------------------------- |
@@ -1386,7 +1498,7 @@ Blender style), [bindings/imgui/blender/README.md](bindings/imgui/blender/README
 </details>
 
 <details>
-<summary><h2 id="27-c-and-embedding">27. C and embedding</h2></summary>
+<summary><h2 id="28-c-and-embedding">28. C and embedding</h2></summary>
 
 The kit's concepts: **nodes** made by type name (`frame`, `slider`, `button`,
 `panel`, `tree`, `canvas`, `filebrowser` ...), **properties** set by name,
@@ -1404,11 +1516,12 @@ SVG recorder use it. Guide: [INTEGRATION.md](INTEGRATION.md).
 </details>
 
 <details>
-<summary><h2 id="28-lua">28. Lua</h2></summary>
+<summary><h2 id="29-lua">29. Lua</h2></summary>
 
 A standalone executable and a loadable module that embeds Lua 5.4 and exposes the
 full BUI kit API — every widget, every event. Use the `bui-lua` binary or drop
-`bui.so`/`bui.dll` into any Lua 5.4, LuaJIT or LuaRocks install.
+`bui.so`/`bui.dll` into any Lua 5.4, LuaJIT or LuaRocks install, or
+`luarocks install blenderui`.
 
 ```sh
 cmake -S . -B build -DBUI_BUILD_LUA_BINDINGS=ON
@@ -1439,13 +1552,19 @@ bui.run()
 `custom`, `canvas`, `list`, `tree`, `gridview`, `ramp`, `curve`, `normal`,
 `histogram`, `radio`, `meter`, `filebrowser`.
 
-**Examples** (26 scripts, `bindings/lua/examples/`):
+**Menus**: item tables (`text`, `icon` by name or id, `shortcut`, `checked` /
+`enabled` as booleans or numbers, `fn`, `sub`) feed `node:set_menus` — on a
+`menubar` that builds one `menubutton` child per menu, like Python's
+`MenuBar` — and `ctx:open_menu` / `ctx:open_pie`; `fn` callbacks are refcounted
+by the kit and released with the items.
+
+**Examples** (27 scripts, `bindings/lua/examples/`):
 
 - **Getting started:** `hello.lua`, `counter.lua`, `forms.lua`, `gallery.lua`
 - **Layout:** `split.lua`, `grid.lua`, `box.lua`, `dashboard.lua`
 - **Text and data:** `textarea.lua`, `enum.lua`, `listview.lua`, `data_table.lua`
 - **Menus and popups:** `menus.lua`, `menubar.lua`, `popover.lua`
-- **Color and drawing:** `color_picker.lua`, `ramp.lua`, `curve.lua`, `histogram.lua`, `canvas.lua`
+- **Color and drawing:** `color_picker.lua`, `ramp.lua`, `curve.lua`, `histogram.lua`, `canvas.lua`, `ph_nutrients.lua`
 - **Animation:** `anim.lua`
 - **Tools:** `todos.lua`, `filebrowser_demo.lua`, `image_viewer.lua`, `editor_screenshot.lua`, `lua_table_editor.lua`
 
@@ -1455,7 +1574,7 @@ All 26 run headless (`bui-lua --headless app.lua`) for CI and documentation scre
 
 ---
 
-## 29. Where the docs live
+## 30. Where the docs live
 
 | Guide                                              | What's inside                                                                                                                        |
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
@@ -1465,10 +1584,12 @@ All 26 run headless (`bui-lua --headless app.lua`) for CI and documentation scre
 | [Qt syntax](docs/qt.md)                            | Classes, signals, layouts, painting, coverage                                                                                        |
 | [Components](docs/components.md)                   | The `bui.components` reference                                                                                                       |
 | [Rust](docs/rust.md)                               | `rsx!`, hooks, HTML, CSS and Tailwind coverage, effects, animations, events, headless tests                                          |
-| [JavaScript, React and Svelte](docs/javascript.md) | `@blender-ui/native`, `@blender-ui/react`, `@blender-ui/svelte`, adding a framework, how changes cross to the UI thread, performance |
+| [JavaScript, React, Svelte and Vue](docs/javascript.md) | `@blender-ui/native`, `@blender-ui/react`, `@blender-ui/svelte`, `@blender-ui/vue`, adding a framework, how changes cross to the UI thread, performance |
 | [Dear ImGui](docs/imgui.md)                        | Dear ImGui on BUI from C++, C, Python and Rust; the Blender-widgets build; coverage                                                  |
 | [C API](docs/c-api.md)                             | The C kit (`BUI_kit.h`)                                                                                                              |
 | [Lua](bindings/lua/README.md)                      | Standalone `bui-lua` or loadable module; every widget, tree view, file browser, node editor                                          |
+| [D](bindings/d/README.md)                          | DUB package: raw kit declarations, D wrappers, HTML/CSS/RSX, ownership, examples and the integration suite                                         |
+| [Editor support](addons/bui-vscode/README.md)      | VS Code (`addons/bui-vscode`) and Zed (`addons/bui-zed`) extensions for `rsx!`: Tailwind-aware highlighting, snippets, class completion |
 | [Integration](INTEGRATION.md)                      | Embedding BUI drawing in C, C++, Qt or PySide hosts                                                                                  |
 | [Architecture](ARCHITECTURE.md)                    | Modules and what was taken from Blender                                                                                              |
 | [Syntax coverage](SYNTAX_COVERAGE.md)              | The Qt and tkinter surface, exactly                                                                                                  |
@@ -1480,7 +1601,7 @@ All 26 run headless (`bui-lua --headless app.lua`) for CI and documentation scre
 
 # Part V: Performance
 
-## 30. Before you read the numbers
+## 31. Before you read the numbers
 
 These numbers were measured on a Ryzen 7 5800U laptop (Windows 11, on AC
 power) **before the latest features landed**: Dear ImGui, the Linux GPU
@@ -1488,7 +1609,7 @@ renderer, the light theme, and the Blender search and expression code. They
 show the shape of things, not a promise for your machine. Rerun them with the
 tools in [Run the benchmarks yourself](#34-run-the-benchmarks-yourself).
 
-## 31. Start time and battery
+## 32. Start time and battery
 
 The same small settings window (a label, text field, checkbox, slider and
 button) written each of the five ways, from [`bench/apps`](bench/apps), on
@@ -1533,7 +1654,7 @@ uses more memory (the GPU device), and pays off on large, animated scenes
 (below). Node's event loop accounts for the JavaScript idle figure, Python's
 times include starting the interpreter, and memory doesn't count GPU memory.
 
-## 32. Frame times
+## 33. Frame times
 
 Python and C, on the full component demo (520×900):
 
@@ -1587,7 +1708,7 @@ gpui-fast's heavy-scene frame rate varies between sessions on this laptop
 [bindings/rust/bench/README.md](bindings/rust/bench/README.md).
 </details>
 
-## 33. JavaScript and React: startup and animation
+## 34. JavaScript and React: startup and animation
 
 **Startup.** These launch a small React app (the counter above) that quits once
 its first frame is on screen. Each figure is the median of 12 launches after a
@@ -1678,10 +1799,47 @@ What this means:
   Bun also sometimes crashes when a React app quits (after its first frame), a
   bug that predates this work.
 
+**Vue, next to React and Svelte** (a second session, 2026-11-11, same laptop, Node.js 26.13 and
+Bun 1.4.4; cells runs interleaved, medians of 3; `bench/cells.js 3000 --gpu --vue [--isolate]`,
+`bench/startup.js --vue`). This machine ran every variant at 49–56 FPS, so compare these rows with
+each other, not with the tables above.
+
+| 3,000 cells                                         |  FPS | CPU per frame |    RAM | JS heap | JavaScript per update |
+| --------------------------------------------------- | ---: | ------------: | -----: | ------: | --------------------: |
+| Node 26: React with state                           | 51.0 |       24.9 ms | 228 MB |   45 MB |                3.1 ms |
+| Node 26: Svelte with runes                          | 54.9 |       17.7 ms | 115 MB |   22 MB |                 50 µs |
+| Node 26: Vue, state in the root component           | 54.7 |       25.6 ms | 260 MB |   44 MB |                5.4 ms |
+| Node 26: Vue, cell 0 a component of its own         | 53.9 |       18.5 ms | 112 MB |   21 MB |                 25 µs |
+| Bun 1.4: React with state                           | 53.6 |       25.8 ms | 118 MB |    8 MB |                3.9 ms |
+| Bun 1.4: Svelte with runes                          | 53.4 |       19.2 ms |  98 MB |   10 MB |                 48 µs |
+| Bun 1.4: Vue, state in the root component           | 53.4 |  8–15 ms (\*) | 142 MB |   16 MB |                6.7 ms |
+| Bun 1.4: Vue, cell 0 a component of its own         | 56.0 |       18.2 ms | 107 MB |   11 MB |                 27 µs |
+
+(\*) CPU per frame varied between runs for this one variant (80%, 45% and 50% of a core, against a steady
+~100% for every other), so it has no single number.
+
+| First frame, median of 8         | React |  Vue | RAM (React / Vue) |
+| -------------------------------- | ----: | ---: | ----------------: |
+| QuickJS executable (`bui build`) | 43 ms | 66 ms |     14.5 / 17.5 MB |
+| Bun executable (`--bun`)         | 46 ms | 77 ms |     29.9 / 40.3 MB |
+| Bun (`--preload …/register`)     | 58 ms | 101 ms |    34.7 / 48.7 MB |
+| Node.js (`--import …/register`)  | 72 ms | 125 ms |    43.7 / 56.3 MB |
+
+- **State in the root re-renders everything, as in React:** Vue runs the component's render function
+  and compares the 3,000 cells, which is 5.4–6.7 ms per update (React with state: 3.1–3.9 ms) and
+  142–260 MB. **Put the changing part in a component of its own,** as Vue code that updates one thing
+  is written, and only that component re-renders: 25–27 µs and 107–112 MB, in line with Svelte's runes.
+- **Vue applies updates in a microtask,** so "JavaScript per update" includes the hop (`nextTick`).
+  There is no signals row: a BUI signal binds an attribute or a style in a Vue template, not text.
+- **Startup:** Vue's compiler is most of its size, so `register` caches compiled components in
+  `node_modules/.cache/@blender-ui/vue` and a cached start never loads it. That took Node.js from 209
+  to 125 ms and Bun from 189 to 101 ms. The standalone executables bundle compiled components and were
+  not affected (66 and 77 ms).
+
 Method, the memory breakdown and how to rerun:
 [docs/javascript.md](docs/javascript.md#performance).
 
-## 34. Run the benchmarks yourself
+## 35. Run the benchmarks yourself
 
 Every number above comes from a tool in this repo. Build in release mode, close
 other heavy apps, and plug the laptop in. Run one benchmark (and one build) at
@@ -1754,7 +1912,7 @@ py bindings/python/bench/tk_canvas_bench.py 3000 one    # move one
 
 # Part VI: Reference
 
-## 35. Platforms
+## 36. Platforms
 
 |                              | Windows                          | Linux                                                    | macOS                  |
 | ---------------------------- | -------------------------------- | -------------------------------------------------------- | ---------------------- |
@@ -1791,10 +1949,10 @@ and on an NVIDIA GPU.
 | ---------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | `blenderui` on PyPI                                                    | Windows x86_64, Linux x86_64 (manylinux), macOS arm64 and x86_64 | CPython 3.11 to 3.14. No musllinux or 32-bit wheels.                            |
 | `blenderui` on crates.io                                               | Any platform with CMake and a C compiler                         | Rust 1.88+. `blenderui-imgui` (Dear ImGui) is on crates.io too.                 |
-| `@blender-ui/native`, `@blender-ui/react`, `@blender-ui/svelte` on npm | Windows x64                                                      | Node.js 18+ (22.15+ for Svelte) or Bun. Elsewhere, build the addon from source. |
+| `@blender-ui/native`, `@blender-ui/react`, `@blender-ui/svelte`, `@blender-ui/vue` on npm | Windows x64                                                      | Node.js 18+ (22.15+ for Svelte and Vue) or Bun. Elsewhere, build the addon from source. |
 | C and C++ (CMake)                                                      | Windows, Linux, macOS                                            | CMake 3.20+, a C11 and C++20 compiler.                                          |
 
-## 36. Environment variables
+## 37. Environment variables
 
 Most are read by the C library, so they work the same from every language.
 On/off variables look at the first character: `1`, `y`, `Y`, `t` or `T` is on.
@@ -1827,7 +1985,7 @@ Every variable, with defaults and where it's read:
 [Environment variables](https://bui.preetham.top/docs/reference/environment-variables/)
 and [docs/getting-started.md](docs/getting-started.md#environment-variables).
 
-## 37. Building from source and CMake options
+## 38. Building from source and CMake options
 
 You need **CMake 3.20+**, a **C11 / C++20 compiler** (MSVC, GCC/MinGW or
 Clang) and **Python 3.11+** with headers. On Linux, also the X11 headers.
@@ -1841,6 +1999,7 @@ export PYTHONPATH=$PWD/bindings/python      # Windows: set PYTHONPATH=%CD%\bindi
 python examples/components_demo.py
 
 cd bindings/rust && cargo test              # Rust: CSS, Tailwind, rsx!, hooks, effects, headless windows
+cd bindings/d && dub run --config=test      # D: raw kit, wrappers, HTML/CSS/RSX, menus, canvas, trees
 ```
 
 | Option                      | Default                  | What it does                                                                                        |
@@ -1863,7 +2022,7 @@ Rebuild the docs screenshots with `python tools/gen_doc_images.py` (and the
 website's dark and light shots with `--site`). More:
 [CMake options](https://bui.preetham.top/docs/reference/cmake-options/).
 
-## 38. Coverage
+## 39. Coverage
 
 | API                               | Coverage                                                                                                                      | Status   |
 | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | -------- |
@@ -1882,7 +2041,7 @@ How each was counted: [Coverage](https://bui.preetham.top/docs/reference/coverag
 [SYNTAX_COVERAGE.md](SYNTAX_COVERAGE.md), [docs/rust.md](docs/rust.md#coverage),
 [docs/imgui.md](docs/imgui.md#coverage).
 
-## 39. Repository layout
+## 40. Repository layout
 
 | Path                                                    | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1893,14 +2052,15 @@ How each was counted: [Coverage](https://bui.preetham.top/docs/reference/coverag
 | `api/`                                                  | Stable C ABI for render-sink hosts                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `bindings/python/`                                      | The `buipy` extension and the `bui` / `blenderui` packages (tkinter, Qt, components, ImGui)                                                                                                                                                                                                                                                                                                                                                     |
 | `bindings/rust/`                                        | `blenderui`, `blenderui-sys`, `blenderui-macros`, `blenderui-tailwind`, `blenderui-imgui`, `blenderui-jsview`, `blenderui-node`, `blenderui-qjs`, and the benchmark                                                                                                                                                                                                                                                                             |
-| `bindings/node/`, `bindings/react/`, `bindings/svelte/` | `@blender-ui/native`, `@blender-ui/react` and `@blender-ui/svelte`                                                                                                                                                                                                                                                                                                                                                                              |
+| `bindings/node/`, `bindings/react/`, `bindings/svelte/`, `bindings/vue/` | `@blender-ui/native`, `@blender-ui/react`, `@blender-ui/svelte` and `@blender-ui/vue`                                                                                                                                                                                                                                                                                                                                                                              |
+| `bindings/d/`                                           | The `bui` DUB package: raw `extern(C)` declarations, D wrappers, HTML/CSS/RSX, examples and the integration suite                                                                                                                                                                                                                                                                                                                                             |
 | `bindings/imgui/`                                       | Dear ImGui (vendored), the BUI backend, Blender style, the C API and its generator, the Blender-widgets build                                                                                                                                                                                                                                                                                                                                   |
 | `backends/qt/`                                          | C++ Qt/QPainter render-sink backend                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `bench/`                                                | The start time and battery benchmark; `bench/images/` (decoders, thumbnail grid)                                                                                                                                                                                                                                                                                                                                                                |
 | `examples/`, `tools/`                                   | Demos, the website's screenshot programs (`examples/site/`), the icon and theme generators, the docs screenshot generator                                                                                                                                                                                                                                                                                                                       |
 | `website/`                                              | The documentation website, [bui.preetham.top](https://bui.preetham.top)                                                                                                                                                                                                                                                                                                                                                                         |
 
-## 40. Examples
+## 41. Examples
 
 | File                                                                                                                                                                                                                          | Shows                                                                                                                                                                                                                                                           |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1922,14 +2082,18 @@ How each was counted: [Coverage](https://bui.preetham.top/docs/reference/coverag
 | [`blenderui-imgui` demo](bindings/rust/blenderui-imgui/examples/demo.rs)                                                                                                                                                      | Dear ImGui from Rust (`cargo run -p blenderui-imgui --example demo`)                                                                                                                                                                                            |
 | [`bindings/node/examples/counter.js`](bindings/node/examples/counter.js)                                                                                                                                                      | JavaScript: the DOM-like API                                                                                                                                                                                                                                    |
 | [`bindings/react/examples/counter.jsx`](bindings/react/examples/counter.jsx)                                                                                                                                                  | React in JSX (`bun examples/counter.jsx`)                                                                                                                                                                                                                       |
+| [`bindings/vue/examples/Counter.vue`](bindings/vue/examples/Counter.vue)                                                                                      | Vue 3 (`node --import ./bindings/vue/register.js bindings/vue/examples/counter.js`)                                                                                                                                                                             |
 | [`bindings/svelte/examples/Counter.svelte`](bindings/svelte/examples/Counter.svelte)                                                                          | Svelte 5 (`node --import ./bindings/svelte/register.js bindings/svelte/examples/counter.js`)                                                                                                                                                                    |
-| Lua (26 in [`bindings/lua/examples/`](bindings/lua/examples/))                                                                                               | 26 examples covering every BUI widget type: `hello.lua`, `counter.lua`, `forms.lua`, `gallery.lua`, `split.lua`, `grid.lua`, `box.lua`, `dashboard.lua`, `textarea.lua`, `enum.lua`, `listview.lua`, `data_table.lua`, `menus.lua`, `menubar.lua`, `popover.lua`, `color_picker.lua`, `ramp.lua`, `curve.lua`, `histogram.lua`, `canvas.lua`, `anim.lua`, `todos.lua`, `filebrowser_demo.lua`, `image_viewer.lua`, `editor_screenshot.lua`, `lua_table_editor.lua` |
+| [`bindings/d/examples/hello.d`](bindings/d/examples/hello.d)                                                                                                  | D: a slider and a button in a native window                                                                                                                                                                                                                     |
+| [`bindings/d/examples/headless.d`](bindings/d/examples/headless.d)                                                                                            | D: render, click and inspect pixels without a window                                                                                                                                                                                                            |
+| [`bindings/d/examples/rsx_page.d`](bindings/d/examples/rsx_page.d) | D: an HTML/CSS page from `rsx!` in a native window |
+| Lua (27 in [`bindings/lua/examples/`](bindings/lua/examples/))                                                                                               | 27 examples covering every BUI widget type: `hello.lua`, `counter.lua`, `forms.lua`, `gallery.lua`, `split.lua`, `grid.lua`, `box.lua`, `dashboard.lua`, `textarea.lua`, `enum.lua`, `listview.lua`, `data_table.lua`, `menus.lua`, `menubar.lua`, `popover.lua`, `color_picker.lua`, `ramp.lua`, `curve.lua`, `histogram.lua`, `canvas.lua`, `anim.lua`, `todos.lua`, `filebrowser_demo.lua`, `image_viewer.lua`, `editor_screenshot.lua`, `lua_table_editor.lua`, `ph_nutrients.lua` |
 
 ---
 
 # Part VII: The project
 
-## 41. Status and roadmap
+## 42. Status and roadmap
 
 **Known limitations.** Read these before you pick BUI for something you will
 ship. The tables below have the details.
@@ -1965,9 +2129,9 @@ ship. The tables below have the details.
   ported from Blender's UI sources, with edits (each marked `BUI:`), and the rest
   of Blender (its data system, window manager and operators) isn't included.
   There is no automated sync with Blender's releases.
-- **Partial areas:** Qt syntax (about 24%), CSS (261 of 745 properties render),
-  video has no audio, and image formats such as AVIF, EXR, TIFF, JPEG XL and
-  HEIC aren't supported.
+- **Partial areas:** Qt syntax (57% of the core classes' methods), CSS (261 of 745 properties render),
+  video sound is tested on Windows only (macOS and Linux are written but untried),
+  and image formats such as AVIF, EXR, TIFF, JPEG XL and HEIC aren't supported.
 - **License.** GPL: a program that includes BUI is distributed under the GPL too
   ([why](#42-faq)).
 
@@ -2011,12 +2175,12 @@ ship. The tables below have the details.
 | **Accessibility**                    | Screen-reader support through UI Automation (Windows), AT-SPI (Linux) and NSAccessibility (macOS)                                                           |
 | **Qt parity**                        | Measure against PySide6, run the same programs on Qt and BUI, fill in the missing classes, then `install()` so `import PySide6` programs run unchanged      |
 | **More JavaScript frameworks**       | Vue and Angular, as thin adapters over `@blender-ui/native` (the layer React and Svelte share)                                                              |
-| **More languages**                   | Lua (26 examples, every widget), Ruby, Go (through cgo), C#, Zig, Swift, Kotlin and MyGo over the same C header; Godot, Unity and Bevy; Flutter |
+| **More languages**                   | Lua (27 examples, every widget), Ruby, Go (through cgo), C#, Zig, Swift, Kotlin and MyGo over the same C header; Godot, Unity and Bevy; Flutter |
 
 Our roadmap has no dates on it. Like a good render, it's done when the noise
 goes away.
 
-## 42. FAQ
+## 43. FAQ
 
 <details>
 <summary><b>Do I need Blender installed?</b></summary>
@@ -2093,7 +2257,7 @@ headless there. Python can always fall back to the Tk window
 <summary><b>Can I use BUI from Vue, Angular, Ruby, Go or Lua?</b></summary>
 Lua is now supported: <code>cmake -DBUI_BUILD_LUA_BINDINGS=ON</code> builds
 <code>bui-lua</code> (a standalone host) and <code>bui.so</code> / <code>bui.dll</code>
-(a loadable module) for Lua 5.4, LuaJIT or LuaRocks. There are 26 examples and
+(a loadable module) for Lua 5.4, LuaJIT or LuaRocks. There are 27 examples and
 every BUI widget type works. Vue and Angular would be thin adapters over
 <code>@blender-ui/native</code>, the layer React and Svelte already share
 (<a href="docs/javascript.md">how to add a framework</a>). Ruby and Go
@@ -2160,7 +2324,7 @@ ship. (This is a summary, not legal advice.)
  </picture>
 </a>
 
-## 43. Contributing and publishing
+## 44. Contributing and publishing
 
 Contributions are welcome: bug reports, missing tkinter/Qt behavior, CSS
 features, platform hosts and docs. If you have a Mac, running the Cocoa host
@@ -2173,7 +2337,7 @@ Releases go to PyPI (`blenderui`, wheels built by CI on a `v*` tag), crates.io
 (the eight Rust crates, in dependency order) and npm (`@blender-ui/native`, `@blender-ui/react`). The steps are
 in [docs/publishing.md](docs/publishing.md).
 
-## 44. License and credits
+## 45. License and credits
 
 **License.** BUI follows Blender's licensing. BUI as a whole is licensed under
 the **GNU General Public License, version 3 or later** (the text is in

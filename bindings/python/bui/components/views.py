@@ -1,16 +1,18 @@
-"""Data views (C: ``kit/intern/kit_views.c``): UI list, tree view, grid view.
+"""Data views (C: ``kit/intern/kit_views.c``): UI list, tree view, grid view;
+and Blender's File Browser (C: ``kit/intern/kit_filebrowser.c``).
 
 SPDX-License-Identifier: GPL-2.0-or-later
 """
 
 from __future__ import annotations
 
+import os
 from typing import Callable, Optional, Sequence
 
 import buipy
 
-from bui.components.core import (EV_ACTIVATE, EV_CHANGE, EV_RENAME, EV_TOGGLE, Component,
-                                 ValueComponent)
+from bui.components.core import (EV_ACTIVATE, EV_CHANGE, EV_RENAME, EV_SUBMIT, EV_TOGGLE,
+                                 Component, ValueComponent)
 
 
 class ListView(ValueComponent):
@@ -22,7 +24,7 @@ class ListView(ValueComponent):
     def __init__(self, items: Sequence[str] = (), value: int = 0, *, rows: int = 5,
                  on_rename: Optional[Callable[[int, str], None]] = None, icons=None, **kw):
         Component.__init__(self, **{k: v for k, v in kw.items()
-                                    if k in ("description", "enabled", "visible", "weight", "fill")})
+                                    if k in Component.KWARGS})
         self.on_change = kw.get("on_change")
         self.on_rename = on_rename
         self.set("rows", rows)
@@ -114,7 +116,7 @@ class TreeView(ValueComponent):
                  on_toggle: Optional[Callable[[TreeItem, str, bool], None]] = None,
                  on_rename: Optional[Callable[[TreeItem, str], None]] = None, **kw):
         Component.__init__(self, **{k: v for k, v in kw.items()
-                                    if k in ("description", "enabled", "visible", "weight", "fill")})
+                                    if k in Component.KWARGS})
         self.on_change = kw.get("on_change")
         self.on_toggle, self.on_rename = on_toggle, on_rename
         self.columns = list(columns)
@@ -178,7 +180,7 @@ class GridView(ValueComponent):
                  rows: float = 2.0, on_activate: Optional[Callable[[int], None]] = None,
                  **kw):
         Component.__init__(self, **{k: v for k, v in kw.items()
-                                    if k in ("description", "enabled", "visible", "weight", "fill")})
+                                    if k in Component.KWARGS})
         self.on_change = kw.get("on_change")
         self.on_activate = on_activate
         self.set("tile", tile)
@@ -216,3 +218,95 @@ class GridView(ValueComponent):
             self.on_activate(int(a))
         else:
             super()._on_event(kind, ref, a, b)
+
+
+class FileBrowser(Component):
+    """Blender's File Browser (editors/space_file) in a layout: bookmark
+    panels, the directory-path bar, the file list (click a header to sort) and
+    the execute bar. It fills the rect it gets.
+
+        FileBrowser("~/renders", mode="save", file="out.png",
+                    filters=["Images\t*.png *.jpg"], on_submit=save)
+
+    ``mode`` is "open", "save" or "directory"; ``filters`` are "Label\\tpattern
+    ..." entries (``bui.filebrowser.tk_filters`` converts tkinter's). Browsing
+    reads the real file system. ``on_change(directory)`` follows folder
+    changes; ``on_submit(paths)`` gets the chosen paths, ``[]`` when cancelled
+    (Escape or the Cancel button)."""
+
+    TYPE = "filebrowser"
+    MODES = ("open", "save", "directory")
+
+    def __init__(self, directory: str = "", *, file: str = "", mode: str = "open",
+                 multiple: bool = False, filters: Sequence[str] = (), button: str = "",
+                 on_change: Optional[Callable[[str], None]] = None,
+                 on_submit: Optional[Callable[[list], None]] = None, **kw):
+        if mode not in self.MODES:
+            raise ValueError("FileBrowser mode must be one of %s, not %r" % (self.MODES, mode))
+        super().__init__(**kw)
+        self.on_change, self.on_submit = on_change, on_submit
+        self.set("mode", self.MODES.index(mode))
+        if multiple:
+            self.set("multiple", 1)
+        if filters:
+            self.set("filters", [str(f) for f in filters])
+        if button:
+            self.set("button", button)
+        if directory:
+            self.set("dir", os.path.expanduser(os.fspath(directory)))
+        if file:
+            self.set("file", os.fspath(file))
+
+    @property
+    def directory(self) -> str:
+        return self.get_str("dir")
+
+    @directory.setter
+    def directory(self, path: str) -> None:
+        path = os.path.expanduser(os.fspath(path))
+        if path != self.directory:  # navigating always reports a change
+            self.set("dir", path)
+
+    @property
+    def file(self) -> str:
+        """The file name in the execute bar (setting a path also moves the folder)."""
+        return self.get_str("file")
+
+    @file.setter
+    def file(self, name: str) -> None:
+        self.set("file", os.fspath(name))
+
+    @property
+    def hidden(self) -> bool:
+        return bool(self.get("hidden"))
+
+    @hidden.setter
+    def hidden(self, show: bool) -> None:
+        self.set("hidden", int(bool(show)))
+
+    @property
+    def state(self) -> int:
+        """0 browsing, 1 chosen, -1 cancelled."""
+        return int(self.get("state"))
+
+    @property
+    def result(self) -> list:
+        """The chosen paths (empty until chosen)."""
+        return list(self.strs("result"))
+
+    def execute(self) -> None:
+        """Press the execute button (Open / Save / Select Folder)."""
+        self.set("execute", 1)
+
+    def cancel(self) -> None:
+        self.set("cancel", 1)
+
+    def refresh(self) -> None:
+        """Read the folder again."""
+        self.set("refresh", 1)
+
+    def _on_event(self, kind, ref, a, b):
+        if kind == EV_CHANGE and self.on_change is not None:
+            self.on_change(self.directory)
+        elif kind == EV_SUBMIT and self.on_submit is not None:
+            self.on_submit(self.result if a > 0 else [])
