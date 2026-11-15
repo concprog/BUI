@@ -72,8 +72,12 @@ if(ANDROID)
   # Small and fast on a phone: -O2 and link-time optimization over the whole kit, no embedded Inter
   # (the system's Roboto is used: platform/android/fonts.c), and the app library's own flags in
   # platform/android.
-  add_compile_options(-O2 -flto -fno-unwind-tables -fno-asynchronous-unwind-tables)
-  add_link_options(-flto)
+  option(BUI_ANDROID_LTO "Link-time optimization (off when rustc links the kit: it cannot read the NDK's bitcode)" ON)
+  add_compile_options(-O2 -fno-unwind-tables -fno-asynchronous-unwind-tables)
+  if(BUI_ANDROID_LTO)
+    add_compile_options(-flto)
+    add_link_options(-flto)
+  endif()
   add_compile_definitions(BUI_NO_INTER)
 endif()
 
@@ -192,6 +196,9 @@ endif()
 
 # after the bindings an Android app can link (Lua)
 if(ANDROID)
+  option(BUI_BUILD_ANDROID_APP "The NativeActivity shell and an app (off when cargo builds only the kit)" ON)
+endif()
+if(ANDROID AND BUI_BUILD_ANDROID_APP)
   add_subdirectory(platform/android) # the NativeActivity host and an app
 endif()
 

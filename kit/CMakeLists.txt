@@ -173,7 +173,7 @@ elseif(ANDROID)
   # Native window on Android: the activity's surface (android_native_app_glue), software raster.
   target_sources(bui_kit PRIVATE intern/kit_window_android.c)
   target_compile_definitions(bui_kit PRIVATE BUI_WINDOW_ANDROID)
-  target_include_directories(bui_kit PRIVATE ${ANDROID_NDK}/sources/android/native_app_glue)
+  target_include_directories(bui_kit PRIVATE ${CMAKE_ANDROID_NDK}/sources/android/native_app_glue)
   target_link_libraries(bui_kit PUBLIC android log)
 elseif(UNIX AND NOT APPLE)
   # Native windows on X11 (Wayland sessions run it through XWayland).

@@ -1,32 +1,75 @@
 ---
 title: Android
-description: Run BUI on a phone with one NativeActivity, no Java and no Gradle. Damage-driven software rendering, touch that scrolls, the soft keyboard, and an APK of about 1.1 MB per ABI.
+description: Run BUI on a phone from C, Lua or Rust with the same code as on a desktop. One NativeActivity, no Java and no Gradle, damage-driven software rendering, touch that scrolls, the soft keyboard, and an APK of about 1 to 2 MB.
 section: Concepts
 order: 69
-sources: ["platform/android/bui_android.c", "platform/android/bui_app.h", "platform/android/fonts.c", "platform/android/demo.c", "platform/android/CMakeLists.txt", "platform/android/AndroidManifest.xml", "platform/android/build.py", "docs/android.md"]
+sources: ["kit/intern/kit_window_android.c", "platform/android/bui_android.c", "platform/android/bui_app.h", "platform/android/fonts.c", "platform/android/demo.c", "platform/android/lua_app.c", "platform/android/rust/src/lib.rs", "platform/android/CMakeLists.txt", "platform/android/AndroidManifest.xml", "platform/android/build.py", "examples/android/main.lua", "docs/android.md"]
 ---
 
-`platform/android` runs the kit on Android in a single `NativeActivity`: no Java, no Gradle. Only the Android build changes (`if(ANDROID)` blocks); every other platform builds as before.
+On Android the kit's window is the activity's surface (`kit/intern/kit_window_android.c`, which implements `BK_window_*` like the Windows and Linux hosts do). An app opens a window and runs it exactly as on a desktop, so Rust, Lua and C apps are the code they would be anywhere else. Nothing changes for other platforms: the Android code is in `platform/android`, the kit's Android-only branches and `if(ANDROID)` blocks.
 
 ```bash
-python platform/android/build.py                  # arm64-v8a + x86_64 -> build-android/bui.apk
-python platform/android/build.py --abi arm64-v8a  # a phone only
-python platform/android/build.py --install        # adb install -r, then start it
+python platform/android/build.py                       # the C demo: arm64-v8a + x86_64
+python platform/android/build.py --lua examples/android        # a Lua app
+python platform/android/build.py --rust platform/android/rust  # a Rust app
+python platform/android/build.py --install             # install and start it
 ```
 
-You need the Android SDK (`ANDROID_HOME`, build-tools and platform 34), an NDK, CMake and a JDK for `keytool`.
+You need the Android SDK (`ANDROID_HOME`), an NDK, CMake and a JDK for `keytool`; Rust also needs the Android targets (`rustup target add aarch64-linux-android x86_64-linux-android`).
 
 ## Your app
 
-`bui_app.h` is the whole interface: `bui_app_build()` returns the root node of your UI and `bui_app_fonts()` registers fonts. `platform/android/demo.c` is a scrolling page of widgets to replace with your own.
+<LangTabs>
+<Tab label="Rust">
+
+```rust
+use blenderui::prelude::*;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn bui_app_main() {
+    Application::new().run(|cx: &mut App| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| MyApp)).unwrap();
+    });
+}
+```
+
+A `staticlib` crate (see `platform/android/rust`). Give the root a definite height (`.css("height", "100vh")`) with `overflow_y_scroll()` to scroll.
+</Tab>
+<Tab label="Lua">
+
+```lua
+local bui = require("bui")
+local root = bui.Node("column")
+-- ... build the UI ...
+bui.open({ root = root })
+```
+
+`assets/main.lua` is an ordinary BUI Lua script; `require` finds your other `.lua` files and `bui.lua` in the APK.
+</Tab>
+<Tab label="C">
+
+```c
+void bui_app_main(void) {
+  BKContext *ctx = BK_context_new(build_ui());
+  BKWindow *win = BK_window_new(ctx, "App", 360, 720);
+  BK_window_show(win);
+  BK_window_run();
+}
+```
+</Tab>
+</LangTabs>
+
+Python, JavaScript, Qt, tkinter and D need their runtime on the device and are not available on Android.
 
 ## How it behaves
 
-- **Damage driven.** The thread sleeps until a touch, key, timer or frame request. Each frame converts and locks only the damaged rectangles. An idle app uses no CPU.
-- **Touch.** One finger is the pointer, so a tap is a click. A drag that starts on a widget that drags (sliders, number fields, text, scrollbars, panels, canvases) drags it; anywhere else it scrolls. Two fingers always scroll.
-- **Keyboard.** It opens while a text field or area is edited; keys arrive as key events. Predictive keyboards and IME composition are not wired up yet.
-- **Size.** `-O2` with LTO, no embedded Inter (the system's Roboto is used), no GPU renderers, ImGui or extra image formats: the library is 2.5 MB and an APK of one ABI is about 1.1 MB.
+- **Damage driven.** The thread sleeps until a touch, key, timer or frame request, and only the damaged rectangles are converted and locked. An idle app uses no CPU.
+- **Scale.** A CSS pixel is a dp, as in Chrome on Android.
+- **Touch.** One finger is the pointer and a tap is a click. A drag that starts on a widget that drags (sliders, text, scrollbars) drags it; anywhere else it scrolls. Two fingers always scroll.
+- **Keyboard.** It opens while a text field is edited; keys arrive as key events. Predictive keyboards and IME composition are not wired up yet.
+- **Fonts.** The system's Roboto is used (Inter is left out, 0.8 MB). Register your own with `BUI_text_add_font` and select it with `BK_set_font`.
+- **Size.** About 1.1 MB per ABI for the C demo, 1.4 MB with Lua and 2.0 MB with Rust (arm64-v8a).
 
 <Callout type="note" title="What is tested">
-It runs on an x86_64 emulator (API 33). The arm64 build compiles and links but was not run on a device, and there is no GPU renderer, long-press, pinch or IME composition yet.
+The three apps run on an x86_64 emulator (API 33). The arm64 builds compile and link but were not run on a device. There is no GPU renderer, long-press, pinch or IME composition yet.
 </Callout>

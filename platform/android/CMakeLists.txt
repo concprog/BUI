@@ -8,14 +8,15 @@
 
 set(BUI_ANDROID_APP "demo" CACHE STRING "demo, lua or rust")
 set(BUI_ANDROID_RUST_LIB "" CACHE FILEPATH "libXXX.a of the Rust app (BUI_ANDROID_APP=rust)")
-set(_glue "${ANDROID_NDK}/sources/android/native_app_glue")
+set(_glue "${CMAKE_ANDROID_NDK}/sources/android/native_app_glue")
 
 add_library(bui_app SHARED bui_android.c fonts.c ${_glue}/android_native_app_glue.c)
 target_include_directories(bui_app PRIVATE ${_glue} ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(bui_app PRIVATE bui::kit android log)
+target_link_libraries(bui_app PRIVATE android log m)
 
 if(BUI_ANDROID_APP STREQUAL "demo")
   target_sources(bui_app PRIVATE demo.c)
+  target_link_libraries(bui_app PRIVATE bui::kit)
 elseif(BUI_ANDROID_APP STREQUAL "lua")
   if(NOT TARGET bui_lua)
     message(FATAL_ERROR "BUI_ANDROID_APP=lua needs -DBUI_BUILD_LUA_BINDINGS=ON (it builds Lua 5.4)")
@@ -24,12 +25,16 @@ elseif(BUI_ANDROID_APP STREQUAL "lua")
   target_sources(bui_app PRIVATE lua_app.c ${_lua}/bui_lua.c ${_lua}/bui_node.c ${_lua}/bui_context.c
                  ${_lua}/bui_window.c ${_lua}/bui_image.c ${_lua}/bui_anim.c)
   target_include_directories(bui_app PRIVATE ${_lua})
-  target_link_libraries(bui_app PRIVATE bui_lua bui::gpu bui::core bui_api)
+  target_link_libraries(bui_app PRIVATE bui::kit bui_lua bui::gpu bui::core bui_api)
 elseif(BUI_ANDROID_APP STREQUAL "rust")
   if(NOT BUI_ANDROID_RUST_LIB OR NOT EXISTS "${BUI_ANDROID_RUST_LIB}")
     message(FATAL_ERROR "BUI_ANDROID_APP=rust needs BUI_ANDROID_RUST_LIB (the app's staticlib)")
   endif()
-  target_link_libraries(bui_app PRIVATE -Wl,--whole-archive "${BUI_ANDROID_RUST_LIB}" -Wl,--no-whole-archive)
+  # the staticlib carries its own copy of the kit (blenderui-sys built it for this target), so the
+  # kit is not linked again; only its headers (the shell and fonts.c use them) and libc++ are needed
+  target_include_directories(bui_app PRIVATE ${BUI_SOURCE_DIR}/kit/include ${BUI_SOURCE_DIR}/gpu/include)
+  set_target_properties(bui_app PROPERTIES LINKER_LANGUAGE CXX)
+  target_link_libraries(bui_app PRIVATE "${BUI_ANDROID_RUST_LIB}")
 else()
   message(FATAL_ERROR "BUI_ANDROID_APP must be demo, lua or rust")
 endif()

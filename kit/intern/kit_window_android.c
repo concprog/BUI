@@ -63,6 +63,8 @@ struct BKWindow {
   int px, py; /* last pointer position */
   /* touch */
   int pointer_down, scrolling, draggable;
+  int pending_tap; /* a finger is down on something that does not drag: a click if it lifts in place */
+  int drag_custom; /* custom and canvas nodes take drags (BK_window_wm "touch_drag"); else they scroll */
   float down_x, down_y, scroll_x, scroll_y;
 };
 
@@ -141,6 +143,16 @@ static void host_emit(void *data, BKNode *node, int kind, void *ref, double a, d
 
 /* -- surface and drawing ------------------------------------------------------------------------ */
 
+/* Dp to pixels, and the kit's scale from it. A CSS pixel is a dp, as in Chrome on Android (not
+ * 1/96 inch): Rust apps' layout and Blender's 20-unit widgets both come out at a phone's size. */
+static void apply_density(BKWindow *win)
+{
+  const float density = (float)AConfiguration_getDensity(g_app->config);
+  win->density = (density > 0 ? density : 160.0f) / 160.0f;
+  win->scale = win->density;
+  BK_set_scale(win->scale);
+}
+
 static void surface_changed(BKWindow *win)
 {
   ANativeWindow *surface = g_app->window;
@@ -150,12 +162,7 @@ static void surface_changed(BKWindow *win)
   win->sw = ANativeWindow_getWidth(surface);
   win->sh = ANativeWindow_getHeight(surface);
   ANativeWindow_setBuffersGeometry(surface, win->sw, win->sh, WINDOW_FORMAT_RGBX);
-  const float density = (float)AConfiguration_getDensity(g_app->config);
-  win->density = (density > 0 ? density : 160.0f) / 160.0f;
-  /* Blender's 1.0 is a 20 px widget; 1.2 dp-units gives a 24 dp row, a finger-sized target once the
-   * kit's own padding is added */
-  win->scale = win->density * 1.2f;
-  BK_set_scale(win->scale);
+  apply_density(win);
   /* the activity's content rectangle: the surface less the status and navigation bars */
   const ARect c = g_app->contentRect;
   const int ok = c.right > c.left && c.bottom > c.top && c.right <= win->sw && c.bottom <= win->sh;
@@ -197,7 +204,10 @@ static void draw(BKWindow *win)
   const int(*rects)[4] = whole;
   int n = 1;
   ARect dirty = {win->ox, win->oy, win->ox + win->w, win->oy + win->h};
-  if (!full) {
+  if (full) { /* the bars around the content too: a new layout must not leave old pixels there */
+    dirty = (ARect){0, 0, win->sw, win->sh};
+  }
+  else {
     n = BUI_raster_damage(win->raster, &rects);
     if (n <= 0) {
       return;
@@ -230,6 +240,17 @@ static void draw(BKWindow *win)
   uint32_t *dst = (uint32_t *)buf.bits + (size_t)win->oy * buf.stride + win->ox;
   const int back[4] = {dirty.left - win->ox, dirty.top - win->oy, dirty.right - dirty.left,
                        dirty.bottom - dirty.top};
+  if (full) {
+    for (int y = 0; y < win->sh; y++) {
+      uint32_t *row = (uint32_t *)buf.bits + (size_t)y * buf.stride;
+      const int inside = y >= win->oy && y < win->oy + win->h;
+      for (int x = 0; x < win->sw; x++) {
+        if (!inside || x < win->ox || x >= win->ox + win->w) {
+          row[x] = 0xFF000000u;
+        }
+      }
+    }
+  }
   convert(src, win->w, dst, buf.stride, full ? whole[0] : back);
   ANativeWindow_unlockAndPost(surface);
   win->frames++;
@@ -378,13 +399,17 @@ static int32_t on_key(BKWindow *win, AInputEvent *e)
   return 0;
 }
 
-/* Widgets that use a drag themselves; a drag that starts anywhere else scrolls the page. */
-static int drags(const BKNode *n)
+/* Widgets that use a drag themselves; a drag that starts anywhere else scrolls the page. A custom
+ * or canvas node (a Rust page is one) scrolls unless the app asks for its drags. */
+static int drags(const BKWindow *win, const BKNode *n)
 {
   static const char *const types[] = {"slider", "number", "scrollbar", "text", "textarea", "panel",
-                                      "nodeeditor", "canvas", "curve", "ramp", "picker", "normal",
-                                      "swatch", "histogram", "eyedropper", "custom"};
+                                      "nodeeditor", "curve", "ramp", "picker", "normal", "swatch",
+                                      "histogram", "eyedropper"};
   const char *t = n ? BK_node_type(n) : "";
+  if (win->drag_custom && (strcmp(t, "custom") == 0 || strcmp(t, "canvas") == 0)) {
+    return 1;
+  }
   for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); i++) {
     if (strcmp(t, types[i]) == 0) {
       return 1;
@@ -416,6 +441,7 @@ static void cancel_press(BKWindow *win)
 static void scroll_by(BKWindow *win, float x, float y, float *last_x, float *last_y)
 {
   const float notch = (float)BK_unit() * 2.0f; /* px per wheel step */
+  BK_motion(win->ctx, (int)x, (int)y, 0); /* a page that scrolls under the pointer needs to know it */
   BK_scroll(win->ctx, (int)x, (int)y, (*last_x - x) / notch, (y - *last_y) / notch, 0);
   *last_x = x;
   *last_y = y;
@@ -434,12 +460,18 @@ static int32_t on_touch(BKWindow *win, AInputEvent *e)
       win->down_y = win->scroll_y = y;
       win->scrolling = 0;
       BK_motion(win->ctx, (int)x, (int)y, 0);
-      win->draggable = drags(BK_hover(win->ctx));
-      BK_press(win->ctx, (int)x, (int)y, 0);
-      win->pointer_down = 1;
+      win->draggable = drags(win, BK_hover(win->ctx));
+      if (win->draggable) { /* a slider, a text field ...: it gets the press now */
+        BK_press(win->ctx, (int)x, (int)y, 0);
+        win->pointer_down = 1;
+      }
+      else { /* a tap or a scroll: the kit hears of it once we know which */
+        win->pending_tap = 1;
+      }
       break;
     case AMOTION_EVENT_ACTION_POINTER_DOWN:
       if (count >= 2 && !win->scrolling) { /* a second finger: scroll instead of drag */
+        win->pending_tap = 0;
         cancel_press(win);
         win->scrolling = 1;
         win->scroll_x = (AMotionEvent_getX(e, 0) + AMotionEvent_getX(e, 1)) * 0.5f - (float)win->ox;
@@ -455,17 +487,17 @@ static int32_t on_touch(BKWindow *win, AInputEvent *e)
       else if (win->scrolling) { /* a one-finger scroll */
         scroll_by(win, x, y, &win->scroll_x, &win->scroll_y);
       }
-      else if (win->pointer_down) {
+      else if (win->pending_tap) {
         const float dx = x - win->down_x, dy = y - win->down_y;
-        if (!win->draggable && dx * dx + dy * dy > slop * slop) { /* not a click: scroll */
-          cancel_press(win);
+        if (dx * dx + dy * dy > slop * slop) { /* not a click: scroll */
+          win->pending_tap = 0;
           win->scrolling = 1;
           win->scroll_x = x;
           win->scroll_y = y;
         }
-        else {
-          BK_motion(win->ctx, (int)x, (int)y, BK_BUTTON1);
-        }
+      }
+      else if (win->pointer_down) {
+        BK_motion(win->ctx, (int)x, (int)y, BK_BUTTON1);
       }
       break;
     case AMOTION_EVENT_ACTION_POINTER_UP:
@@ -475,10 +507,16 @@ static int32_t on_touch(BKWindow *win, AInputEvent *e)
       break;
     case AMOTION_EVENT_ACTION_UP:
       win->scrolling = 0;
+      if (win->pending_tap) { /* lifted in place: the click */
+        win->pending_tap = 0;
+        BK_motion(win->ctx, (int)x, (int)y, 0);
+        BK_press(win->ctx, (int)x, (int)y, 0);
+        win->pointer_down = 1;
+      }
       pointer_up(win, x, y);
       break;
     case AMOTION_EVENT_ACTION_CANCEL:
-      win->scrolling = 0;
+      win->scrolling = win->pending_tap = 0;
       pointer_up(win, -100.0f, -100.0f);
       break;
     default:
@@ -699,8 +737,7 @@ BKWindow *BK_window_new(BKContext *ctx, const char *title, int width, int height
   win->prev = ctx->host;
   win->raster = BUI_raster_create(1, 1);
   win->next_timer = 1;
-  win->density = 1.0f;
-  win->scale = 1.2f;
+  apply_density(win);
   win->req_w = width;
   win->req_h = height;
   win->w = (int)(width * win->scale);
@@ -708,11 +745,21 @@ BKWindow *BK_window_new(BKContext *ctx, const char *title, int width, int height
   win->sw = win->w;
   win->sh = win->h;
   win->open = 1;
-  BK_set_scale(win->scale);
   g_win = win;
   BKHost host = {win,           host_request,       host_set_cursor, host_warp,
                  host_clipboard_get, host_clipboard_set, host_schedule, host_emit};
   BK_context_set_host(ctx, &host);
+  /* The activity starts before its surface exists: wait for it, so the app builds its UI at the
+   * real size and scale, as it would in a desktop window. */
+  struct android_poll_source *src;
+  int events;
+  const double give_up = now_ms() + 1000.0; /* the content rectangle follows the surface */
+  while ((!g_app->window || g_app->contentRect.right <= 0) && !g_app->destroyRequested &&
+         now_ms() < give_up) {
+    if (ALooper_pollOnce(50, NULL, &events, (void **)&src) >= 0 && src) {
+      src->process(g_app, src);
+    }
+  }
   if (g_app->window) {
     surface_changed(win);
   }
@@ -828,7 +875,12 @@ void *BK_window_handle(BKWindow *win)
   return g_app ? (void *)g_app->window : NULL; /* ANativeWindow * */
 }
 
-void BK_window_wm(BKWindow *win, const char *key, double a, double b) {} /* no window manager */
+void BK_window_wm(BKWindow *win, const char *key, double a, double b)
+{
+  if (strcmp(key, "touch_drag") == 0) { /* the only request an Android window has */
+    win->drag_custom = a != 0.0;
+  }
+}
 
 int BK_window_wm_get(BKWindow *win, const char *key, double *r_a, double *r_b)
 {

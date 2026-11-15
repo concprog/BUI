@@ -5,6 +5,7 @@
     python platform/android/build.py --abi arm64-v8a     # one ABI (what a phone needs)
     python platform/android/build.py --install           # adb install -r, then start it
     python platform/android/build.py --lua examples/android    # a Lua app: the folder's *.lua are assets/
+    python platform/android/build.py --rust platform/android/rust   # a Rust app (a staticlib crate)
 
 ANDROID_HOME / ANDROID_SDK_ROOT (else the usual per-user SDK folder) locates the SDK; the NDK is
 the newest one in it (or ANDROID_NDK_HOME).
@@ -53,13 +54,42 @@ def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
 
-def build_abi(ndk, abi, out, app_args):
+RUST_TARGETS = {"arm64-v8a": "aarch64-linux-android", "x86_64": "x86_64-linux-android",
+                "armeabi-v7a": "armv7-linux-androideabi"}
+
+
+def build_rust(crate, ndk, abi, make):
+    """cargo builds the app's staticlib (and, through blenderui-sys, the kit) for one ABI."""
+    triple = RUST_TARGETS[abi]
+    # the cmake crate reads the toolchain file from the environment; `make` is found on PATH. CC /
+    # CXX / AR name the NDK's clang so the crate passes clang's flags, not the host compiler's
+    exe = ".exe" if os.name == "nt" else ""
+    cmd = ".cmd" if os.name == "nt" else ""
+    host = os.path.basename(os.path.dirname(os.path.dirname(make)))
+    llvm = os.path.join(ndk, "toolchains", "llvm", "prebuilt", host, "bin")
+    clang = os.path.join(llvm, "%s%d-clang" % (triple.replace("armv7", "armv7a"), API))
+    var = triple.replace("-", "_")
+    env = dict(os.environ, ANDROID_NDK_HOME=ndk, ANDROID_NDK=ndk, CMAKE_GENERATOR="Unix Makefiles",
+               CMAKE_TOOLCHAIN_FILE=os.path.join(ndk, "build", "cmake", "android.toolchain.cmake").replace("\\", "/"),
+               ANDROID_PLATFORM="android-%d" % API, ANDROID_ABI=abi,
+               **{"CC_" + var: clang + cmd, "CXX_" + var: clang + "++" + cmd,
+                  "AR_" + var: os.path.join(llvm, "llvm-ar" + exe)},
+               PATH=os.path.dirname(make) + os.pathsep + os.environ["PATH"])
+    run(["cargo", "build", "--release", "--target", triple, "--manifest-path",
+         os.path.join(crate, "Cargo.toml")], env=env)
+    name = open(os.path.join(crate, "Cargo.toml"), encoding="utf-8").read().split('name = "')[1].split('"')[0]
+    return os.path.join(crate, "target", triple, "release", "lib%s.a" % name.replace("-", "_"))
+
+
+def build_abi(ndk, abi, out, app_args, rust=None):
     exe = ".exe" if os.name == "nt" else ""
     host = {"nt": "windows-x86_64", "posix": "linux-x86_64"}[os.name]
     if sys.platform == "darwin":
         host = "darwin-x86_64"
     make = os.path.join(ndk, "prebuilt", host, "bin", "make" + exe)
     bdir = os.path.join(out, abi)
+    if rust:
+        app_args = ["-DBUI_ANDROID_APP=rust", "-DBUI_ANDROID_RUST_LIB=" + build_rust(rust, ndk, abi, make).replace("\\", "/")]
     args = ["cmake", "-S", ROOT, "-B", bdir, "-G", "Unix Makefiles",
             "-DCMAKE_MAKE_PROGRAM=" + make.replace("\\", "/"),
             "-DCMAKE_TOOLCHAIN_FILE=" + os.path.join(ndk, "build", "cmake", "android.toolchain.cmake").replace("\\", "/"),
@@ -112,6 +142,7 @@ def main():
     ap.add_argument("--abi", action="append", help="arm64-v8a, x86_64, armeabi-v7a (default: arm64-v8a and x86_64)")
     ap.add_argument("--out", default=os.path.join(ROOT, "build-android"))
     ap.add_argument("--install", action="store_true")
+    ap.add_argument("--rust", metavar="CRATE", help="a Rust app: a staticlib crate that defines bui_app_main (platform/android/rust)")
     ap.add_argument("--lua", metavar="DIR", help="a Lua app: DIR/main.lua returns the root node; every *.lua in DIR is an asset")
     a = ap.parse_args()
     app_args, assets = ["-DBUI_ANDROID_APP=demo", "-DBUI_BUILD_LUA_BINDINGS=OFF"], {}
@@ -128,7 +159,7 @@ def main():
     root_sdk = sdk()
     ndk = os.environ.get("ANDROID_NDK_HOME") or newest(os.path.join(root_sdk, "ndk", "*"))
     os.makedirs(a.out, exist_ok=True)
-    libs = {abi: build_abi(ndk, abi, a.out, app_args) for abi in (a.abi or ["arm64-v8a", "x86_64"])}
+    libs = {abi: build_abi(ndk, abi, a.out, app_args, a.rust) for abi in (a.abi or ["arm64-v8a", "x86_64"])}
     final = apk(root_sdk, libs, a.out, assets)
     for abi, lib in libs.items():
         print("%-12s %8.1f KB" % (abi, os.path.getsize(lib) / 1024))

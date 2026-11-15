@@ -1,52 +1,83 @@
 # BUI on Android
 
-`platform/android` runs the kit on a phone: one `NativeActivity` (no Java, no Gradle), the software
-raster, touch and the soft keyboard. Nothing outside `platform/android` and the `if(ANDROID)` blocks
-of the top-level `CMakeLists.txt` and `core/CMakeLists.txt` changed, so no other platform builds
-differently.
+BUI runs on a phone as one `NativeActivity` (no Java, no Gradle) with the software raster, touch and the
+soft keyboard. **The window is the kit's:** `kit/intern/kit_window_android.c` implements `BK_window_*`
+the way `kit_window_win32.c` and `kit_window_x11.c` do, so an app opens a window and runs the loop
+exactly as on a desktop. C, Lua and Rust apps are the same code they would be on Windows or Linux.
+
+Nothing changes for other platforms: the Android code lives in `platform/android`, in the kit's
+Android-only branches, and in `if(ANDROID)` blocks of CMake.
 
 ```
-python platform/android/build.py                  # arm64-v8a + x86_64 -> build-android/bui.apk
-python platform/android/build.py --abi arm64-v8a  # a phone only
-python platform/android/build.py --install        # adb install -r, then start it
+python platform/android/build.py                       # the C demo: arm64-v8a + x86_64 -> build-android/bui.apk
+python platform/android/build.py --abi arm64-v8a       # a phone only
+python platform/android/build.py --install             # adb install -r, then start it
+python platform/android/build.py --lua examples/android        # a Lua app (the folder's *.lua are assets)
+python platform/android/build.py --rust platform/android/rust  # a Rust app (a staticlib crate)
 ```
 
-Needs the Android SDK (`ANDROID_HOME`; build-tools, platform 34) and an NDK (the newest in the SDK, or
-`ANDROID_NDK_HOME`), CMake and a JDK for `keytool`. The APK is signed with `~/.android/debug.keystore`.
+Needs the Android SDK (`ANDROID_HOME`; build-tools, platform 34), an NDK (the newest in the SDK, or
+`ANDROID_NDK_HOME`), CMake, a JDK for `keytool`, and for Rust `cargo` with the Android targets
+(`rustup target add aarch64-linux-android x86_64-linux-android`). The APK is signed with
+`~/.android/debug.keystore`.
 
-## Your app
+## Writing an app
 
-`bui_app.h` is the whole interface: `bui_app_build()` returns the root node of the UI and
-`bui_app_fonts()` registers fonts. `demo.c` is a scrolling page of widgets; replace it with your own
-(`platform/android/CMakeLists.txt` lists the sources).
+| Language | You write | Run it |
+| --- | --- | --- |
+| **Rust** | an ordinary `blenderui` app in a `staticlib` crate with `#[unsafe(no_mangle)] pub extern "C" fn bui_app_main() { Application::new().run(...) }` (`platform/android/rust`) | `--rust CRATE` |
+| **Lua** | an ordinary BUI Lua script, `assets/main.lua`, ending in `bui.open{root=...}` or `bui.Window(...)` + `bui.run()`; `require` finds your other `.lua` files and `bui.lua` in the APK | `--lua DIR` |
+| **C** | `void bui_app_main(void)`: build nodes, `BK_context_new`, `BK_window_new`, `BK_window_run` (`platform/android/demo.c`) | the default |
 
-## What it does
+Python, JavaScript (React, Vue, Svelte), Qt, tkinter and D are not available on Android: each needs its
+runtime on the device.
 
-- **Damage driven.** Nothing is drawn and the thread sleeps in `ALooper` until a touch, key, timer or
-  frame request. Each frame converts and locks only the damaged rectangles (B,G,R words to the
-  window's R,G,B bytes). Idle cost: 0 CPU ticks in 10 s on the emulator.
-- **Touch.** One finger is the pointer (tap = click). A drag that starts on a widget that drags
-  (sliders, number fields, text, scrollbars, panels, canvases) drags it; anywhere else it scrolls
-  the page. Two fingers always scroll. The pointer leaves the screen with the finger.
+For Rust the staticlib carries its own copy of the kit (`blenderui-sys` builds it for the target), so
+the app crate sets the kit's features itself (see its `Cargo.toml`: no GPU, ImGui or extra image
+formats).
+
+## Behavior
+
+- **Damage driven.** Nothing is drawn and the thread sleeps in `ALooper` until a touch, key, timer, wake
+  or frame request. Only the damaged rectangles are converted (B,G,R words to the surface's R,G,B bytes)
+  and locked. Idle cost: 0 CPU ticks in 10 s on the emulator, for the C and the Rust app.
+- **Scale.** A CSS pixel is a dp, as in Chrome on Android: the kit's scale is the screen density
+  (`dpi / 160`), so Rust layout and Blender's 20-unit widgets come out at a phone's size.
+- **Touch.** One finger is the pointer. A tap is a click (sent when the finger lifts in place). A drag
+  that starts on a widget that drags (sliders, number fields, text, scrollbars, panels) drags it;
+  anywhere else it scrolls. Two fingers always scroll. `BK_window_wm(win, "touch_drag", 1, 0)` gives
+  the drags of custom and canvas nodes to the app instead (a paint app); by default they scroll.
 - **Keyboard.** The soft keyboard opens while a text field or area is being edited. Keys arrive as key
-  events (`KeyEvent.getUnicodeChar`), so typing, Backspace, arrows and Back (Escape) work. Predictive
-  and composing IMEs (`BK_ime_event`) need an `InputConnection` and are not wired up.
-- **System bars.** The UI is drawn inside the activity's content rectangle, and the soft keyboard
-  resizes it (`adjustResize`).
-- **Scale.** `AConfiguration_getDensity` / 160 * 1.2 is the kit's scale (Blender's 1.0 is a 20 px widget).
-- **Fonts.** Inter is left out of the build (`BUI_NO_INTER`, 0.8 MB); Roboto from `/system/fonts` is used.
+  events (`KeyEvent.getUnicodeChar`), so typing, Backspace, arrows and Back (Escape) work. Predictive and
+  composing IMEs (`BK_ime_event`) need an `InputConnection` and are not wired up.
+- **System bars.** The UI is drawn inside the activity's content rectangle; the soft keyboard resizes it
+  (`adjustResize`).
+- **Window.** One window, the surface. `BK_window_new` waits for the surface so the app builds its UI at
+  the real size and scale. `BK_window_set_size` and most `BK_window_wm` keys do nothing;
+  `BK_window_wm_get` answers `scale`, `screen` and `pointer`.
+
+## Fonts
+
+Inter is left out of the build (`BUI_NO_INTER`, 0.8 MB). The shell registers the system's fonts
+(`platform/android/fonts.c`: Roboto and Droid Sans Mono from `/system/fonts` as the families `sans` and
+`mono`). To use your own, call `BUI_text_add_font(family, flags, data, len)` with the font's bytes
+(from `BK_android_assets()` or a file) and select it with `BK_set_font(family)`, as on any platform.
 
 ## Size
 
-Built with `-O2` and LTO, `-fvisibility=hidden`, `--gc-sections`, stripped, and with the GPU
-renderers, Dear ImGui, the file browser and every image format but PNG and SVG off
-(`features.json`): `libbui_app.so` is 2.5 MB (arm64-v8a) and an APK of one ABI is about 1.1 MB (the
-library is deflated and extracted at install). `-Os` saved only 4%, so speed was kept. About 0.45 MB of
-the library is the icon set.
+`-O2` with link-time optimization (C and Lua apps; Rust does its own), `-fvisibility=hidden`,
+`--gc-sections`, stripped, GPU renderers, Dear ImGui, the file browser and every image format but PNG and
+SVG off (`features.json`). arm64-v8a: the C demo is 2.5 MB (APK about 1.1 MB), with Lua 3.2 MB (APK 1.4
+MB), with Rust 4.3 MB (APK 2.0 MB; blenderui's layout, CSS and Tailwind engines). The APK deflates the
+library and the installer extracts it. `-Os` saved only 4%, so speed was kept. About 0.45 MB is the icon
+set.
 
-## Not done
+## Tested, and not
 
-- No GPU renderer (the software raster draws; OpenGL ES would reuse `gpu_gl.c`, untested).
-- No long-press as right-click, no pinch, no predictive keyboard or IME composition, no clipboard
-  beyond the app's own, no cutout or gesture-bar insets beyond the content rectangle.
-- Tested on an x86_64 emulator (API 33) only; the arm64 build compiles and links but was not run.
+Run on an x86_64 emulator (API 33): the C demo, the Lua app (a button callback updates its label) and the
+Rust app (a button, a text input, scrolling with the scrollbar). The arm64-v8a builds of all three
+compile and link but were not run on a device.
+
+Not done: a GPU renderer (OpenGL ES would reuse `gpu_gl.c`, untested), long-press as right-click, pinch,
+IME composition, a clipboard beyond the app's own, cutout insets beyond the content rectangle, and
+touch text selection in Rust pages (a drag scrolls).
