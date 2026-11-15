@@ -90,9 +90,15 @@ pub const BK_ITEM_IMAGE: c_int = 6;
 pub const BK_ITEM_ROUNDRECT: c_int = 7;
 /// A GPU shader over the item's box (`BUI_effect_create`); the item's image is the fallback.
 pub const BK_ITEM_EFFECT: c_int = 8;
+/// A GPU pass into a render target (`BUI_target_create`): see `effect_target`.
+pub const BK_ITEM_PASS: c_int = 9;
 
 /// The most textures an effect samples, the most floats it reads, the longest source (bytes).
 pub const BK_EFFECT_MAX_INPUTS: usize = 8;
+/// Render target formats (`BUI_target_create`).
+pub const BUI_TARGET_RGBA8: c_int = 0;
+pub const BUI_TARGET_RGBA16F: c_int = 1;
+pub const BUI_TARGET_RGBA32F: c_int = 2;
 pub const BK_EFFECT_MAX_FLOATS: usize = 256;
 pub const BK_EFFECT_MAX_SOURCE: usize = 65536;
 
@@ -143,6 +149,8 @@ pub struct BKCanvasItem {
     pub effect_inputs: [c_int; BK_EFFECT_MAX_INPUTS],
     pub effect_floats: *const c_float,
     pub n_effect_floats: c_int,
+    /// `BK_ITEM_PASS`: the render target the effect draws into (`effect` 0: a clear to the floats).
+    pub effect_target: c_int,
 }
 
 /// A `<video>` (`BKVideo`): the kit's player (OS decoders; frames in one GPU
@@ -464,6 +472,13 @@ unsafe extern "C" {
     /// An application shader over a box, on the GPU: 1 when drawn, 0 when it cannot run (the caller draws its fallback).
     pub fn BUI_raster_effect(r: *mut BuiRaster, x: c_float, y: c_float, w: c_float, h: c_float, effect: c_int,
                              inputs: *const c_int, floats: *const c_float, n_floats: c_int) -> c_int;
+    /// A render target (BUI texture id): effects draw into it with `BUI_raster_effect_to`; `format` is `BUI_TARGET_*`.
+    pub fn BUI_target_create(w: c_int, h: c_int, format: c_int) -> c_int;
+    /// An effect over all of a render target: 1 when drawn, 0 when it cannot run here.
+    pub fn BUI_raster_effect_to(r: *mut BuiRaster, target: c_int, effect: c_int, inputs: *const c_int,
+                                floats: *const c_float, n_floats: c_int) -> c_int;
+    /// Fill a whole render target with rgba (4 floats, as given).
+    pub fn BUI_raster_target_clear(r: *mut BuiRaster, target: c_int, rgba: *const c_float) -> c_int;
     pub fn BUI_text_measure(family: *const c_char, flags: c_int, size: c_float,
                             utf8: *const c_char, len: c_int, r_width: *mut c_float) -> c_int;
     /// Registers a TrueType/OpenType font (copied) for `family` + style flags.

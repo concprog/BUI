@@ -61,6 +61,8 @@ One source runs on every renderer. It is GLSL with a small set of compatibility 
 | `float U[i]` | The floats you pass, `i` below the `n_floats` you declared. |
 | `vec4 input_color(int i, vec2 texel)` | Input texture `i` at a position in texels: bilinear, clamped at the edges, premultiplied. |
 | `vec2 input_size(int i)` | Its size in texels. |
+| `vec4 input_raw(int i, vec2 texel)` | Like `input_color`, but not premultiplied: for data (a render target), not pictures. |
+| `vec4 input_load(int i, vec2 texel)` | The one texel containing `texel`, exactly (no filtering; clamped to the texture). |
 | `float`, `int`, `bool`, `vec2`, `vec3`, `vec4` | Types (`float2`, `float3`, `float4` work too). One-scalar constructors such as `vec3(0.5)` work on both renderers. |
 | `mix fract mod clamp step smoothstep abs sign floor ceil min max pow exp exp2 log sqrt inversesqrt sin cos tan asin acos atan length distance dot normalize` | The usual built-ins. Use `atan2(y, x)` for the two-argument arc tangent. |
 
@@ -77,6 +79,25 @@ effect(1,40-53): error X3004: undeclared identifier 'no_such_symbol'
 Line numbers count from the first line of your source. A failed effect draws its fallback (nothing without one), never crashes, and is not retried. The fallback is also what the software renderer, a Windows system without `d3dcompiler_47.dll` and an off-screen CSS effect layer draw.
 
 `Painter::is_gpu()` tells a paint callback whether its window is drawn by the GPU, so code that has both a shader and a CPU renderer can choose. `GpuTarget` renders effects off-screen into pixels, for tests and thumbnails.
+
+## Render targets: draw into a texture
+
+A **render target** is a texture an effect draws into instead of the window, the way Blender draws into a `GPUTexture` attachment through a `GPUFramebuffer`. It is what a simulation needs: state that feeds back into itself every frame, in a format a byte cannot be (`Rgba16F`, `Rgba32F`).
+
+```rust
+let a = RenderTarget::new(640, 400, TargetFormat::Rgba16F).unwrap();
+let b = RenderTarget::new(640, 400, TargetFormat::Rgba16F).unwrap();
+canvas(move |bounds, p| {
+    p.effect_to(bounds, &b, &step, &[a.texture()], &[dt]);   // b = step(a)
+    p.effect(bounds, &show, &[b.texture()], &[], None);      // the window shows b
+})
+```
+
+- It is a BUI texture: its `texture()` id goes in the `inputs` of any effect, read with `input_raw` (bilinear) or `input_load` (exact). `input_color` premultiplies, which data does not want.
+- `Painter::effect_to` records a pass in paint order, so a pass comes before the passes and items that sample it. Nothing is blended: the target takes the shader's RGBA as it is (not clamped for the float formats). `p` is the pixel in the target and `box_size` its size.
+- A pass cannot sample the target it draws into: a feedback loop swaps two, as above. Such a pass is refused (`GpuTarget::draw_to` returns `false`).
+- Passes run when the whole canvas is redrawn, once, in order, before the canvas's ordinary items. A canvas that animates every frame redraws whole; a partial redraw does not step a simulation.
+- A target has no CPU copy and is made on the device that first draws into it, cleared to zero. `GpuTarget::draw_to` and `clear_target` draw into one off-screen.
 
 ## Limits
 

@@ -574,7 +574,7 @@ void BK_image_exit(void);        /* joins the workers, frees the cache */
 
 /* -- canvas (Tk Canvas, QPainter)-------------------------------------------------- */
 enum { BK_ITEM_RECT, BK_ITEM_OVAL, BK_ITEM_LINE, BK_ITEM_POLYGON, BK_ITEM_TEXT, BK_ITEM_ARC,
-       BK_ITEM_IMAGE, BK_ITEM_ROUNDRECT, BK_ITEM_EFFECT };
+       BK_ITEM_IMAGE, BK_ITEM_ROUNDRECT, BK_ITEM_EFFECT, BK_ITEM_PASS };
 typedef struct BKCanvasItem {
   int id, type;
   const float *coords; /* x0 y0 x1 y1 ... in canvas space */
@@ -612,6 +612,13 @@ typedef struct BKCanvasItem {
   int effect_inputs[BK_EFFECT_MAX_INPUTS];
   const float *effect_floats;
   int n_effect_floats;
+  /* BK_ITEM_PASS: not drawn into the canvas but into a render target (BUI_target_create, GPU_raster.h):
+   * `effect` over all of `effect_target`, sampling effect_inputs with effect_floats, as
+   * BUI_raster_effect_to does; `effect` 0 fills the target with the 4 floats instead. The box x0 y0 x1
+   * y1 (4 coords) is the canvas's own: the pass runs when the whole canvas is redrawn, in list order
+   * (before the items that sample what it drew), once per such frame. Nothing is drawn where the GPU
+   * cannot run it. */
+  int effect_target;
 } BKCanvasItem;
 void BK_canvas_set_item(BKNode *canvas, const BKCanvasItem *item); /* insert or replace by id */
 void BK_canvas_add_item(BKNode *canvas, const BKCanvasItem *item);
