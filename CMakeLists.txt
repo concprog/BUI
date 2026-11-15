@@ -147,6 +147,11 @@ if(BUI_BUILD_TESTS)
   # (exits 77, skipped, when BUI_ANIM is off)
   add_executable(bui_anim_test tests/anim_test.c)
   target_link_libraries(bui_anim_test PRIVATE bui::kit)
+  if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    # GCC 15.2 (MinGW) -O3 miscompiles the test's nested settle loop with the SLP vectorizer
+    # (a wild pointer in test_settle_closed_form); the library itself is unaffected.
+    target_compile_options(bui_anim_test PRIVATE -fno-tree-slp-vectorize)
+  endif()
   add_test(NAME bui_anim_test COMMAND bui_anim_test)
   set_tests_properties(bui_anim_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
   if(WIN32) # the thumbnail-grid benchmark (bench/images/image_grid.c; not a test)
