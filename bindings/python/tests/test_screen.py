@@ -147,6 +147,15 @@ def test_lone_area_and_panels():
     assert moved == [(0, 1)], moved
 
 
+def test_html_radius():
+    from bui.components import TextArea
+    t = TextArea("x")
+    t.set("html", 1)
+    assert t.get("radius") == -1
+    t.set("radius", 12)
+    assert t.get("radius") == 12
+
+
 def main():
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -430,6 +430,8 @@ struct BKNode {
   float weight;
   int fill; /* in a column: takes a share of the spare height (a region filling its area) */
   int corners;
+  float radius; /* HTML look corner radius in CSS px; used when has_radius */
+  bool has_radius;
   unsigned flags;
 
   /* common data */
@@ -726,6 +728,7 @@ bool bk_html_measure(BKNode *n, int *r_w, int *r_h);
 bool bk_html_draw(BKNode *n);
 /* CSS px -> device px */
 float bk_hpx(float css);
+float bk_html_radius(const BKNode *n); /* the node's `radius`, else the browser's 2px */
 /* Chrome's text field content: text, selection (#3390ff / white text) and caret. */
 void bk_html_te_draw(BKTextEdit *te, const BKRect *content, const uchar color[4]);
 extern const BKClass bk_cls_meter;

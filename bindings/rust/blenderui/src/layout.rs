@@ -1237,6 +1237,9 @@ impl<'a> Builder<'a> {
                     // `styled` and for the Blender components (`bui-blender`)
                     spec.html = !self.nodes[i].styled && self.attr(i, "bui-blender").is_none();
                     spec.bare = spec.html && self.styles[style].border_drawn.iter().all(|d| !d);
+                    let own = &self.styles[style];
+                    let u = self.units(own.font_size);
+                    spec.radius = own.radius.iter().filter_map(|r| r.to_px(&u)).reduce(f32::max).filter(|r| *r > 0.0);
                     if spec.html && matches!(spec.kind, crate::widgets::WKind::TextArea) {
                         let own = &self.styles[style];
                         let argb = |c: crate::Rgba| {

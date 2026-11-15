@@ -3454,6 +3454,11 @@ float bk_hpx(float css)
   return css * bk_scale_fac;
 }
 
+float bk_html_radius(const BKNode *n)
+{
+  return bk_hpx(n->has_radius ? n->radius : 2.0f);
+}
+
 static float hp(float css)
 {
   return css * bk_scale_fac;
@@ -3607,9 +3612,9 @@ void bk_html_te_draw(BKTextEdit *te, const BKRect *cr, const uchar color[4])
 
 /* -- buttons (push buttons, toggles, color input frame) -- */
 
-static void html_button_frame(const BKRect *r, int hs)
+static void html_button_frame(const BKNode *n, const BKRect *r, int hs)
 {
-  const float rad = hp(2.0f), bw = html_bw();
+  const float rad = bk_html_radius(n), bw = html_bw();
   if (hs == HS_DISABLED) {
     html_box_r(r, rad, HTML_LIGHTEN, 0, 0); /* PaintLightenLayer */
   }
@@ -3636,7 +3641,7 @@ static void html_button_draw(BKNode *n, const char *s, bool on)
   if (on && hs != HS_DISABLED) {
     hs = HS_PRESSED; /* a toggle that is on looks pressed */
   }
-  html_button_frame(&r, hs);
+  html_button_frame(n, &r, hs);
   if (n->image.kind != BK_IMREF_NONE) {
     bk_node_image_draw(n, &r, NODE_ENABLED(n) ? 1.0f : 0.5f);
     return;
@@ -3673,7 +3678,7 @@ static void html_checkbox_draw(BKNode *n)
   html_check_box(n, &x, &y, &s);
   const int hs = html_state(n);
   const bool checked = n->value != 0, mixed = n->value < 0; /* value -1: indeterminate */
-  const float rad = hp(2.0f), bw = html_bw();
+  const float rad = bk_html_radius(n), bw = html_bw();
   if (hs == HS_DISABLED) {
     html_box(x, y, s, s, rad, HTML_LIGHTEN, 0, 0);
   }
@@ -3731,9 +3736,9 @@ static void html_check_measure(BKNode *n, int *rw, int *rh)
 /* -- text fields -- */
 
 /* `bg`: the CSS background-color of the field (NULL or alpha 0: the browser's Field white) */
-static void html_field_frame(const BKRect *r, int hs, bool focused, const uchar *bg)
+static void html_field_frame(const BKNode *n, const BKRect *r, int hs, bool focused, const uchar *bg)
 {
-  const float rad = hp(2.0f), bw = html_bw();
+  const float rad = bk_html_radius(n), bw = html_bw();
   if (hs == HS_DISABLED) {
     html_box_r(r, rad, HTML_LIGHTEN, 0, 0);
   }
@@ -3749,7 +3754,7 @@ static void html_text_draw(BKNode *n)
   const BKRect r = bk_node_rect(n);
   const int hs = html_state(n);
   if (!(n->flags & NF_BARE)) { /* `border: none`: no frame and no focus ring, as in Chrome */
-    html_field_frame(&r, hs, n->edit != NULL, n->field_bg);
+    html_field_frame(n, &r, hs, n->edit != NULL, n->field_bg);
   }
   const BKRect cr = html_inset(&r, 4, 3, 4, 3);
   const uchar *tc = hs == HS_DISABLED ? kHtmlFieldTextDisabled : n->text_color[3] ? n->text_color : kHtmlText;
@@ -3828,7 +3833,7 @@ static void html_number_draw(BKNode *n)
 {
   const BKRect r = bk_node_rect(n);
   const int hs = html_state(n);
-  html_field_frame(&r, hs, n->edit != NULL, NULL);
+  html_field_frame(n, &r, hs, n->edit != NULL, NULL);
   BKRect cr = html_inset(&r, 4, 3, 4, 3);
   cr.xmax = BK_MAX(cr.xmin, cr.xmax - hpi(15)); /* the spin button's space is always kept */
   const uchar *tc = hs == HS_DISABLED ? kHtmlFieldTextDisabled : kHtmlText;
@@ -4108,7 +4113,7 @@ static void html_select_draw(BKNode *n)
     hs = HS_PRESSED;
   }
   /* PaintMenuList without a CSS radius: PaintTextField, then the arrow */
-  html_field_frame(&r, hs, false, NULL);
+  html_field_frame(n, &r, hs, false, NULL);
   const uchar *tc = hs == HS_DISABLED ? kHtmlTextDisabled : kHtmlText;
   const BKRect cr = html_inset(&r, 5, 2, 19, 2);
   html_text(&cr, html_item(n, (int)n->value), -1, tc, BK_ALIGN_LEFT, false);
@@ -4132,7 +4137,7 @@ static void html_color_draw(BKNode *n)
   if (hs != HS_DISABLED && bk_owns_popup(bk_ctx(n), n)) {
     hs = HS_PRESSED;
   }
-  html_button_frame(&r, hs);
+  html_button_frame(n, &r, hs);
   /* padding 1px 2px + swatch wrapper 4px 2px, swatch border 1px #777777 */
   const BKRect sr = html_inset(&r, 5, 6, 5, 6);
   const float c[4] = {n->color[0], n->color[1], n->color[2], 1.0f};

@@ -1020,6 +1020,12 @@ int BK_set_num(BKNode *n, const char *key, double v)
     bk_invalidate(n);
     return 1;
   }
+  if (strcmp(key, "radius") == 0) { /* HTML look border-radius (CSS px); negative: the default */
+    n->has_radius = v >= 0;
+    n->radius = (float)v;
+    bk_invalidate(n);
+    return 1;
+  }
   if (strcmp(key, "weight") == 0) {
     n->weight = (float)v;
     bk_relayout(n);
@@ -1193,6 +1199,9 @@ double BK_get_num(BKNode *n, const char *key)
   }
   if (strcmp(key, "corners") == 0) {
     return n->corners;
+  }
+  if (strcmp(key, "radius") == 0) {
+    return n->has_radius ? n->radius : -1;
   }
   if (strcmp(key, "rename_row") == 0) {
     return n->rename_row;
