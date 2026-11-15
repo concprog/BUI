@@ -2,7 +2,7 @@
 # Built through the NDK's toolchain file; platform/android/build.py drives it and makes the APK.
 #
 # BUI_ANDROID_APP picks the app: demo (demo.c, C), lua (lua_app.c: assets/main.lua) or rust
-# (a Rust staticlib that defines bui_app_build; BUI_ANDROID_RUST_LIB is its path).
+# (a Rust staticlib that defines bui_app_main; BUI_ANDROID_RUST_LIB is its path).
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 

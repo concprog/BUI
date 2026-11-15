@@ -1,5 +1,5 @@
 -- A Lua app for Android: build.py --lua examples/android puts this in the APK as assets/main.lua.
--- It returns the root node; callbacks run in this Lua state.
+-- It is an ordinary BUI Lua script: the same code runs on a desktop with bui-lua.
 local bui = require("bui")
 
 local root = bui.Node("scroll")
@@ -35,4 +35,4 @@ field:set("label", "Text field")
 field:set("value", "tap to type")
 page:add(field)
 
-return root
+bui.open({ root = root, title = "BUI + Lua" })

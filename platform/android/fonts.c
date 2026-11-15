@@ -35,7 +35,7 @@ static int add(const char *family, int flags, const char *const *names)
   return 0;
 }
 
-void bui_app_fonts(void)
+void bui_android_fonts(void)
 {
   static const char *const regular[] = {"Roboto-Regular.ttf", "RobotoStatic-Regular.ttf",
                                         "NotoSans-Regular.ttf", "DroidSans.ttf", NULL};

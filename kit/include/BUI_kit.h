@@ -899,6 +899,15 @@ int BK_window_wake_init(void (*cb)(void));
 void BK_window_wake(void);
 void BK_window_set_keep_alive(int on);
 
+#ifdef __ANDROID__
+/* Android: the host is the activity's surface (kit_window_android.c). `android_main` passes its
+ * `struct android_app *` before anything else, which installs the host's input and lifecycle
+ * callbacks; BK_window_supported() is 1 from then on. BK_android_assets is the APK's
+ * `AAssetManager *` (the assets/ folder). */
+void BK_android_attach(void *android_app);
+void *BK_android_assets(void);
+#endif
+
 /* One of Blender's widgets drawn straight into a raster, outside any BKContext: the same
  * drawing (interface_widgets.cc port, theme, Inter text) the kit's own nodes use. For
  * other toolkits drawing Blender's widgets (Dear ImGui's Blender widgets,

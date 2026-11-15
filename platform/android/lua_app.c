@@ -1,9 +1,9 @@
-/* A Lua app: assets/main.lua builds the UI and returns its root node.
+/* A Lua app: assets/main.lua is an ordinary BUI Lua script (it opens its window with bui.open or
+ * bui.Window and runs it with bui.run, as on a desktop).
  *
  * The Lua binding (bindings/lua) runs unchanged; this file is what bui-lua's main.c is on a
- * desktop: it owns the Lua state, finds `require`d files in the APK's assets (bui.lua, your own
- * modules), and hands the shell the root node. Callbacks (on_click, on_change ...) reach Lua
- * through the binding's event dispatcher. A script error is shown on screen, not just logged.
+ * desktop: it owns the Lua state and finds `require`d files in the APK's assets (bui.lua, your own
+ * modules). A script error is shown on screen, not just logged.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -16,15 +16,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "BUI_kit.h"
 #include "bui_app.h"
-#include "bui_internal.h"
 
 int luaopen__bui(lua_State *L);
 
 /* Load assets/<name> (dots in a module name are folders) as a chunk; 0 when there is none. */
 static int load_asset(lua_State *L, const char *path)
 {
-  AAsset *a = AAssetManager_open(bui_android_assets(), path, AASSET_MODE_BUFFER);
+  AAsset *a = AAssetManager_open((AAssetManager *)BK_android_assets(), path, AASSET_MODE_BUFFER);
   if (!a) {
     return 0;
   }
@@ -55,7 +55,8 @@ static int asset_searcher(lua_State *L)
   return 1;
 }
 
-static BKNode *error_page(const char *message)
+/* The script failed: say why on screen (the log has it too). */
+static void show_error(const char *message)
 {
   __android_log_print(ANDROID_LOG_ERROR, "bui", "lua: %s", message);
   BKNode *page = BK_node_new("column");
@@ -63,14 +64,20 @@ static BKNode *error_page(const char *message)
   BKNode *label = BK_node_new("label");
   BK_set_str(label, "text", message);
   BK_node_add(page, label, -1);
-  return page;
+  BKContext *ctx = BK_context_new(page);
+  BKWindow *win = BK_window_new(ctx, "BUI", 360, 720);
+  BK_window_show(win);
+  BK_window_run();
+  BK_window_free(win);
+  BK_context_free(ctx);
 }
 
-BKNode *bui_app_build(void)
+void bui_app_main(void)
 {
   lua_State *L = luaL_newstate();
   if (!L) {
-    return error_page("lua: out of memory");
+    show_error("lua: out of memory");
+    return;
   }
   luaL_openlibs(L);
   luaL_requiref(L, "_bui", luaopen__bui, 1); /* what bui.lua requires first */
@@ -82,20 +89,12 @@ BKNode *bui_app_build(void)
   lua_rawseti(L, -2, n + 1);
   lua_pop(L, 2);
 
-  luabui_set_host_state(L);
-  bui_app_emit = luabui_host_emit;
-
   const int loaded = load_asset(L, "main.lua");
   if (loaded <= 0) {
-    return error_page(loaded < 0 ? lua_tostring(L, -1) : "assets/main.lua is missing");
+    show_error(loaded < 0 ? lua_tostring(L, -1) : "assets/main.lua is missing");
   }
-  if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
-    return error_page(lua_tostring(L, -1));
+  else if (lua_pcall(L, 0, 0, 0) != LUA_OK) { /* runs until the window closes */
+    show_error(lua_tostring(L, -1));
   }
-  luabui_Node *root = (luabui_Node *)luaL_testudata(L, -1, LUABUI_NODE_MT);
-  if (!root || !root->node) {
-    return error_page("main.lua must return the root node (return bui.Node(...))");
-  }
-  lua_setfield(L, LUA_REGISTRYINDEX, "bui.android.root"); /* the script's node outlives this call */
-  return root->node;
+  lua_close(L);
 }

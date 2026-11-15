@@ -169,6 +169,12 @@ elseif(APPLE)
   set_source_files_properties(intern/kit_window_cocoa.m PROPERTIES COMPILE_OPTIONS "-fno-objc-arc")
   target_compile_definitions(bui_kit PRIVATE BUI_WINDOW_COCOA)
   target_link_libraries(bui_kit PUBLIC "-framework Cocoa" "-framework CoreGraphics" objc)
+elseif(ANDROID)
+  # Native window on Android: the activity's surface (android_native_app_glue), software raster.
+  target_sources(bui_kit PRIVATE intern/kit_window_android.c)
+  target_compile_definitions(bui_kit PRIVATE BUI_WINDOW_ANDROID)
+  target_include_directories(bui_kit PRIVATE ${ANDROID_NDK}/sources/android/native_app_glue)
+  target_link_libraries(bui_kit PUBLIC android log)
 elseif(UNIX AND NOT APPLE)
   # Native windows on X11 (Wayland sessions run it through XWayland).
   # Only the headers are needed: libX11 is dlopen()ed at run time, so builds

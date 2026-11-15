@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 
+#include "BUI_kit.h"
 #include "bui_app.h"
 
 static BKNode *add(BKNode *parent, const char *type, const char *key, const char *text)
@@ -15,7 +16,7 @@ static BKNode *add(BKNode *parent, const char *type, const char *key, const char
   return n;
 }
 
-BKNode *bui_app_build(void)
+static BKNode *bui_demo_build(void)
 {
   BKNode *root = BK_node_new("scroll");
   BKNode *page = add(root, "column", NULL, NULL);
@@ -47,4 +48,14 @@ BKNode *bui_app_build(void)
     add(page, "button", "text", label);
   }
   return root;
+}
+
+void bui_app_main(void)
+{
+  BKContext *ctx = BK_context_new(bui_demo_build());
+  BKWindow *win = BK_window_new(ctx, "BUI", 360, 720);
+  BK_window_show(win);
+  BK_window_run();
+  BK_window_free(win);
+  BK_context_free(ctx);
 }
