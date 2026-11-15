@@ -120,6 +120,7 @@ All notable changes to **blenderui** (BUI). The format follows
   per frame instead of 5.0 (39,759 allocations per frame down to 9,759).
 
 ### Fixed
+- **Corner radius of browser-look controls.** `<textarea>`, `<input>`, `<button>`, checkboxes and selects drew a fixed 2px radius and ignored `border-radius` / Tailwind `rounded-*`. Nodes now take a `"radius"` (CSS px; negative restores the default 2px) that the browser look draws, and Rust forwards the element's `border-radius` (the largest corner; 0 keeps the browser's 2px). Blender-look widgets still take their roundness and corners from the theme (`text_field.roundness`, `text_field.corners.*`).
 - **Rust: Tailwind `text-sm` / `text-xs` / `text-lg` line heights.** A unitless `calc()` line height (`calc(1.25 / 0.875)`, what the Tailwind theme sets) was read as pixels (1.4 px), so the text sat about 9 px above its box and a parent with `overflow: hidden` (`truncate`) cut it. It is now a factor of the font size, like a number.
 - **Rust: `text-overflow: ellipsis` on a clipping block.** A `nowrap` text in a block with `overflow: hidden` (`truncate`) was laid out as line-box words, so it was clipped without the `…`. A block holding only text now lays it out as one measured run whatever its `overflow` (except scrolling ones), clips it to the content box and ends it with `…`; `text-overflow` takes effect only when `overflow-x` is not `visible`, as in CSS.
 - **Windows window exposure and resizing:** a window dragged back from outside the screen, restored from minimize or uncovered
