@@ -121,6 +121,8 @@ void luabui_nullify_treeitem(lua_State *L, BKTreeItem *item);
 extern int luabui_host_requested;
 
 void luabui_init_host_callbacks(lua_State *L, BKContext *ctx);
+void luabui_set_host_state(lua_State *L);
+void luabui_host_emit(void *data, BKNode *node, int kind, void *ref, double a, double b);
 
 /* A callback's error (on top of the stack) to stderr, popped: errors never unwind through
  * the kit. */

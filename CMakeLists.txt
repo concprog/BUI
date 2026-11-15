@@ -85,9 +85,6 @@ add_subdirectory(compat) # seam headers/stubs replacing Blender-app APIs
 add_subdirectory(ui)     # the widget toolkit
 add_subdirectory(kit)    # Blender UI runtime in C (widgets, input, damage rendering)
 add_subdirectory(api)    # stable C ABI for hosts & bindings
-if(ANDROID)
-  add_subdirectory(platform/android) # the NativeActivity host and demo app
-endif()
 
 if(BUI_BUILD_TESTS)
   enable_testing()
@@ -191,6 +188,11 @@ if(BUI_BUILD_LUA_BINDINGS)
   else()
     message(STATUS "BUI: bindings/lua not in this source tree; no Lua host")
   endif()
+endif()
+
+# after the bindings an Android app can link (Lua)
+if(ANDROID)
+  add_subdirectory(platform/android) # the NativeActivity host and an app
 endif()
 
 if(BUI_BUILD_QT_BACKEND)

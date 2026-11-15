@@ -4,6 +4,7 @@
     python platform/android/build.py                     # arm64-v8a and x86_64 -> build-android/bui.apk
     python platform/android/build.py --abi arm64-v8a     # one ABI (what a phone needs)
     python platform/android/build.py --install           # adb install -r, then start it
+    python platform/android/build.py --lua examples/android    # a Lua app: the folder's *.lua are assets/
 
 ANDROID_HOME / ANDROID_SDK_ROOT (else the usual per-user SDK folder) locates the SDK; the NDK is
 the newest one in it (or ANDROID_NDK_HOME).
@@ -52,7 +53,7 @@ def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
 
-def build_abi(ndk, abi, out):
+def build_abi(ndk, abi, out, app_args):
     exe = ".exe" if os.name == "nt" else ""
     host = {"nt": "windows-x86_64", "posix": "linux-x86_64"}[os.name]
     if sys.platform == "darwin":
@@ -63,7 +64,7 @@ def build_abi(ndk, abi, out):
             "-DCMAKE_MAKE_PROGRAM=" + make.replace("\\", "/"),
             "-DCMAKE_TOOLCHAIN_FILE=" + os.path.join(ndk, "build", "cmake", "android.toolchain.cmake").replace("\\", "/"),
             "-DANDROID_ABI=" + abi, "-DANDROID_PLATFORM=android-%d" % API, "-DCMAKE_BUILD_TYPE=Release",
-            "-DBUI_BUILD_TESTS=OFF", "-DBUI_BUILD_PYTHON_BINDINGS=OFF"] + ["-D%s=OFF" % o for o in OFF]
+            "-DBUI_BUILD_TESTS=OFF", "-DBUI_BUILD_PYTHON_BINDINGS=OFF"] + ["-D%s=OFF" % o for o in OFF] + app_args
     run(args)
     run(["cmake", "--build", bdir, "--target", "bui_app", "-j", str(os.cpu_count() or 4)])
     return os.path.join(bdir, "platform", "android", "libbui_app.so")
@@ -81,7 +82,7 @@ def keystore(out):
     return path
 
 
-def apk(root_sdk, libs, out):
+def apk(root_sdk, libs, out, assets):
     tools = newest(os.path.join(root_sdk, "build-tools", "*"))
     jar = os.path.join(root_sdk, "platforms", "android-%d" % PLATFORM, "android.jar")
     exe = ".exe" if os.name == "nt" else ""
@@ -96,6 +97,8 @@ def apk(root_sdk, libs, out):
             dst.writestr(item, src.read(item.filename))
         for abi, lib in libs.items():  # deflated: the installer extracts it (extractNativeLibs)
             dst.write(lib, "lib/%s/libbui_app.so" % abi, compress_type=zipfile.ZIP_DEFLATED)
+        for name, path in assets.items():  # assets/<name>: the app's scripts and data
+            dst.write(path, "assets/" + name, compress_type=zipfile.ZIP_DEFLATED)
     aligned = os.path.join(out, "aligned.apk")
     run([os.path.join(tools, "zipalign" + exe), "-f", "-P", "16", "4", raw, aligned])
     final = os.path.join(out, "bui.apk")
@@ -109,12 +112,24 @@ def main():
     ap.add_argument("--abi", action="append", help="arm64-v8a, x86_64, armeabi-v7a (default: arm64-v8a and x86_64)")
     ap.add_argument("--out", default=os.path.join(ROOT, "build-android"))
     ap.add_argument("--install", action="store_true")
+    ap.add_argument("--lua", metavar="DIR", help="a Lua app: DIR/main.lua returns the root node; every *.lua in DIR is an asset")
     a = ap.parse_args()
+    app_args, assets = ["-DBUI_ANDROID_APP=demo", "-DBUI_BUILD_LUA_BINDINGS=OFF"], {}
+    if a.lua:
+        app_args = ["-DBUI_ANDROID_APP=lua", "-DBUI_BUILD_LUA_BINDINGS=ON"]
+        if not os.path.exists(os.path.join(a.lua, "main.lua")):
+            sys.exit("%s has no main.lua" % a.lua)
+        for dirpath, _, files in os.walk(a.lua):
+            for f in files:
+                if f.endswith(".lua"):
+                    full = os.path.join(dirpath, f)
+                    assets[os.path.relpath(full, a.lua).replace(os.sep, "/")] = full
+        assets["bui.lua"] = os.path.join(ROOT, "bindings", "lua", "bui.lua")  # the wrapper `require("bui")` finds
     root_sdk = sdk()
     ndk = os.environ.get("ANDROID_NDK_HOME") or newest(os.path.join(root_sdk, "ndk", "*"))
     os.makedirs(a.out, exist_ok=True)
-    libs = {abi: build_abi(ndk, abi, a.out) for abi in (a.abi or ["arm64-v8a", "x86_64"])}
-    final = apk(root_sdk, libs, a.out)
+    libs = {abi: build_abi(ndk, abi, a.out, app_args) for abi in (a.abi or ["arm64-v8a", "x86_64"])}
+    final = apk(root_sdk, libs, a.out, assets)
     for abi, lib in libs.items():
         print("%-12s %8.1f KB" % (abi, os.path.getsize(lib) / 1024))
     print("%s  %.1f KB" % (final, os.path.getsize(final) / 1024))

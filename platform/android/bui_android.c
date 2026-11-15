@@ -37,6 +37,14 @@
 #define MAX_TIMERS 8
 #define TOUCH_SLOP_DP 8.0f
 
+void (*bui_app_emit)(void *data, BKNode *node, int kind, void *ref, double a, double b);
+static struct android_app *g_app;
+
+struct AAssetManager *bui_android_assets(void)
+{
+  return g_app ? g_app->activity->assetManager : NULL;
+}
+
 typedef struct Timer {
   double due_ms; /* CLOCK_MONOTONIC; 0 = unused */
   int id;
@@ -71,6 +79,13 @@ static double now_ms(void)
 }
 
 /* -- host hooks -------------------------------------------------------------------------------- */
+
+static void host_emit(void *data, BKNode *node, int kind, void *ref, double a, double b)
+{
+  if (bui_app_emit) {
+    bui_app_emit(data, node, kind, ref, a, b);
+  }
+}
 
 static void host_request(void *data)
 {
@@ -528,7 +543,7 @@ static void fire_timers(Shell *s)
 void android_main(struct android_app *app)
 {
   Shell s = {0};
-  s.app = app;
+  s.app = g_app = app;
   s.scale = 1.0f;
   app->userData = &s;
   app->onAppCmd = on_cmd;
@@ -542,6 +557,7 @@ void android_main(struct android_app *app)
   host.schedule = host_schedule;
   host.clipboard_get = host_clipboard_get;
   host.clipboard_set = host_clipboard_set;
+  host.emit = host_emit;
   BK_context_set_host(s.ctx, &host);
   bui_app_fonts();
 

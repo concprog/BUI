@@ -120,6 +120,16 @@ static void host_emit(void *data, BKNode *node, int kind, void *ref, double a, d
   }
 }
 
+/* For a host that owns the BKHost (the Android app): the Lua state callbacks run in, and the
+ * dispatcher the host's emit forwards to. */
+void luabui_set_host_state(lua_State *L) {
+  g_host_L = L;
+}
+
+void luabui_host_emit(void *data, BKNode *node, int kind, void *ref, double a, double b) {
+  host_emit(data, node, kind, ref, a, b);
+}
+
 /* ------------------------------------------------------------------ */
 /* Ref hooks (retain/release for BKMenuSpec refs embedded in menu
  * copies).  Same model as the Python binding's Py_INCREF/DECREF hooks:
