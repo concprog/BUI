@@ -68,6 +68,15 @@ endif()
 
 set(BUI_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
+if(ANDROID)
+  # Small and fast on a phone: -O2 and link-time optimization over the whole kit, no embedded Inter
+  # (the system's Roboto is used: platform/android/fonts.c), and the app library's own flags in
+  # platform/android.
+  add_compile_options(-O2 -flto -fno-unwind-tables -fno-asynchronous-unwind-tables)
+  add_link_options(-flto)
+  add_compile_definitions(BUI_NO_INTER)
+endif()
+
 # Dependency order matters: each layer may only use layers above it in this list.
 add_subdirectory(core)   # pure C foundation
 add_subdirectory(types)  # BUI-owned shared data types
@@ -76,6 +85,9 @@ add_subdirectory(compat) # seam headers/stubs replacing Blender-app APIs
 add_subdirectory(ui)     # the widget toolkit
 add_subdirectory(kit)    # Blender UI runtime in C (widgets, input, damage rendering)
 add_subdirectory(api)    # stable C ABI for hosts & bindings
+if(ANDROID)
+  add_subdirectory(platform/android) # the NativeActivity host and demo app
+endif()
 
 if(BUI_BUILD_TESTS)
   enable_testing()
