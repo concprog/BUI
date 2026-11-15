@@ -1,0 +1,32 @@
+---
+title: Android
+description: Run BUI on a phone with one NativeActivity, no Java and no Gradle. Damage-driven software rendering, touch that scrolls, the soft keyboard, and an APK of about 1.1 MB per ABI.
+section: Concepts
+order: 69
+sources: ["platform/android/bui_android.c", "platform/android/bui_app.h", "platform/android/fonts.c", "platform/android/demo.c", "platform/android/CMakeLists.txt", "platform/android/AndroidManifest.xml", "platform/android/build.py", "docs/android.md"]
+---
+
+`platform/android` runs the kit on Android in a single `NativeActivity`: no Java, no Gradle. Only the Android build changes (`if(ANDROID)` blocks); every other platform builds as before.
+
+```bash
+python platform/android/build.py                  # arm64-v8a + x86_64 -> build-android/bui.apk
+python platform/android/build.py --abi arm64-v8a  # a phone only
+python platform/android/build.py --install        # adb install -r, then start it
+```
+
+You need the Android SDK (`ANDROID_HOME`, build-tools and platform 34), an NDK, CMake and a JDK for `keytool`.
+
+## Your app
+
+`bui_app.h` is the whole interface: `bui_app_build()` returns the root node of your UI and `bui_app_fonts()` registers fonts. `platform/android/demo.c` is a scrolling page of widgets to replace with your own.
+
+## How it behaves
+
+- **Damage driven.** The thread sleeps until a touch, key, timer or frame request. Each frame converts and locks only the damaged rectangles. An idle app uses no CPU.
+- **Touch.** One finger is the pointer, so a tap is a click. A drag that starts on a widget that drags (sliders, number fields, text, scrollbars, panels, canvases) drags it; anywhere else it scrolls. Two fingers always scroll.
+- **Keyboard.** It opens while a text field or area is edited; keys arrive as key events. Predictive keyboards and IME composition are not wired up yet.
+- **Size.** `-O2` with LTO, no embedded Inter (the system's Roboto is used), no GPU renderers, ImGui or extra image formats: the library is 2.5 MB and an APK of one ABI is about 1.1 MB.
+
+<Callout type="note" title="What is tested">
+It runs on an x86_64 emulator (API 33). The arm64 build compiles and links but was not run on a device, and there is no GPU renderer, long-press, pinch or IME composition yet.
+</Callout>
