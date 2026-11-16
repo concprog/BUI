@@ -84,6 +84,11 @@ All notable changes to **blenderui** (BUI). The format follows
   - Examples: `examples/animation/` (a hero intro, a card grid, magnetic buttons, a marquee with drag and an equalizer).
 
 ### Changed
+- **Rust: style sharing hashes a declaration as one number.** The cascade looked a style up by hashing every
+  declaration token by token (about 140 instructions each, with the unit text hashed byte by byte); each declaration
+  is one cheap fingerprint now, and equal declarations still hash equal, borrowed text or owned. A grid of 3,000
+  cells runs about 6% fewer instructions per frame; the GPU renderer's frame time drops by about 4%, the CPU
+  renderer's does not change within the measurement noise.
 - **Rust: an element's first child reserves one slot, not four.** `.child()` on an element without children
   allocated four 136-byte slots (544 bytes) for the common single text child; a leaf now takes 136 bytes. A grid of
   3,000 cells allocates 1.2 MB less per frame.
