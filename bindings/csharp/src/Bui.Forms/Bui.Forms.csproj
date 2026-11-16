@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Bui.Forms</RootNamespace>
+    <PackageId>BlenderUI.Forms</PackageId>
+    <Description>A Windows Forms-style API on BUI: Form, Button, Controls.Add, Dock, Click</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Bui/Bui.csproj" />
+  </ItemGroup>
+
+</Project>

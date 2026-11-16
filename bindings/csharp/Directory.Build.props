@@ -1,0 +1,19 @@
+<Project>
+  <!-- Shared settings of every project in bindings/csharp -->
+  <PropertyGroup>
+    <LangVersion>12</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsAotCompatible Condition="'$(OutputType)' != 'Exe'">true</IsAotCompatible>
+    <Version>0.5.1</Version>
+    <Authors>BUI contributors</Authors>
+    <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/ppmpreetham/BUI</RepositoryUrl>
+    <!-- Where libbui_kit is built (cmake -DBUI_BUILD_CSHARP_BINDINGS=ON) -->
+    <BuiNativeDir Condition="'$(BuiNativeDir)' == ''">$(MSBuildThisFileDirectory)../../build/bindings/csharp</BuiNativeDir>
+  </PropertyGroup>
+</Project>

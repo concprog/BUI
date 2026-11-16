@@ -32,6 +32,7 @@ option(BUI_BUILD_LUA_BINDINGS "Build the bui-lua host executable (bundles Lua 5.
 # without the Python dev files, and -DBUI_BUILD_PYTHON_BINDINGS=OFF turns it off.
 option(BUI_BUILD_PYTHON_BINDINGS "Build the buipy CPython bindings (needs Python3 dev files)" ON)
 option(BUI_BUILD_QT_BACKEND "Build the Qt/QPainter backend (needs Qt5/Qt6 with Widgets)" OFF)
+option(BUI_BUILD_CSHARP_BINDINGS "Build libbui_kit as a shared library for the C# binding" OFF)
 # The optional parts (image formats, video, GPU renderers, file browser, Dear
 # ImGui on BUI, ...): one option each, from features.json.
 include(features.cmake)
@@ -169,6 +170,15 @@ if(BUI_BUILD_LUA_BINDINGS)
     add_subdirectory(bindings/lua)
   else()
     message(STATUS "BUI: bindings/lua not in this source tree; no Lua host")
+  endif()
+endif()
+
+if(BUI_BUILD_CSHARP_BINDINGS)
+  # the crates.io copy of the C sources has no bindings/csharp
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/bindings/csharp/CMakeLists.txt)
+    add_subdirectory(bindings/csharp)
+  else()
+    message(STATUS "BUI: bindings/csharp not in this source tree; no shared kit")
   endif()
 endif()
 

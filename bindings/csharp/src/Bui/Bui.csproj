@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Bui</RootNamespace>
+    <PackageId>BlenderUI</PackageId>
+    <Description>Blender's interface as a retained-mode C# UI toolkit: the C kit with C# components</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- the shared kit beside the assembly; .NET loads it by the name "bui_kit" -->
+    <None Include="$(BuiNativeDir)/libbui_kit.so" Condition="Exists('$(BuiNativeDir)/libbui_kit.so')"
+          CopyToOutputDirectory="PreserveNewest" Link="libbui_kit.so" />
+    <None Include="$(BuiNativeDir)/libbui_kit.dylib" Condition="Exists('$(BuiNativeDir)/libbui_kit.dylib')"
+          CopyToOutputDirectory="PreserveNewest" Link="libbui_kit.dylib" />
+    <None Include="$(BuiNativeDir)/libbui_kit.dll" Condition="Exists('$(BuiNativeDir)/libbui_kit.dll')"
+          CopyToOutputDirectory="PreserveNewest" Link="bui_kit.dll" />
+  </ItemGroup>
+
+</Project>
