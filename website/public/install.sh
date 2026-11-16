@@ -47,7 +47,7 @@ banner() {
   say ""
   say "${ORANGE}██████╗ ██╗   ██╗██╗${RESET}"
   say "${ORANGE}██╔══██╗██║   ██║██║${RESET}"
-  say "${ORANGE}██████╔╝██║   ██║██║${RESET}   ${DIM}Blender's UI, from your language${RESET}"
+  say "${ORANGE}██████╔╝██║   ██║██║${RESET}"
   say "${ORANGE}██╔══██╗██║   ██║██║${RESET}"
   say "${ORANGE}██████╔╝╚██████╔╝██║${RESET}   ${BOLD}installing bui${RESET}"
   say "${ORANGE}╚═════╝  ╚═════╝ ╚═╝${RESET}"

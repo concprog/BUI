@@ -76,11 +76,11 @@ impl Flavour for LuaApp {
         ]
     }
 
-    fn dev(&self, dir: &Path) -> Result<Vec<Cmd>> {
-        Ok(vec![Cmd::new(lua_program(), ["main.lua"]).in_dir(dir).with_env(rock_env(dir))])
+    fn dev(&self, dir: &Path, args: &[String]) -> Result<Vec<Cmd>> {
+        Ok(vec![Cmd::new(lua_program(), ["main.lua"]).in_dir(dir).with_args(args).with_env(rock_env(dir))])
     }
 
-    fn build(&self, _dir: &Path) -> Result<Vec<Cmd>> {
+    fn build(&self, _dir: &Path, _args: &[String]) -> Result<Vec<Cmd>> {
         bail!("a Lua app is not built: run it with `bui dev`.")
     }
 

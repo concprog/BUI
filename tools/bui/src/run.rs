@@ -6,15 +6,33 @@ use std::process::ExitCode;
 use anyhow::Result;
 
 use crate::project::{self, Project};
-use crate::sys::Cmd;
+use crate::sys::{Cmd, OS, Os};
 use crate::{tools, ui};
 
-pub fn dev() -> Result<ExitCode> {
-    go("Running", |p| p.meta.stack.app().dev(&p.dir))
+pub fn dev(args: &[String]) -> Result<ExitCode> {
+    go("Running", |p| p.meta.stack.app().dev(&p.dir, args))
 }
 
-pub fn build() -> Result<ExitCode> {
-    go("Building", |p| p.meta.stack.app().build(&p.dir))
+pub fn build(args: &[String]) -> Result<ExitCode> {
+    go("Building", |p| p.meta.stack.app().build(&p.dir, args))
+}
+
+const DOCS: &str = "https://bui.preetham.top";
+
+/// `bui docs`: the documentation in the browser (or just its address, where there is no browser to open).
+pub fn docs() -> ExitCode {
+    ui::info(format!("Documentation: {}", ui::code(DOCS)));
+    if ui::interactive() {
+        let open = match OS {
+            Os::Windows => Cmd::script(&format!("Start-Process '{DOCS}'")),
+            Os::Mac => Cmd::new("open", [DOCS]),
+            Os::Linux => Cmd::new("xdg-open", [DOCS]),
+        };
+        if !open.run_inherit().is_ok_and(|s| s.success()) {
+            ui::info("Could not open a browser: visit the address above.");
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 fn go(verb: &str, commands: impl Fn(&Project) -> Result<Vec<Cmd>>) -> Result<ExitCode> {

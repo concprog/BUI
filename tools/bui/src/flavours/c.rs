@@ -45,17 +45,17 @@ impl Flavour for CApp {
         )]
     }
 
-    fn dev(&self, dir: &Path) -> Result<Vec<Cmd>> {
+    fn dev(&self, dir: &Path, args: &[String]) -> Result<Vec<Cmd>> {
         let exe = dir.join("build/bin").join(if cfg!(windows) { "app.exe" } else { "app" });
         Ok(vec![
             cmake(dir, &["--preset", "default"]),
             cmake(dir, &["--build", "--preset", "default"]),
-            Cmd::new(&exe.to_string_lossy(), Vec::<String>::new()).in_dir(dir),
+            Cmd::new(&exe.to_string_lossy(), Vec::<String>::new()).in_dir(dir).with_args(args),
         ])
     }
 
-    fn build(&self, dir: &Path) -> Result<Vec<Cmd>> {
-        Ok(vec![cmake(dir, &["--preset", "default"]), cmake(dir, &["--build", "--preset", "release"])])
+    fn build(&self, dir: &Path, args: &[String]) -> Result<Vec<Cmd>> {
+        Ok(vec![cmake(dir, &["--preset", "default"]), cmake(dir, &["--build", "--preset", "release"]).with_args(args)])
     }
 
     fn checks(&self, dir: &Path) -> Vec<Check> {

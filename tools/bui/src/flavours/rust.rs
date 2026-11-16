@@ -38,12 +38,13 @@ impl Flavour for RustApp {
         ]
     }
 
-    fn dev(&self, dir: &Path) -> Result<Vec<Cmd>> {
-        Ok(vec![Cmd::new("cargo", ["run"]).in_dir(dir)])
+    fn dev(&self, dir: &Path, args: &[String]) -> Result<Vec<Cmd>> {
+        // `bui dev -- --release` is `cargo run --release`; the app's own arguments need a second `--`
+        Ok(vec![Cmd::new("cargo", ["run"]).in_dir(dir).with_args(args)])
     }
 
-    fn build(&self, dir: &Path) -> Result<Vec<Cmd>> {
-        Ok(vec![Cmd::new("cargo", ["build", "--release"]).in_dir(dir)])
+    fn build(&self, dir: &Path, args: &[String]) -> Result<Vec<Cmd>> {
+        Ok(vec![Cmd::new("cargo", ["build", "--release"]).in_dir(dir).with_args(args)])
     }
 
     fn checks(&self, dir: &Path) -> Vec<Check> {

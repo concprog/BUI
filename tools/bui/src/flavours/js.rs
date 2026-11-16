@@ -43,8 +43,13 @@ impl PackageManager {
         Cmd::new(self.bin(), args).in_dir(dir)
     }
 
-    fn run(self, dir: &Path, script: &str) -> Cmd {
-        Cmd::new(self.bin(), ["run", script]).in_dir(dir)
+    /// Runs a `package.json` script; npm and pnpm need `--` before the user's arguments.
+    fn run(self, dir: &Path, script: &str, args: &[String]) -> Cmd {
+        let mut cmd = Cmd::new(self.bin(), ["run", script]).in_dir(dir);
+        if !args.is_empty() && self != Self::Bun {
+            cmd = cmd.with_args(&["--".to_owned()]);
+        }
+        cmd.with_args(args)
     }
 
     /// Everything the lock file names, at the newest version the ranges allow.
@@ -200,16 +205,16 @@ impl Flavour for JsApp {
             step("Adding BUI (newest)", self.pm.add(dir, false, &prod)),
             step("Adding TypeScript, Biome and the rest (newest)", self.pm.add(dir, true, &dev)),
             // the generated files in Biome's own style, so `lint` starts clean
-            step("Formatting the new files", self.pm.run(dir, "fix")),
+            step("Formatting the new files", self.pm.run(dir, "fix", &[])),
         ]
     }
 
-    fn dev(&self, dir: &Path) -> Result<Vec<Cmd>> {
-        Ok(vec![self.pm.run(dir, "dev")])
+    fn dev(&self, dir: &Path, args: &[String]) -> Result<Vec<Cmd>> {
+        Ok(vec![self.pm.run(dir, "dev", args)])
     }
 
-    fn build(&self, dir: &Path) -> Result<Vec<Cmd>> {
-        Ok(vec![self.pm.run(dir, "build")])
+    fn build(&self, dir: &Path, args: &[String]) -> Result<Vec<Cmd>> {
+        Ok(vec![self.pm.run(dir, "build", args)])
     }
 
     fn checks(&self, dir: &Path) -> Vec<Check> {

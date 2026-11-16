@@ -51,11 +51,11 @@ impl Flavour for PythonApp {
         ]
     }
 
-    fn dev(&self, dir: &Path) -> Result<Vec<Cmd>> {
-        Ok(vec![uv(dir, &["run", "main.py"])])
+    fn dev(&self, dir: &Path, args: &[String]) -> Result<Vec<Cmd>> {
+        Ok(vec![uv(dir, &["run", "main.py"]).with_args(args)])
     }
 
-    fn build(&self, _dir: &Path) -> Result<Vec<Cmd>> {
+    fn build(&self, _dir: &Path, _args: &[String]) -> Result<Vec<Cmd>> {
         bail!("a Python app is not built: run it with `bui dev`. To hand it out as one file, use PyInstaller (`uv run --with pyinstaller pyinstaller --onefile main.py`).")
     }
 

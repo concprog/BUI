@@ -37,7 +37,7 @@
     Write-Host ''
     Write-Host (C '38;5;208' (Glyphs '@@@@@@1 @@1   @@1@@1'))
     Write-Host (C '38;5;208' (Glyphs '@@266@@1@@5   @@5@@5'))
-    Write-Host "$(C '38;5;208' (Glyphs '@@@@@@23@@5   @@5@@5'))   $(C '2' "Blender's UI, from your language")"
+    Write-Host (C '38;5;208' (Glyphs '@@@@@@23@@5   @@5@@5'))
     Write-Host (C '38;5;208' (Glyphs '@@266@@1@@5   @@5@@5'))
     Write-Host "$(C '38;5;208' (Glyphs '@@@@@@234@@@@@@23@@5'))   $(C '1' 'installing bui')"
     Write-Host (C '38;5;208' (Glyphs '4666663  4666663 463'))

@@ -120,18 +120,15 @@ pub trait Flavour {
     fn files(&self, vars: &Vars) -> Vec<File>;
     /// Installs BUI and the language's tooling at their newest versions, in the new project.
     fn deps(&self, dir: &Path) -> Vec<Step>;
-    /// Runs the app (a dev server where the language has one), as a list of commands.
-    fn dev(&self, dir: &Path) -> Result<Vec<Cmd>>;
+    /// Runs the app (a dev server where the language has one), as a list of commands. `args` are the
+    /// user's own, for the last of them.
+    fn dev(&self, dir: &Path, args: &[String]) -> Result<Vec<Cmd>>;
     /// Makes a release build; an error says what to do instead where there is no build step.
-    fn build(&self, dir: &Path) -> Result<Vec<Cmd>>;
+    fn build(&self, dir: &Path, args: &[String]) -> Result<Vec<Cmd>>;
     /// The problems of the project itself (`bui doctor` adds the toolchain's).
     fn checks(&self, dir: &Path) -> Vec<Check>;
     /// Brings BUI and the tooling to their newest versions.
     fn update(&self, dir: &Path) -> Vec<Step>;
-    /// What to type to start (shown at the end of `bui new`).
-    fn next(&self) -> Vec<&'static str> {
-        vec!["bui dev", "bui doctor"]
-    }
 }
 
 /// A file's text, if it can be read.

@@ -105,6 +105,13 @@ impl Cmd {
         self
     }
 
+    /// More arguments after the ones it has.
+    #[must_use]
+    pub fn with_args(mut self, more: &[String]) -> Self {
+        self.args.extend(more.iter().cloned());
+        self
+    }
+
     #[must_use]
     pub fn with_env(mut self, vars: Vec<(String, String)>) -> Self {
         self.env = vars;

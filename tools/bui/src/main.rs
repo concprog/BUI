@@ -5,6 +5,7 @@ mod cli;
 mod create;
 mod doctor;
 mod flavours;
+mod home;
 mod project;
 mod registry;
 mod run;
@@ -30,6 +31,9 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(e) => {
             ui::error(format!("{e:#}"));
+            if project::find(std::path::Path::new(".")).is_some() {
+                ui::info(format!("Run {} to check your setup.", ui::code("bui doctor")));
+            }
             ExitCode::FAILURE
         }
     }
@@ -40,8 +44,9 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Some(Command::New(args)) => ok(create::new(args)),
         Some(Command::Init(choices)) => ok(create::init(&choices)),
-        Some(Command::Dev) => run::dev(),
-        Some(Command::Build) => run::build(),
+        Some(Command::Dev(a)) => run::dev(&a.args),
+        Some(Command::Build(a)) => run::build(&a.args),
+        Some(Command::Docs) => Ok(run::docs()),
         Some(Command::Doctor(args)) => doctor::run(&args),
         Some(Command::Update(args)) => ok(update::run(&args)),
         Some(Command::Completions { shell }) => {
@@ -49,8 +54,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         None => {
-            ui::banner(true);
-            Cli::command().print_help()?;
+            home::show();
             Ok(ExitCode::SUCCESS)
         }
     }

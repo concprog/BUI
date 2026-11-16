@@ -155,7 +155,7 @@ pub fn banner(animate: bool) {
         }
     }
     eprint!("{}", frame(width));
-    eprintln!("  {}  {}", style(format!("v{version}")).dim(), dim("Blender's UI, from your language"));
+    eprintln!("  {}", style(format!("v{version}")).dim());
     eprintln!();
     let _ = term.show_cursor();
 }
