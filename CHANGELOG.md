@@ -84,6 +84,10 @@ All notable changes to **blenderui** (BUI). The format follows
   - Examples: `examples/animation/` (a hero intro, a card grid, magnetic buttons, a marquee with drag and an equalizer).
 
 ### Changed
+- **Rust: the interaction state uses the crate's fast hasher.** The hover, active and focus sets, the scroll,
+  checked and `details` maps and the box-by-key map used the standard library's SipHash, looked up about three
+  times per element per frame; they use foldhash like every other map now (`KeySet` next to `KeyMap`). A grid of
+  3,000 cells runs 1.4% fewer instructions per frame.
 - **Rust: style sharing hashes a declaration as one number.** The cascade looked a style up by hashing every
   declaration token by token (about 140 instructions each, with the unit text hashed byte by byte); each declaration
   is one cheap fingerprint now, and equal declarations still hash equal, borrowed text or owned. A grid of 3,000

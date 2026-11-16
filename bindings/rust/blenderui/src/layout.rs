@@ -12,7 +12,6 @@
 //! widths and images. Boxes refer to each other by index; nothing is
 //! reference-counted.
 
-use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -26,7 +25,7 @@ use crate::html::{tag_kind, ua_styled_stylesheet, ua_stylesheet, TagKind};
 use crate::paint::{Image, ImageCache, ImageFile};
 use crate::prof::{span, Phase};
 use crate::style::ContentPart;
-use crate::style::{apply, key_hasher, Computed, DisplayKind, KeyMap, TextAlign, TextTransform, VAlign, WhiteSpace};
+use crate::style::{apply, key_hasher, Computed, DisplayKind, KeyMap, KeySet, TextAlign, TextTransform, VAlign, WhiteSpace};
 use crate::text::{self, TextCache};
 use crate::widgets::{WidgetAsk, WidgetSpec};
 
@@ -61,16 +60,16 @@ pub(crate) const ROOT_KEY: Key = 0x68746d6c; // "html"
 /// Interaction state the cascade reads (`:hover`, `:active`, `:focus`, `details[open]`).
 #[derive(Default)]
 pub(crate) struct UiState {
-    pub hovered: HashSet<Key>,
-    pub active: HashSet<Key>,
+    pub hovered: KeySet<Key>,
+    pub active: KeySet<Key>,
     pub focused: Option<Key>,
     /// The focused element and its ancestors (`:focus-within`).
-    pub focus_path: HashSet<Key>,
+    pub focus_path: KeySet<Key>,
     /// The `.id()` of the focused element.
     pub focused_id: Option<String>,
-    pub details_open: HashMap<Key, bool>,
-    pub scroll: HashMap<Key, (f32, f32)>,
-    pub checked: HashMap<Key, bool>,
+    pub details_open: KeyMap<Key, bool>,
+    pub scroll: KeyMap<Key, (f32, f32)>,
+    pub checked: KeyMap<Key, bool>,
 }
 
 // ==========================================================================
@@ -314,7 +313,7 @@ pub(crate) struct Frame {
     pub nodes: Vec<BoxNode>,
     els: Vec<ElData>,
     pub title: Option<String>,
-    by_key: std::cell::OnceCell<HashMap<Key, usize>>,
+    by_key: std::cell::OnceCell<KeyMap<Key, usize>>,
 }
 
 /// Measure contexts of taffy leaves. Compared across frames: an unchanged
@@ -2650,7 +2649,7 @@ fn finish(nodes: &mut [BoxNode], styles: &StyleStore, acc: &mut Vec<Option<Bound
 impl Frame {
     /// Element boxes by key, built on first use (events and tests need it,
     /// rendering doesn't).
-    pub(crate) fn by_key(&self) -> &HashMap<Key, usize> {
+    pub(crate) fn by_key(&self) -> &KeyMap<Key, usize> {
         self.by_key.get_or_init(|| {
             self.nodes.iter().enumerate().filter(|(_, n)| n.el != NONE).map(|(i, n)| (n.key, i)).collect()
         })
