@@ -32,6 +32,10 @@ Needs the Android SDK (`ANDROID_HOME`; build-tools, platform 34), an NDK (the ne
 Python, JavaScript (React, Vue, Svelte), Qt, tkinter and D are not available on Android: each needs its
 runtime on the device.
 
+The Rust demo (`platform/android/rust`) has three tabs: the widgets, a list of **10 000 000 rows** and a
+chat of **100 000 messages** (`blenderui::vlist`: only the visible rows exist, the row text is computed
+when it is fetched, a frame costs O(visible rows)). The emulator runs it at about 75 MB.
+
 For Rust the staticlib carries its own copy of the kit (`blenderui-sys` builds it for the target), so
 the app crate sets the kit's features itself (see its `Cargo.toml`: no GPU, ImGui or extra image
 formats).
@@ -45,11 +49,14 @@ formats).
   (`dpi / 160`), so Rust layout and Blender's 20-unit widgets come out at a phone's size.
 - **Touch.** One finger is the pointer. A tap is a click (sent when the finger lifts in place). A drag
   that starts on a widget that drags (sliders, number fields, text, scrollbars, panels) drags it;
-  anywhere else it scrolls. Two fingers always scroll. `BK_window_wm(win, "touch_drag", 1, 0)` gives
+  anywhere else it scrolls, and keeps going after the finger lifts (a fling, slowing down like Android's
+  own; a touch stops it). Two fingers always scroll. `BK_window_wm(win, "touch_drag", 1, 0)` gives
   the drags of custom and canvas nodes to the app instead (a paint app); by default they scroll.
-- **Keyboard.** The soft keyboard opens while a text field or area is being edited. Keys arrive as key
-  events (`KeyEvent.getUnicodeChar`), so typing, Backspace, arrows and Back (Escape) work. Predictive and
-  composing IMEs (`BK_ime_event`) need an `InputConnection` and are not wired up.
+- **Keyboard.** The soft keyboard opens while a text field or area is being edited (through the input
+  method manager: the activity's view is not a text editor, so `ANativeActivity_showSoftInput` is
+  ignored by current Android). Keys arrive as key events (`KeyEvent.getUnicodeChar`), so typing,
+  Backspace, arrows and Back (Escape) work. Predictive and composing IMEs (`BK_ime_event`) need an
+  `InputConnection` and are not wired up.
 - **System bars.** The UI is drawn inside the activity's content rectangle; the soft keyboard resizes it
   (`adjustResize`).
 - **Window.** One window, the surface. `BK_window_new` waits for the surface so the app builds its UI at

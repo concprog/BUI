@@ -27,6 +27,7 @@
 #  include <android/native_activity.h>
 #  include <android/native_window.h>
 #  include <jni.h>
+#  include <math.h>
 #  include <stdlib.h>
 #  include <string.h>
 #  include <time.h>
@@ -36,6 +37,10 @@
 
 #  define MAX_TIMERS 16
 #  define TOUCH_SLOP_DP 8.0f
+/* fling: slowest and fastest (dp/s) and how fast it slows down (1/s), close to Android's own */
+#  define FLING_MIN_DP 50.0f
+#  define FLING_MAX_DP 8000.0f
+#  define FLING_FRICTION 2.6f
 #  define WINDOW_FORMAT_RGBX 0x2
 
 typedef struct Timer {
@@ -66,6 +71,10 @@ struct BKWindow {
   int pending_tap; /* a finger is down on something that does not drag: a click if it lifts in place */
   int drag_custom; /* custom and canvas nodes take drags (BK_window_wm "touch_drag"); else they scroll */
   float down_x, down_y, scroll_x, scroll_y;
+  /* momentum: the finger's velocity (px/s) while one finger scrolls, and the fling that goes on after */
+  float vel_x, vel_y;
+  double move_ms, fling_ms;
+  int fling;
 };
 
 static BKWindow *g_win;
@@ -498,13 +507,69 @@ static void cancel_press(BKWindow *win)
   }
 }
 
-static void scroll_by(BKWindow *win, float x, float y, float *last_x, float *last_y)
+/* Scrolls the content under (x, y) by (dx, dy) pixels. */
+static void scroll_px(BKWindow *win, float x, float y, float dx, float dy)
 {
   const float notch = (float)BK_unit() * 2.0f; /* px per wheel step */
   BK_motion(win->ctx, (int)x, (int)y, 0); /* a page that scrolls under the pointer needs to know it */
-  BK_scroll(win->ctx, (int)x, (int)y, (*last_x - x) / notch, (y - *last_y) / notch, 0);
+  BK_scroll(win->ctx, (int)x, (int)y, dx / notch, dy / notch, 0);
+}
+
+static void scroll_by(BKWindow *win, float x, float y, float *last_x, float *last_y)
+{
+  scroll_px(win, x, y, *last_x - x, y - *last_y);
   *last_x = x;
   *last_y = y;
+}
+
+/* A one-finger scroll to (x, y): the finger's velocity is kept (smoothed) for the fling. */
+static void scroll_finger(BKWindow *win, float x, float y)
+{
+  const double t = now_ms();
+  const float dt = (float)(t - win->move_ms) * 0.001f;
+  if (win->move_ms != 0.0 && dt > 0.0f) {
+    win->vel_x = 0.5f * win->vel_x + 0.5f * (x - win->scroll_x) / dt;
+    win->vel_y = 0.5f * win->vel_y + 0.5f * (y - win->scroll_y) / dt;
+  }
+  win->move_ms = t;
+  scroll_by(win, x, y, &win->scroll_x, &win->scroll_y);
+}
+
+/* The finger lifted while scrolling: carry on at its velocity, slowing down (Android's feel). */
+static void fling_start(BKWindow *win)
+{
+  const float max = FLING_MAX_DP * win->density, min = FLING_MIN_DP * win->density;
+  const double t = now_ms();
+  float vx = win->vel_x, vy = win->vel_y;
+  win->vel_x = win->vel_y = 0.0f;
+  if (win->move_ms == 0.0 || t - win->move_ms > 80.0) { /* the finger rested: no fling */
+    return;
+  }
+  vx = vx > max ? max : (vx < -max ? -max : vx);
+  vy = vy > max ? max : (vy < -max ? -max : vy);
+  if (vx * vx + vy * vy >= min * min) {
+    win->vel_x = vx;
+    win->vel_y = vy;
+    win->fling = 1;
+    win->fling_ms = t;
+  }
+}
+
+static void fling_step(BKWindow *win)
+{
+  const double t = now_ms();
+  float dt = (float)(t - win->fling_ms) * 0.001f;
+  dt = dt > 0.05f ? 0.05f : dt; /* a stalled frame is not a leap */
+  win->fling_ms = t;
+  scroll_px(win, (float)win->px, (float)win->py, -win->vel_x * dt, win->vel_y * dt);
+  const float keep = expf(-FLING_FRICTION * dt);
+  win->vel_x *= keep;
+  win->vel_y *= keep;
+  const float min = FLING_MIN_DP * win->density * 0.5f;
+  if (win->vel_x * win->vel_x + win->vel_y * win->vel_y < min * min) {
+    win->fling = 0;
+  }
+  win->dirty = 1;
 }
 
 static int32_t on_touch(BKWindow *win, AInputEvent *e)
@@ -518,7 +583,9 @@ static int32_t on_touch(BKWindow *win, AInputEvent *e)
     case AMOTION_EVENT_ACTION_DOWN:
       win->down_x = win->scroll_x = x;
       win->down_y = win->scroll_y = y;
-      win->scrolling = 0;
+      win->scrolling = win->fling = 0; /* a touch stops a fling */
+      win->vel_x = win->vel_y = 0.0f;
+      win->move_ms = 0.0;
       BK_motion(win->ctx, (int)x, (int)y, 0);
       win->draggable = drags(win, BK_hover(win->ctx));
       if (win->draggable) { /* a slider, a text field ...: it gets the press now */
@@ -545,15 +612,15 @@ static int32_t on_touch(BKWindow *win, AInputEvent *e)
                   &win->scroll_x, &win->scroll_y);
       }
       else if (win->scrolling) { /* a one-finger scroll */
-        scroll_by(win, x, y, &win->scroll_x, &win->scroll_y);
+        scroll_finger(win, x, y);
       }
       else if (win->pending_tap) {
         const float dx = x - win->down_x, dy = y - win->down_y;
-        if (dx * dx + dy * dy > slop * slop) { /* not a click: scroll */
+        if (dx * dx + dy * dy > slop * slop) { /* not a click: scroll, from where the finger went down */
           win->pending_tap = 0;
           win->scrolling = 1;
-          win->scroll_x = x;
-          win->scroll_y = y;
+          win->move_ms = now_ms() - 16.0; /* one frame ago: a first velocity for a swipe of few events */
+          scroll_finger(win, x, y);
         }
       }
       else if (win->pointer_down) {
@@ -566,6 +633,9 @@ static int32_t on_touch(BKWindow *win, AInputEvent *e)
       }
       break;
     case AMOTION_EVENT_ACTION_UP:
+      if (win->scrolling) { /* a one-finger scroll (two fingers cleared it when one lifted) */
+        fling_start(win);
+      }
       win->scrolling = 0;
       if (win->pending_tap) { /* lifted in place: the click */
         win->pending_tap = 0;
@@ -576,7 +646,7 @@ static int32_t on_touch(BKWindow *win, AInputEvent *e)
       pointer_up(win, x, y);
       break;
     case AMOTION_EVENT_ACTION_CANCEL:
-      win->scrolling = win->pending_tap = 0;
+      win->scrolling = win->pending_tap = win->fling = 0;
       pointer_up(win, -100.0f, -100.0f);
       break;
     default:
@@ -653,7 +723,7 @@ static int open_windows(void)
 /* Milliseconds the loop may sleep: forever when idle. */
 static int wait_ms(const BKWindow *win)
 {
-  if (g_wake_flag || (win && (win->dirty || win->want_frame || BK_animating(win->ctx)))) {
+  if (g_wake_flag || (win && (win->dirty || win->want_frame || win->fling || BK_animating(win->ctx)))) {
     return 0;
   }
   double next = 0.0;
@@ -724,6 +794,9 @@ static void step(int block)
     return;
   }
   fire_timers(win);
+  if (win->fling) {
+    fling_step(win);
+  }
   if (win->open && g_app->window &&
       (win->dirty || win->want_frame || BK_needs_render(win->ctx) || BK_animating(win->ctx))) {
     render_window(win);
