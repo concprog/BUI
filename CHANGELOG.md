@@ -84,6 +84,12 @@ All notable changes to **blenderui** (BUI). The format follows
   - Examples: `examples/animation/` (a hero intro, a card grid, magnetic buttons, a marquee with drag and an equalizer).
 
 ### Changed
+- **Rust: smaller boxes and layout nodes.** A box held its widget spec inline (320 bytes) although few boxes are
+  widgets: it is behind a pointer now, and a box is 240 bytes instead of 528. Layout nodes shared nothing: each
+  held its own 560-byte taffy style; nodes with the same computed style and form point at one (`Rc`, in our own
+  tree, taffy is not changed), and a node is 696 bytes instead of 1,248. A grid of 3,000 cells touches 9% fewer
+  pages and 3 MB less memory, and its first frame takes about 3 ms less (47.5 to 44.4 ms median); a frame that
+  follows runs 2.6% fewer instructions. `box_node_stays_small` and `node_stays_small` keep the sizes.
 - **Rust: the interaction state uses the crate's fast hasher.** The hover, active and focus sets, the scroll,
   checked and `details` maps and the box-by-key map used the standard library's SipHash, looked up about three
   times per element per frame; they use foldhash like every other map now (`KeySet` next to `KeyMap`). A grid of

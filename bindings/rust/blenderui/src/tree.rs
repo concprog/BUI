@@ -7,6 +7,8 @@
 //! a node's cache is only cleared when its own inputs change: the
 //! reconciler in `layout.rs` marks changed subtrees itself.
 
+use std::rc::Rc;
+
 use taffy::compute::{
     compute_block_layout, compute_cached_layout, compute_flexbox_layout, compute_grid_layout,
     compute_hidden_layout, compute_oof_layout, compute_root_layout, round_layout, BlockContext,
@@ -19,7 +21,8 @@ use taffy::{
 };
 
 struct Node<C> {
-    style: Style,
+    /// Shared: nodes with the same layout style point at one.
+    style: Rc<Style>,
     ctx: Option<C>,
     children: Vec<NodeId>,
     hoisted: Vec<NodeId>,
@@ -48,7 +51,7 @@ fn ix(id: NodeId) -> usize {
 }
 
 impl<C> LayoutTree<C> {
-    fn alloc(&mut self, style: Style, ctx: Option<C>, children: &[NodeId]) -> NodeId {
+    fn alloc(&mut self, style: Rc<Style>, ctx: Option<C>, children: &[NodeId]) -> NodeId {
         let node = Node {
             style,
             ctx,
@@ -72,16 +75,11 @@ impl<C> LayoutTree<C> {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn new_leaf(&mut self, style: Style) -> NodeId {
-        self.alloc(style, None, &[])
-    }
-
-    pub fn new_leaf_with_context(&mut self, style: Style, ctx: C) -> NodeId {
+    pub fn new_leaf_with_context(&mut self, style: Rc<Style>, ctx: C) -> NodeId {
         self.alloc(style, Some(ctx), &[])
     }
 
-    pub fn new_with_children(&mut self, style: Style, children: &[NodeId]) -> NodeId {
+    pub fn new_with_children(&mut self, style: Rc<Style>, children: &[NodeId]) -> NodeId {
         self.alloc(style, None, children)
     }
 
@@ -101,14 +99,19 @@ impl<C> LayoutTree<C> {
         }
     }
 
-    pub fn style(&self, id: NodeId) -> &Style {
+    pub fn style(&self, id: NodeId) -> &Rc<Style> {
         &self.nodes[ix(id)].style
     }
 
-    pub fn set_style(&mut self, id: NodeId, style: Style) {
+    pub fn set_style(&mut self, id: NodeId, style: Rc<Style>) {
         let n = &mut self.nodes[ix(id)];
         n.style = style;
         n.cache.clear();
+    }
+
+    /// Points a node at another copy of the style it has: its cache stays.
+    pub fn replace_style(&mut self, id: NodeId, style: Rc<Style>) {
+        self.nodes[ix(id)].style = style;
     }
 
     pub fn children(&self, id: NodeId) -> &[NodeId] {
@@ -180,9 +183,9 @@ where
                     let n = &tree.t.nodes[ix(id)];
                     let measure = &mut tree.measure;
                     match &n.ctx {
-                        Some(c) => taffy::compute_leaf_layout(inputs, &n.style, resolve_calc,
+                        Some(c) => taffy::compute_leaf_layout(inputs, &*n.style, resolve_calc,
                                                               |known, avail| measure(known, avail, c)),
-                        None => taffy::compute_leaf_layout(inputs, &n.style, resolve_calc,
+                        None => taffy::compute_leaf_layout(inputs, &*n.style, resolve_calc,
                                                            |_, _| Size::ZERO),
                     }
                 }
@@ -394,5 +397,16 @@ where
     #[inline(always)]
     fn get_hoisted_child_id(&self, id: NodeId, k: usize) -> NodeId {
         self.t.nodes[ix(id)].hoisted[k]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Node;
+
+    /// A node is made for every box that lays out: its style is shared, not stored.
+    #[test]
+    fn node_stays_small() {
+        assert!(std::mem::size_of::<Node<[u8; 32]>>() <= 704, "{}", std::mem::size_of::<Node<[u8; 32]>>());
     }
 }

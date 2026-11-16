@@ -13,6 +13,7 @@
 //! reference-counted.
 
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use taffy::prelude::*;
@@ -103,11 +104,13 @@ pub(crate) struct StyleStore {
     /// The author sheet whose `@property` initial values seed the root
     /// style's variables.
     seeded: u64,
+    /// Counts the times the store was emptied: a [`StyleId`] means the same style within one epoch.
+    epoch: u32,
 }
 
 impl Default for StyleStore {
     fn default() -> Self {
-        StyleStore { styles: vec![Computed::default()], cache: Default::default(), vars: Default::default(), seeded: 0 }
+        StyleStore { styles: vec![Computed::default()], cache: Default::default(), vars: Default::default(), seeded: 0, epoch: 0 }
     }
 }
 
@@ -133,6 +136,7 @@ impl StyleStore {
             self.cache.clear();
             self.vars.clear();
             self.seeded = 0;
+            self.epoch += 1;
         }
     }
 
@@ -154,6 +158,7 @@ impl StyleStore {
         self.styles.truncate(1);
         self.cache.clear();
         self.vars.clear();
+        self.epoch += 1;
         self.styles[0].vars = if map.is_empty() { 0 } else { self.vars.add(map.into_boxed_slice()) };
     }
 
@@ -231,7 +236,8 @@ pub(crate) enum Content {
     /// A whole text run in a flex/grid container (wraps when measured).
     Text(String),
     LineBreak,
-    Widget(WidgetSpec),
+    /// Boxed: a widget's spec is large and few boxes are widgets.
+    Widget(Box<WidgetSpec>),
     Replaced(Replaced),
     /// An anonymous line container (inline content between blocks).
     Anon,
@@ -328,6 +334,34 @@ pub(crate) enum Measure {
     Area { key: Key, hash: u64 },
 }
 
+/// The computed style a taffy style was made from, and how: boxes with the same shape have the
+/// same taffy style, so they share one.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Shape {
+    epoch: u32,
+    style: StyleId,
+    form: Form,
+}
+
+/// How the taffy style of a box follows from its computed style.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Form {
+    Plain,
+    /// A box with its lone text: one block leaf.
+    Folded,
+    /// A block container of line boxes.
+    Lines,
+}
+
+/// A taffy style as a box makes it.
+enum Made {
+    Shared(Rc<Style>),
+    Own(Style),
+}
+
+/// The shared taffy styles by shape; emptied when it holds this many.
+const SHAPES_MAX: usize = 4096;
+
 /// The persistent taffy tree's nodes by box key (with the frame they were
 /// last used in). Reconciling instead of rebuilding lets taffy's cache skip
 /// every subtree whose style, content and children didn't change.
@@ -358,6 +392,7 @@ pub(crate) struct LayoutCaches {
     recon: Recon,
     /// Measured text leaves: key -> box index, this frame.
     text_box: KeyMap<Key, usize>,
+    shapes: KeyMap<Shape, Rc<Style>>,
     /// Content widths of blocks with `overflow-wrap: anywhere` from the last
     /// layout: their long words are split to fit before layout.
     wrap_widths: KeyMap<Key, f32>,
@@ -461,6 +496,7 @@ impl Default for LayoutCaches {
             matched: MatchCache::default(),
             recon: Recon::default(),
             text_box: KeyMap::default(),
+            shapes: KeyMap::default(),
             wrap_widths: KeyMap::default(),
             tw: TwJit::default(),
             containers: Containers::default(),
@@ -479,6 +515,7 @@ struct Builder<'a> {
     matched: &'a mut MatchCache,
     recon: &'a mut Recon,
     text_box: &'a mut KeyMap<Key, usize>,
+    shapes: &'a mut KeyMap<Shape, Rc<Style>>,
     /// Set when a node changed while building the current subtree.
     changed: bool,
     /// `tpos` for the element about to be built.
@@ -796,24 +833,23 @@ impl Subject for DivSubject<'_, '_> {
 // -- building -------------------------------------------------------------------------------
 
 fn collect_styles(el: &AnyElement, css: &mut String, title: &mut Option<String>, jit: &mut TwJit) {
-    if let AnyElement::Element(d) = el {
-        if jit.on {
-            if let Some((_, classes)) = d.attrs.iter().find(|(k, _)| k.as_ref() == "class") {
-                jit.scan(classes);
-            }
+    let AnyElement::Element(d) = el else { return };
+    if jit.on {
+        if let Some((_, classes)) = d.attrs.iter().find(|(k, _)| k.as_ref() == "class") {
+            jit.scan(classes);
         }
-        let text = || d.children.iter().filter_map(|c| match c {
-            AnyElement::Text(t) => Some(t.as_ref()),
-            _ => None,
-        }).collect::<String>();
-        match d.tag {
-            "style" => css.push_str(&text()),
-            "title" if title.is_none() => *title = Some(text()),
-            _ => {}
-        }
-        for c in &d.children {
-            collect_styles(c, css, title, jit);
-        }
+    }
+    let text = || d.children.iter().filter_map(|c| match c {
+        AnyElement::Text(t) => Some(t.as_ref()),
+        _ => None,
+    }).collect::<String>();
+    match d.tag {
+        "style" => css.push_str(&text()),
+        "title" if title.is_none() => *title = Some(text()),
+        _ => {}
+    }
+    for c in &d.children {
+        collect_styles(c, css, title, jit);
     }
 }
 
@@ -1266,7 +1302,7 @@ impl<'a> Builder<'a> {
                         spec.field_bg = argb(own.background);
                         spec.font_px = (own.font_size != up.font_size).then_some(own.font_size);
                     }
-                    self.nodes[i].content = Content::Widget(spec);
+                    self.nodes[i].content = Content::Widget(Box::new(spec));
                 } else {
                     self.children(i, div.children);
                 }
@@ -1731,6 +1767,13 @@ impl<'a> Builder<'a> {
     /// children: last frame's node, updated only where something differs
     /// (which marks it dirty), or a new one.
     fn node(&mut self, key: Key, style: Style, ctx: Option<Measure>, children: &[NodeId]) -> NodeId {
+        self.node_from(key, None, |_| style, ctx, children)
+    }
+
+    /// The taffy node of `key`, written only where it differs from last frame's. With a `shape`,
+    /// `style` is called once per shape, and the nodes of a shape share its result.
+    fn node_from(&mut self, key: Key, shape: Option<(StyleId, Form)>, style: impl FnOnce(&Self) -> Style,
+                 ctx: Option<Measure>, children: &[NodeId]) -> NodeId {
         let stamp = self.recon.stamp;
         let reuse = match self.recon.map.get_mut(&key) {
             Some((id, st)) if *st != stamp => {
@@ -1739,34 +1782,82 @@ impl<'a> Builder<'a> {
             }
             _ => None,
         };
-        let t = &mut *self.taffy;
-        if let Some(id) = reuse {
-            if *t.style(id) != style {
-                t.set_style(id, style);
-                self.changed = true;
-            }
-            if t.children(id) != children {
-                t.set_children(id, children);
-                self.changed = true;
-            }
-            if t.context(id) != ctx.as_ref() {
-                t.set_context(id, ctx);
-                self.changed = true;
+        let made = match shape {
+            Some((style_id, form)) => Made::Shared(self.shared_style(Shape { epoch: self.styles.epoch, style: style_id, form }, style)),
+            None => Made::Own(style(self)),
+        };
+        let Some(id) = reuse else {
+            let rc = match made {
+                Made::Shared(rc) => rc,
+                Made::Own(s) => Rc::new(s),
+            };
+            let id = match ctx {
+                Some(m) => self.taffy.new_leaf_with_context(rc, m),
+                None => self.taffy.new_with_children(rc, children),
+            };
+            self.changed = true;
+            match self.recon.map.entry(key) {
+                std::collections::hash_map::Entry::Occupied(_) => self.recon.extra.push(id), // duplicate key
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert((id, stamp));
+                }
             }
             return id;
-        }
-        let id = match ctx {
-            Some(m) => t.new_leaf_with_context(style, m),
-            None => t.new_with_children(style, children),
         };
-        self.changed = true;
-        match self.recon.map.entry(key) {
-            std::collections::hash_map::Entry::Occupied(_) => self.recon.extra.push(id), // duplicate key
-            std::collections::hash_map::Entry::Vacant(v) => {
-                v.insert((id, stamp));
+        match made {
+            Made::Shared(new) if !Rc::ptr_eq(&new, self.taffy.style(id)) => {
+                if **self.taffy.style(id) == *new {
+                    self.taffy.replace_style(id, new);
+                } else {
+                    self.taffy.set_style(id, new);
+                    self.changed = true;
+                }
+            }
+            Made::Shared(_) => {}
+            Made::Own(new) => {
+                if **self.taffy.style(id) != new {
+                    self.taffy.set_style(id, Rc::new(new));
+                    self.changed = true;
+                }
             }
         }
+        let t = &mut *self.taffy;
+        if t.children(id) != children {
+            t.set_children(id, children);
+            self.changed = true;
+        }
+        if t.context(id) != ctx.as_ref() {
+            t.set_context(id, ctx);
+            self.changed = true;
+        }
         id
+    }
+
+    /// The taffy style of `shape`: the shared one, made when there is none.
+    fn shared_style(&mut self, shape: Shape, style: impl FnOnce(&Self) -> Style) -> Rc<Style> {
+        if let Some(rc) = self.shapes.get(&shape) {
+            return Rc::clone(rc);
+        }
+        let rc = Rc::new(style(self));
+        self.shapes.insert(shape, Rc::clone(&rc));
+        rc
+    }
+
+    /// The shape of box `i`'s taffy style when it follows from its computed style alone.
+    fn shape(&self, i: usize, form: Form) -> Option<(StyleId, Form)> {
+        let table = matches!(self.st(i).display, DisplayKind::Table | DisplayKind::TableRowGroup
+                             | DisplayKind::TableRow | DisplayKind::TableCell);
+        (i != 0 && !table).then_some((self.nodes[i].style, form))
+    }
+
+    /// The taffy style of box `i`: its computed layout, and the root filling the viewport.
+    fn box_style(&self, i: usize) -> Style {
+        let mut base = self.base_style(i);
+        if i == 0 {
+            base.min_size = Size { width: LengthPercentageAuto::length(self.viewport.0),
+                                   height: LengthPercentageAuto::length(self.viewport.1) };
+        }
+        base
     }
 
     fn leaf(&mut self, i: usize, style: Style) -> NodeId {
@@ -1821,17 +1912,11 @@ impl<'a> Builder<'a> {
         if self.st(i).display == DisplayKind::Table {
             self.table_columns(i);
         }
-        let mut base = self.base_style(i);
-        if i == 0 {
-            // the root fills the viewport
-            base.min_size = Size { width: LengthPercentageAuto::length(self.viewport.0),
-                                   height: LengthPercentageAuto::length(self.viewport.1) };
-        }
         let sid = self.nodes[i].style;
         match &self.nodes[i].content {
             Content::Widget(spec) => {
                 let (w, h) = (self.widgets)(self.nodes[i].key, WidgetAsk::Ensure(spec));
-                let mut s = base;
+                let mut s = self.box_style(i);
                 if s.size.width == Dimension::auto() {
                     s.size.width = Dimension::length(w);
                 }
@@ -1860,7 +1945,7 @@ impl<'a> Builder<'a> {
                     _ => (300.0, 150.0),
                 };
                 let attr = |n: &str| self.attr(i, n).and_then(|v| v.trim_end_matches("px").parse::<f32>().ok());
-                let mut s = base;
+                let mut s = self.box_style(i);
                 let (aw, ah) = (attr("width"), attr("height"));
                 if s.size.width == Dimension::auto() {
                     s.size.width = Dimension::length(aw.unwrap_or(match ah {
@@ -1901,9 +1986,8 @@ impl<'a> Builder<'a> {
             let nowrap = self.styles[sid].white_space == WhiteSpace::NoWrap;
             let key = self.nodes[i].key;
             let m = self.text_measure(key, k, sid, nowrap);
-            let mut s = base;
-            s.display = Display::Block;
-            let id = self.node(key, s, Some(m), &[]);
+            let shape = self.shape(i, Form::Folded);
+            let id = self.node_from(key, shape, |b| Style { display: Display::Block, ..b.box_style(i) }, Some(m), &[]);
             self.nodes[i].taffy = Some(id);
             self.nodes[i].fold = Some(k);
             self.nodes[k].folded = true;
@@ -1932,15 +2016,16 @@ impl<'a> Builder<'a> {
                 }
                 self.child_nodes(k, &mut out);
             }
-            let id = self.node(self.nodes[i].key, base, None, &out);
+            let shape = self.shape(i, Form::Plain);
+            let id = self.node_from(self.nodes[i].key, shape, |b| b.box_style(i), None, &out);
             self.nodes[i].taffy = Some(id);
             return id;
         }
         // block container: runs of inline content become line boxes
         if list.iter().all(|&k| !self.is_block_level(k)) {
             self.inline_items(&list, i, &mut out, true);
-            let line = Self::line_style(&self.styles[sid], base);
-            let id = self.node(self.nodes[i].key, line, None, &out);
+            let shape = self.shape(i, Form::Lines);
+            let id = self.node_from(self.nodes[i].key, shape, |b| Self::line_style(&b.styles[sid], b.box_style(i)), None, &out);
             self.nodes[i].taffy = Some(id);
             return id;
         }
@@ -1954,7 +2039,8 @@ impl<'a> Builder<'a> {
             }
         }
         self.flush_run(i, &mut run, &mut out);
-        let id = self.node(self.nodes[i].key, base, None, &out);
+        let shape = self.shape(i, Form::Plain);
+        let id = self.node_from(self.nodes[i].key, shape, |b| b.box_style(i), None, &out);
         self.nodes[i].taffy = Some(id);
         id
     }
@@ -2301,6 +2387,9 @@ pub(crate) fn layout(root: AnyElement, viewport: (f32, f32), state: &UiState, ca
     }
     caches.recon.stamp = caches.recon.stamp.wrapping_add(1);
     caches.text_box.clear();
+    if caches.shapes.len() >= SHAPES_MAX {
+        caches.shapes.clear();
+    }
     let Frame { mut nodes, mut els, .. } = recycle;
     nodes.clear();
     els.clear();
@@ -2310,7 +2399,7 @@ pub(crate) fn layout(root: AnyElement, viewport: (f32, f32), state: &UiState, ca
     }
     caches.images.videos.begin_pass();
     let ua_styled = ua_styled_stylesheet();
-    let LayoutCaches { styles, text, images, author, taffy, box_of, acc, matched, recon, text_box, containers,
+    let LayoutCaches { styles, text, images, author, taffy, box_of, acc, matched, recon, text_box, shapes, containers,
                        wrap_widths, anim, .. } = caches;
     let mut b = Builder {
         nodes,
@@ -2322,6 +2411,7 @@ pub(crate) fn layout(root: AnyElement, viewport: (f32, f32), state: &UiState, ca
         matched,
         recon,
         text_box,
+        shapes,
         containers,
         wrap_widths,
         changed: false,
@@ -2760,5 +2850,16 @@ fn load_font_faces(sheet: &Stylesheet) {
         if loaded {
             LOADED.lock().unwrap_or_else(|e| e.into_inner()).push(key);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BoxNode;
+
+    /// A box is made for every element and text run: a widget's spec lives behind a pointer.
+    #[test]
+    fn box_node_stays_small() {
+        assert!(std::mem::size_of::<BoxNode>() <= 256, "{}", std::mem::size_of::<BoxNode>());
     }
 }
