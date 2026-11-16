@@ -84,6 +84,9 @@ public sealed unsafe class Context : IDisposable
 
     internal static bool HasPending => pending is not null;
 
+    /// <summary>Keeps the first exception of a handler until the kit call returns.</summary>
+    internal static void Hold(Exception e) => pending ??= ExceptionDispatchInfo.Capture(e);
+
     private static bool Done(int changed)
     {
         ThrowPending();
@@ -107,7 +110,7 @@ public sealed unsafe class Context : IDisposable
         catch (Exception e)
 #pragma warning restore CA1031
         {
-            pending ??= ExceptionDispatchInfo.Capture(e);
+            Hold(e);
         }
     }
 }

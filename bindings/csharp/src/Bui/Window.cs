@@ -13,6 +13,7 @@ public sealed unsafe class Window : IDisposable
 {
     private readonly Context context;
     private BKWindow* handle;
+    private GCHandle self; // BKWindowCallbacks.data, while the window lives
 
     /// <summary>A window showing <paramref name="context"/>, in logical pixels.</summary>
     /// <exception cref="PlatformNotSupportedException">No window host here (no display, or not the main thread on macOS).</exception>
@@ -33,7 +34,22 @@ public sealed unsafe class Window : IDisposable
         {
             throw new InvalidOperationException("the kit could not open a window");
         }
+        self = GCHandle.Alloc(this);
+        BKWindowCallbacks cb = default;
+        cb.data = (void*)GCHandle.ToIntPtr(self);
+        cb.on_frame = &OnFrame;
+        BK_window_set_callbacks(handle, &cb);
     }
+
+    /// <summary>Raised right before a frame asked for with <see cref="RequestFrame"/> renders:
+    /// the place to update the UI for exactly that frame.</summary>
+    public event EventHandler? Frame;
+
+    /// <summary>Asks for a <see cref="Frame"/>; with <paramref name="vsync"/>, frames are paced to the display.</summary>
+    public void RequestFrame(bool vsync = true) => BK_window_request_frame(Handle, vsync ? 1 : 0);
+
+    /// <summary>Frames presented so far.</summary>
+    public int Frames => BK_window_frames(Handle);
 
     /// <summary>The context this window drives.</summary>
     public Context Context => context;
@@ -80,6 +96,7 @@ public sealed unsafe class Window : IDisposable
         }
         BK_window_free(handle);
         handle = null;
+        self.Free();
     }
 
     /// <summary>Runs the message loop until every window is closed. An exception
@@ -93,6 +110,22 @@ public sealed unsafe class Window : IDisposable
 
     /// <summary>Stops <see cref="Run"/>.</summary>
     public static void Quit() => BK_window_quit();
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnFrame(void* data, BKWindow* win)
+    {
+        try
+        {
+            var w = (Window?)GCHandle.FromIntPtr((nint)data).Target;
+            w?.Frame?.Invoke(w, EventArgs.Empty);
+        }
+#pragma warning disable CA1031 // held and rethrown from Run, never across native frames
+        catch (Exception e)
+#pragma warning restore CA1031
+        {
+            Context.Hold(e);
+        }
+    }
 
     // polled after each message: free collected nodes, stop on a handler's exception
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]

@@ -21,7 +21,7 @@ cd bindings/csharp
 dotnet run --project tests/Bui.Tests              # headless suite
 dotnet run --project examples/Hello               # a window
 dotnet run --project examples/Widgets             # panels, fields, sliders, toggles, a progress bar
-dotnet run -c Release --project bench/Cells -- 3000 one   # the cells benchmark, headless
+dotnet run -c Release --project bench/Cells -- --cells 3000 --mode anim   # the cells benchmark
 ```
 
 The projects copy the library from `build/bindings/csharp`; pass `-p:BuiNativeDir=<dir>` for another build directory. The libraries target `net8.0`; the tests and example target `net9.0`.
@@ -65,7 +65,7 @@ Window.Run();
 
 ## The cells benchmark
 
-`bench/Cells` is the cells benchmark of `bindings/node/bench/cells.js` (the same 1000x800 grid, colours and labels), drawn as canvas items and rendered headless. `one` changes cell 0 each frame, `all` every cell. It prints the C# cost and the kit's render per frame, and the managed bytes allocated per frame (0: labels are encoded once into a pinned table).
+`bench/Cells` is `bindings/rust/bench` (bui-bench) from C#: the same 1000x800 window of N rounded, numbered cells, the same colours and labels, and the same measurement as `common/measure.rs` (3 s warm-up, a 10 s window of process CPU time over every thread, frames and resident memory, one JSON line). `--mode anim` changes every cell every frame, paced to vsync; `--mode one` only cell 0. The cells are canvas items, and a frame replaces the ones that changed: the labels are encoded once, so a frame allocates nothing in C#.
 
 ## Ownership and threads
 
