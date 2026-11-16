@@ -206,6 +206,17 @@ mod tests {
     }
 
     #[test]
+    fn blenderuis_own_pyproject_is_not_an_app() {
+        assert!(!depends_on_blenderui("[project]
+name = \"blenderui\"
+"));
+        assert!(depends_on_blenderui("[project]
+name = \"x\"
+dependencies = [\"blenderui>=0.5\"]
+"));
+    }
+
+    #[test]
     fn a_project_is_found_from_a_folder_inside_it() {
         let dir = std::env::temp_dir().join(format!("bui-test-{}", std::process::id()));
         let inner = dir.join("src/deep");
