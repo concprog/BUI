@@ -139,7 +139,16 @@ def build(crate, out, debug):
     if ar:
         env["AR_" + var] = ar
     if "CMAKE_GENERATOR" not in env:
-        env["CMAKE_GENERATOR"] = "Ninja" if shutil.which("ninja") else "Unix Makefiles"
+        # CMake's default on Windows is Visual Studio, which cannot drive a clang cross-compile
+        if shutil.which("ninja"):
+            env["CMAKE_GENERATOR"] = "Ninja"
+        elif shutil.which("make"):
+            env["CMAKE_GENERATOR"] = "Unix Makefiles"
+        else:
+            sys.exit("the kit is built with CMake and Ninja (or make), and neither is on PATH.\n"
+                     "  Windows:  winget install Ninja-build.Ninja   (or: scoop install ninja)\n"
+                     "  macOS:    brew install ninja\n"
+                     "  Linux:    sudo apt install ninja-build")
     manifest = os.path.join(crate, "Cargo.toml")
     cmd = ["cargo", "build", "--target", TARGET, "--manifest-path", manifest]
     if not debug:
