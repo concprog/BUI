@@ -3,7 +3,7 @@ title: Android
 description: Run BUI on a phone from C, Lua or Rust with the same code as on a desktop. One NativeActivity, no Java and no Gradle, damage-driven software rendering, touch that scrolls, the soft keyboard, and an APK of about 1 to 2 MB.
 section: Concepts
 order: 69
-sources: ["kit/intern/kit_window_android.c", "platform/android/bui_android.c", "platform/android/bui_app.h", "platform/android/fonts.c", "platform/android/demo.c", "platform/android/lua_app.c", "platform/android/rust/src/lib.rs", "platform/android/CMakeLists.txt", "platform/android/AndroidManifest.xml", "platform/android/build.py", "examples/android/main.lua", "docs/android.md"]
+sources: ["kit/intern/kit_window_android.c", "platform/android/bui_android.c", "platform/android/bui_app.h", "platform/android/fonts.c", "platform/android/demo.c", "platform/android/lua_app.c", "platform/android/rust/src/lib.rs", "platform/android/js/src/lib.rs", "bindings/rust/blenderui-qjs/src/lib.rs", "platform/android/CMakeLists.txt", "platform/android/AndroidManifest.xml", "platform/android/build.py", "examples/android/main.lua", "docs/android.md"]
 ---
 
 On Android the kit's window is the activity's surface (`kit/intern/kit_window_android.c`, which implements `BK_window_*` like the Windows and Linux hosts do). An app opens a window and runs it exactly as on a desktop, so Rust, Lua and C apps are the code they would be anywhere else. Nothing changes for other platforms: the Android code is in `platform/android`, the kit's Android-only branches and `if(ANDROID)` blocks.
@@ -12,6 +12,7 @@ On Android the kit's window is the activity's surface (`kit/intern/kit_window_an
 python platform/android/build.py                       # the C demo: arm64-v8a + x86_64
 python platform/android/build.py --lua examples/android        # a Lua app
 python platform/android/build.py --rust platform/android/rust  # a Rust app
+python platform/android/build.py --js app.jsx          # JavaScript: React, Vue, Svelte
 python platform/android/build.py --install             # install and start it
 ```
 
@@ -46,6 +47,20 @@ bui.open({ root = root })
 
 `assets/main.lua` is an ordinary BUI Lua script; `require` finds your other `.lua` files and `bui.lua` in the APK.
 </Tab>
+<Tab label="JavaScript">
+
+```jsx
+import { render, useState } from "@blender-ui/react"
+
+function Counter() {
+  const [n, setN] = useState(0)
+  return <button onClick={() => setN(n + 1)}>Clicks: {n}</button>
+}
+render(<Counter />, { title: "App" })
+```
+
+`build.py --js app.jsx` bundles it (with `bui bundle`, which needs Bun) and QuickJS runs it as `assets/main.js`, as `bui build` does on a desktop. React, Vue (`.vue`) and Svelte (`.svelte`) all run; `console.log` goes to logcat (tag `bui-js`). The APK is about 2.8 MB (arm64-v8a: the 5.6 MB library plus the bundle; React is 200 KB).
+</Tab>
 <Tab label="C">
 
 ```c
@@ -59,7 +74,7 @@ void bui_app_main(void) {
 </Tab>
 </LangTabs>
 
-Python, JavaScript, Qt, tkinter and D need their runtime on the device and are not available on Android.
+Python, Qt, tkinter and D need their runtime on the device and are not available on Android.
 
 ## How it behaves
 
@@ -72,5 +87,5 @@ Python, JavaScript, Qt, tkinter and D need their runtime on the device and are n
 - **Size.** About 1.1 MB per ABI for the C demo, 1.4 MB with Lua and 2.0 MB with Rust (arm64-v8a).
 
 <Callout type="note" title="What is tested">
-The three apps run on an x86_64 emulator (API 33). The arm64 builds compile and link but were not run on a device. There is no GPU renderer, long-press, pinch or IME composition yet.
+The C, Lua, Rust and JavaScript (React, Vue, Svelte) apps run on an x86_64 emulator (API 33). The arm64 builds compile and link but were not run on a device. There is no GPU renderer, long-press, pinch or IME composition yet.
 </Callout>

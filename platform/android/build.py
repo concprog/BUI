@@ -6,6 +6,7 @@
     python platform/android/build.py --install           # adb install -r, then start it
     python platform/android/build.py --lua examples/android    # a Lua app: the folder's *.lua are assets/
     python platform/android/build.py --rust platform/android/rust   # a Rust app (a staticlib crate)
+    python platform/android/build.py --js app.jsx        # a JavaScript app (React, Vue, Svelte): QuickJS + the bundle
 
 ANDROID_HOME / ANDROID_SDK_ROOT (else the usual per-user SDK folder) locates the SDK; the NDK is
 the newest one in it (or ANDROID_NDK_HOME).
@@ -75,6 +76,9 @@ def build_rust(crate, ndk, abi, make):
                **{"CC_" + var: clang + cmd, "CXX_" + var: clang + "++" + cmd,
                   "AR_" + var: os.path.join(llvm, "llvm-ar" + exe)},
                PATH=os.path.dirname(make) + os.pathsep + os.environ["PATH"])
+    # bindgen (QuickJS bindings): the NDK's libclang and sysroot
+    sysroot = os.path.join(llvm, "..", "sysroot")
+    env.update(LIBCLANG_PATH=llvm, **{"BINDGEN_EXTRA_CLANG_ARGS_" + var: "--sysroot=" + sysroot.replace("\\", "/")})
     run(["cargo", "build", "--release", "--target", triple, "--manifest-path",
          os.path.join(crate, "Cargo.toml")], env=env)
     name = open(os.path.join(crate, "Cargo.toml"), encoding="utf-8").read().split('name = "')[1].split('"')[0]
@@ -144,8 +148,10 @@ def main():
     ap.add_argument("--install", action="store_true")
     ap.add_argument("--rust", metavar="CRATE", help="a Rust app: a staticlib crate that defines bui_app_main (platform/android/rust)")
     ap.add_argument("--lua", metavar="DIR", help="a Lua app: DIR/main.lua returns the root node; every *.lua in DIR is an asset")
+    ap.add_argument("--js", metavar="ENTRY", help="a JavaScript app: ENTRY (.js, .jsx, .vue, .svelte) is bundled (bindings/node: bui bundle, needs Bun) and run on QuickJS")
     a = ap.parse_args()
     app_args, assets = ["-DBUI_ANDROID_APP=demo", "-DBUI_BUILD_LUA_BINDINGS=OFF"], {}
+    rust = a.rust
     if a.lua:
         app_args = ["-DBUI_ANDROID_APP=lua", "-DBUI_BUILD_LUA_BINDINGS=ON"]
         if not os.path.exists(os.path.join(a.lua, "main.lua")):
@@ -156,10 +162,16 @@ def main():
                     full = os.path.join(dirpath, f)
                     assets[os.path.relpath(full, a.lua).replace(os.sep, "/")] = full
         assets["bui.lua"] = os.path.join(ROOT, "bindings", "lua", "bui.lua")  # the wrapper `require("bui")` finds
+    if a.js:
+        rust = os.path.join(ROOT, "platform", "android", "js")
+        main_js = os.path.join(a.out, "main.js")
+        os.makedirs(a.out, exist_ok=True)
+        run(["node", os.path.join(ROOT, "bindings", "node", "cli.js"), "bundle", a.js, "-o", main_js])
+        assets["main.js"] = main_js
     root_sdk = sdk()
     ndk = os.environ.get("ANDROID_NDK_HOME") or newest(os.path.join(root_sdk, "ndk", "*"))
     os.makedirs(a.out, exist_ok=True)
-    libs = {abi: build_abi(ndk, abi, a.out, app_args, a.rust) for abi in (a.abi or ["arm64-v8a", "x86_64"])}
+    libs = {abi: build_abi(ndk, abi, a.out, app_args, rust) for abi in (a.abi or ["arm64-v8a", "x86_64"])}
     final = apk(root_sdk, libs, a.out, assets)
     for abi, lib in libs.items():
         print("%-12s %8.1f KB" % (abi, os.path.getsize(lib) / 1024))

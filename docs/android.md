@@ -14,6 +14,7 @@ python platform/android/build.py --abi arm64-v8a       # a phone only
 python platform/android/build.py --install             # adb install -r, then start it
 python platform/android/build.py --lua examples/android        # a Lua app (the folder's *.lua are assets)
 python platform/android/build.py --rust platform/android/rust  # a Rust app (a staticlib crate)
+python platform/android/build.py --js app.jsx                  # a JavaScript app: React, Vue or Svelte on QuickJS
 ```
 
 Needs the Android SDK (`ANDROID_HOME`; build-tools, platform 34), an NDK (the newest in the SDK, or
@@ -27,9 +28,10 @@ Needs the Android SDK (`ANDROID_HOME`; build-tools, platform 34), an NDK (the ne
 | --- | --- | --- |
 | **Rust** | an ordinary `blenderui` app in a `staticlib` crate with `#[unsafe(no_mangle)] pub extern "C" fn bui_app_main() { Application::new().run(...) }` (`platform/android/rust`) | `--rust CRATE` |
 | **Lua** | an ordinary BUI Lua script, `assets/main.lua`, ending in `bui.open{root=...}` or `bui.Window(...)` + `bui.run()`; `require` finds your other `.lua` files and `bui.lua` in the APK | `--lua DIR` |
+| **JavaScript** | an ordinary `@blender-ui/native`, React, Vue or Svelte app (`.js`, `.jsx`, `.vue`, `.svelte`); it is bundled into one script (`bui bundle`, needs Bun) and runs on QuickJS (`bindings/rust/blenderui-qjs`, the engine `bui build` embeds), as `assets/main.js`; `console.log` goes to logcat (tag `bui-js`) | `--js ENTRY` |
 | **C** | `void bui_app_main(void)`: build nodes, `BK_context_new`, `BK_window_new`, `BK_window_run` (`platform/android/demo.c`) | the default |
 
-Python, JavaScript (React, Vue, Svelte), Qt, tkinter and D are not available on Android: each needs its
+Python, Qt, tkinter and D are not available on Android: each needs its
 runtime on the device.
 
 The Rust demo (`platform/android/rust`) has three tabs: the widgets, a list of **10 000 000 rows** and a
@@ -84,7 +86,7 @@ set.
 
 ## Tested, and not
 
-Run on an x86_64 emulator (API 33): the C demo, the Lua app (a button callback updates its label) and the
+Run on an x86_64 emulator (API 33): the C demo, the Lua app (a button callback updates its label), the React, Vue and Svelte counters (QuickJS: clicks, the keyboard in an input, a slider) and the
 Rust app (a button, a text input, scrolling with the scrollbar). The arm64-v8a builds of all three
 compile and link but were not run on a device.
 
