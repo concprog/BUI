@@ -417,3 +417,34 @@ fn random_histories_match_fresh_renders() {
         }
     });
 }
+
+/// Every frame makes new layout styles: the table that holds them is compacted along the way.
+struct Widths {
+    step: u32,
+}
+
+impl Render for Widths {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let step = self.step;
+        body().m_0().children((0..40).map(move |i| {
+            div().w(px(10.0 + ((step * 40 + i) % 300) as f32 * 0.5 + step as f32 * 0.001)).h(px(4.0)).bg(rgb(0x336699))
+        }))
+    }
+}
+
+#[test]
+fn compacting_the_style_table_keeps_frames_equal() {
+    Application::headless().run(|cx| {
+        let live = open(cx, 300.0, 300.0, Widths { step: 0 });
+        cx.draw(live.id);
+        for step in 1..140 {
+            live.root().update(cx, |w, _| w.step = step);
+            cx.notify_all();
+            let incremental = cx.draw(live.id);
+            if step % 20 == 0 || step > 130 {
+                let fresh = open(cx, 300.0, 300.0, Widths { step });
+                assert!(incremental.2 == cx.draw(fresh.id).2, "step {step}: incremental frame differs from a fresh render");
+            }
+        }
+    });
+}

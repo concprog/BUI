@@ -13,7 +13,6 @@
 //! reference-counted.
 
 use std::hash::{Hash, Hasher};
-use std::rc::Rc;
 use std::sync::Arc;
 
 use taffy::prelude::*;
@@ -28,6 +27,7 @@ use crate::prof::{span, Phase};
 use crate::style::ContentPart;
 use crate::style::{apply, key_hasher, Computed, DisplayKind, KeyMap, KeySet, TextAlign, TextTransform, VAlign, WhiteSpace};
 use crate::text::{self, TextCache};
+use crate::tree::StyleIx;
 use crate::widgets::{WidgetAsk, WidgetSpec};
 
 // ==========================================================================
@@ -355,12 +355,12 @@ enum Form {
 
 /// A taffy style as a box makes it.
 enum Made {
-    Shared(Rc<Style>),
+    Shared(StyleIx),
     Own(Style),
 }
 
-/// The shared taffy styles by shape; emptied when it holds this many.
-const SHAPES_MAX: usize = 4096;
+/// The styles a layout tree holds before it drops those no node uses.
+const STYLES_MAX: usize = 4096;
 
 /// The persistent taffy tree's nodes by box key (with the frame they were
 /// last used in). Reconciling instead of rebuilding lets taffy's cache skip
@@ -392,7 +392,8 @@ pub(crate) struct LayoutCaches {
     recon: Recon,
     /// Measured text leaves: key -> box index, this frame.
     text_box: KeyMap<Key, usize>,
-    shapes: KeyMap<Shape, Rc<Style>>,
+    /// The table entry of each shape's taffy style.
+    shapes: KeyMap<Shape, StyleIx>,
     /// Content widths of blocks with `overflow-wrap: anywhere` from the last
     /// layout: their long words are split to fit before layout.
     wrap_widths: KeyMap<Key, f32>,
@@ -515,7 +516,7 @@ struct Builder<'a> {
     matched: &'a mut MatchCache,
     recon: &'a mut Recon,
     text_box: &'a mut KeyMap<Key, usize>,
-    shapes: &'a mut KeyMap<Shape, Rc<Style>>,
+    shapes: &'a mut KeyMap<Shape, StyleIx>,
     /// Set when a node changed while building the current subtree.
     changed: bool,
     /// `tpos` for the element about to be built.
@@ -1787,13 +1788,13 @@ impl<'a> Builder<'a> {
             None => Made::Own(style(self)),
         };
         let Some(id) = reuse else {
-            let rc = match made {
-                Made::Shared(rc) => rc,
-                Made::Own(s) => Rc::new(s),
+            let style = match made {
+                Made::Shared(ix) => ix,
+                Made::Own(s) => self.taffy.intern(s),
             };
             let id = match ctx {
-                Some(m) => self.taffy.new_leaf_with_context(rc, m),
-                None => self.taffy.new_with_children(rc, children),
+                Some(m) => self.taffy.new_leaf_with_context(style, m),
+                None => self.taffy.new_with_children(style, children),
             };
             self.changed = true;
             match self.recon.map.entry(key) {
@@ -1805,8 +1806,8 @@ impl<'a> Builder<'a> {
             return id;
         };
         match made {
-            Made::Shared(new) if !Rc::ptr_eq(&new, self.taffy.style(id)) => {
-                if **self.taffy.style(id) == *new {
+            Made::Shared(new) if new != self.taffy.style_ix(id) => {
+                if self.taffy.has_style(id, new) {
                     self.taffy.replace_style(id, new);
                 } else {
                     self.taffy.set_style(id, new);
@@ -1815,8 +1816,9 @@ impl<'a> Builder<'a> {
             }
             Made::Shared(_) => {}
             Made::Own(new) => {
-                if **self.taffy.style(id) != new {
-                    self.taffy.set_style(id, Rc::new(new));
+                if *self.taffy.style(id) != new {
+                    let ix = self.taffy.intern(new);
+                    self.taffy.set_style(id, ix);
                     self.changed = true;
                 }
             }
@@ -1833,14 +1835,14 @@ impl<'a> Builder<'a> {
         id
     }
 
-    /// The taffy style of `shape`: the shared one, made when there is none.
-    fn shared_style(&mut self, shape: Shape, style: impl FnOnce(&Self) -> Style) -> Rc<Style> {
-        if let Some(rc) = self.shapes.get(&shape) {
-            return Rc::clone(rc);
+    /// The table entry of `shape`'s taffy style: the shared one, made when there is none.
+    fn shared_style(&mut self, shape: Shape, style: impl FnOnce(&Self) -> Style) -> StyleIx {
+        if let Some(&ix) = self.shapes.get(&shape) {
+            return ix;
         }
-        let rc = Rc::new(style(self));
-        self.shapes.insert(shape, Rc::clone(&rc));
-        rc
+        let ix = self.taffy.intern(style(self));
+        self.shapes.insert(shape, ix);
+        ix
     }
 
     /// The shape of box `i`'s taffy style when it follows from its computed style alone.
@@ -2387,7 +2389,8 @@ pub(crate) fn layout(root: AnyElement, viewport: (f32, f32), state: &UiState, ca
     }
     caches.recon.stamp = caches.recon.stamp.wrapping_add(1);
     caches.text_box.clear();
-    if caches.shapes.len() >= SHAPES_MAX {
+    if caches.taffy.style_count() >= STYLES_MAX {
+        caches.taffy.compact_styles();
         caches.shapes.clear();
     }
     let Frame { mut nodes, mut els, .. } = recycle;

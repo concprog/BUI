@@ -7,8 +7,6 @@
 //! a node's cache is only cleared when its own inputs change: the
 //! reconciler in `layout.rs` marks changed subtrees itself.
 
-use std::rc::Rc;
-
 use taffy::compute::{
     compute_block_layout, compute_cached_layout, compute_flexbox_layout, compute_grid_layout,
     compute_hidden_layout, compute_oof_layout, compute_root_layout, round_layout, BlockContext,
@@ -21,8 +19,7 @@ use taffy::{
 };
 
 struct Node<C> {
-    /// Shared: nodes with the same layout style point at one.
-    style: Rc<Style>,
+    style: StyleIx,
     ctx: Option<C>,
     children: Vec<NodeId>,
     hoisted: Vec<NodeId>,
@@ -33,15 +30,21 @@ struct Node<C> {
     live: bool,
 }
 
+/// A style in a tree's table: nodes with the same layout style point at one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct StyleIx(u32);
+
 /// Nodes with an optional measure context `C` per leaf.
 pub(crate) struct LayoutTree<C> {
     nodes: Vec<Node<C>>,
     free: Vec<usize>,
+    /// The styles of the nodes; entry 0 is the default, which a freed node points at.
+    styles: Vec<Style>,
 }
 
 impl<C> Default for LayoutTree<C> {
     fn default() -> Self {
-        LayoutTree { nodes: Vec::new(), free: Vec::new() }
+        LayoutTree { nodes: Vec::new(), free: Vec::new(), styles: vec![Style::default()] }
     }
 }
 
@@ -51,7 +54,7 @@ fn ix(id: NodeId) -> usize {
 }
 
 impl<C> LayoutTree<C> {
-    fn alloc(&mut self, style: Rc<Style>, ctx: Option<C>, children: &[NodeId]) -> NodeId {
+    fn alloc(&mut self, style: StyleIx, ctx: Option<C>, children: &[NodeId]) -> NodeId {
         let node = Node {
             style,
             ctx,
@@ -75,11 +78,11 @@ impl<C> LayoutTree<C> {
         }
     }
 
-    pub fn new_leaf_with_context(&mut self, style: Rc<Style>, ctx: C) -> NodeId {
+    pub fn new_leaf_with_context(&mut self, style: StyleIx, ctx: C) -> NodeId {
         self.alloc(style, Some(ctx), &[])
     }
 
-    pub fn new_with_children(&mut self, style: Rc<Style>, children: &[NodeId]) -> NodeId {
+    pub fn new_with_children(&mut self, style: StyleIx, children: &[NodeId]) -> NodeId {
         self.alloc(style, None, children)
     }
 
@@ -90,6 +93,7 @@ impl<C> LayoutTree<C> {
         if let Some(n) = self.nodes.get_mut(i) {
             if n.live {
                 n.live = false;
+                n.style = StyleIx(0);
                 n.ctx = None;
                 n.children = Vec::new();
                 n.hoisted = Vec::new();
@@ -99,19 +103,54 @@ impl<C> LayoutTree<C> {
         }
     }
 
-    pub fn style(&self, id: NodeId) -> &Rc<Style> {
-        &self.nodes[ix(id)].style
+    pub fn style(&self, id: NodeId) -> &Style {
+        &self.styles[self.nodes[ix(id)].style.0 as usize]
     }
 
-    pub fn set_style(&mut self, id: NodeId, style: Rc<Style>) {
+    pub fn style_ix(&self, id: NodeId) -> StyleIx {
+        self.nodes[ix(id)].style
+    }
+
+    /// Whether the node's style equals the table entry `style`.
+    pub fn has_style(&self, id: NodeId, style: StyleIx) -> bool {
+        *self.style(id) == self.styles[style.0 as usize]
+    }
+
+    /// Adds a style to the table.
+    pub fn intern(&mut self, style: Style) -> StyleIx {
+        self.styles.push(style);
+        StyleIx((self.styles.len() - 1) as u32)
+    }
+
+    pub fn style_count(&self) -> usize {
+        self.styles.len()
+    }
+
+    pub fn set_style(&mut self, id: NodeId, style: StyleIx) {
         let n = &mut self.nodes[ix(id)];
         n.style = style;
         n.cache.clear();
     }
 
     /// Points a node at another copy of the style it has: its cache stays.
-    pub fn replace_style(&mut self, id: NodeId, style: Rc<Style>) {
+    pub fn replace_style(&mut self, id: NodeId, style: StyleIx) {
         self.nodes[ix(id)].style = style;
+    }
+
+    /// Drops the styles no node points at. Every `StyleIx` held outside the tree is stale after it.
+    pub fn compact_styles(&mut self) {
+        let mut kept = vec![Style::default()];
+        let mut moved = vec![u32::MAX; self.styles.len()];
+        moved[0] = 0;
+        for n in self.nodes.iter_mut().filter(|n| n.live) {
+            let slot = &mut moved[n.style.0 as usize];
+            if *slot == u32::MAX {
+                *slot = kept.len() as u32;
+                kept.push(std::mem::take(&mut self.styles[n.style.0 as usize]));
+            }
+            n.style = StyleIx(*slot);
+        }
+        self.styles = kept;
     }
 
     pub fn children(&self, id: NodeId) -> &[NodeId] {
@@ -173,7 +212,7 @@ where
         }
         compute_cached_layout(self, id, inputs, |tree, id, inputs| {
             let n = &tree.t.nodes[ix(id)];
-            let mut out = match (n.style.display, !n.children.is_empty()) {
+            let mut out = match (tree.t.style(id).display, !n.children.is_empty()) {
                 (Display::None, _) => compute_hidden_layout(tree, id),
                 (Display::Block, true) => compute_block_layout(tree, id, inputs, block),
                 (Display::FlowRoot, true) => compute_block_layout(tree, id, inputs, None),
@@ -183,9 +222,9 @@ where
                     let n = &tree.t.nodes[ix(id)];
                     let measure = &mut tree.measure;
                     match &n.ctx {
-                        Some(c) => taffy::compute_leaf_layout(inputs, &*n.style, resolve_calc,
+                        Some(c) => taffy::compute_leaf_layout(inputs, tree.t.style(id), resolve_calc,
                                                               |known, avail| measure(known, avail, c)),
-                        None => taffy::compute_leaf_layout(inputs, &*n.style, resolve_calc,
+                        None => taffy::compute_leaf_layout(inputs, tree.t.style(id), resolve_calc,
                                                            |_, _| Size::ZERO),
                     }
                 }
@@ -238,7 +277,7 @@ where
 
     #[inline(always)]
     fn get_core_container_style(&self, id: NodeId) -> Self::CoreContainerStyle<'_> {
-        &self.t.nodes[ix(id)].style
+        self.t.style(id)
     }
 
     #[inline(always)]
@@ -265,7 +304,7 @@ where
 
     #[inline(always)]
     fn get_oof_item_style(&self, id: NodeId) -> Self::OofItemStyle<'_> {
-        &self.t.nodes[ix(id)].style
+        self.t.style(id)
     }
 
     #[inline(always)]
@@ -313,12 +352,12 @@ where
 
     #[inline(always)]
     fn get_block_container_style(&self, id: NodeId) -> Self::BlockContainerStyle<'_> {
-        &self.t.nodes[ix(id)].style
+        self.t.style(id)
     }
 
     #[inline(always)]
     fn get_block_child_style(&self, id: NodeId) -> Self::BlockItemStyle<'_> {
-        &self.t.nodes[ix(id)].style
+        self.t.style(id)
     }
 
     #[inline(always)]
@@ -337,12 +376,12 @@ where
 
     #[inline(always)]
     fn get_flexbox_container_style(&self, id: NodeId) -> Self::FlexboxContainerStyle<'_> {
-        &self.t.nodes[ix(id)].style
+        self.t.style(id)
     }
 
     #[inline(always)]
     fn get_flexbox_child_style(&self, id: NodeId) -> Self::FlexboxItemStyle<'_> {
-        &self.t.nodes[ix(id)].style
+        self.t.style(id)
     }
 }
 
@@ -355,12 +394,12 @@ where
 
     #[inline(always)]
     fn get_grid_container_style(&self, id: NodeId) -> Self::GridContainerStyle<'_> {
-        &self.t.nodes[ix(id)].style
+        self.t.style(id)
     }
 
     #[inline(always)]
     fn get_grid_child_style(&self, id: NodeId) -> Self::GridItemStyle<'_> {
-        &self.t.nodes[ix(id)].style
+        self.t.style(id)
     }
 
     #[inline(always)]
@@ -385,7 +424,7 @@ where
 
     #[inline(always)]
     fn is_out_of_flow(&self, id: NodeId) -> bool {
-        let s = &self.t.nodes[ix(id)].style;
+        let s = self.t.style(id);
         s.position.is_out_of_flow() && s.display != Display::None
     }
 
@@ -402,11 +441,25 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::Node;
+    use super::{LayoutTree, Node};
+    use taffy::prelude::Style;
 
     /// A node is made for every box that lays out: its style is shared, not stored.
     #[test]
     fn node_stays_small() {
         assert!(std::mem::size_of::<Node<[u8; 32]>>() <= 704, "{}", std::mem::size_of::<Node<[u8; 32]>>());
+    }
+
+    /// Compaction keeps what live nodes use and drops the rest.
+    #[test]
+    fn compaction_keeps_the_styles_nodes_use() {
+        let mut tree: LayoutTree<()> = LayoutTree::default();
+        let (a, b) = (tree.intern(Style { flex_grow: 2.0, ..Default::default() }),
+                      tree.intern(Style { flex_grow: 3.0, ..Default::default() }));
+        let (gone, kept) = (tree.new_with_children(a, &[]), tree.new_with_children(b, &[]));
+        tree.remove(gone);
+        tree.compact_styles();
+        assert_eq!(tree.style_count(), 2);
+        assert_eq!(tree.style(kept).flex_grow, 3.0);
     }
 }

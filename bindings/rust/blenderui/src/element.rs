@@ -408,9 +408,9 @@ pub struct StyleRefinement {
 
 impl Styled for Div {
     fn decls_mut(&mut self) -> &mut Vec<Decl> {
-        // one allocation for a typical element's handful of style calls
+        // one allocation for a typical element's handful of style calls (a dozen: the common ones fit)
         if self.decls.capacity() == 0 {
-            self.decls.reserve(8);
+            self.decls.reserve(12);
         }
         &mut self.decls
     }

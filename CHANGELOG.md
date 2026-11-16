@@ -84,6 +84,12 @@ All notable changes to **blenderui** (BUI). The format follows
   - Examples: `examples/animation/` (a hero intro, a card grid, magnetic buttons, a marquee with drag and an equalizer).
 
 ### Changed
+- **Rust: layout styles by index, declarations in one allocation.** The layout tree held its shared taffy styles
+  behind reference counts; they are entries of a table the tree owns, and a node holds an index (the table drops
+  the styles no node uses once it holds 4,096). An element's style calls reserve room for twelve declarations
+  instead of eight, so the nine of a typical cell are one allocation, not two. A grid of 3,000 cells runs 2.0%
+  fewer instructions per frame and touches 130 fewer pages. Nothing changes in the API or in what is drawn;
+  `compacting_the_style_table_keeps_frames_equal` checks frames while the table is compacted.
 - **Rust: smaller boxes and layout nodes.** A box held its widget spec inline (320 bytes) although few boxes are
   widgets: it is behind a pointer now, and a box is 240 bytes instead of 528. Layout nodes shared nothing: each
   held its own 560-byte taffy style; nodes with the same computed style and form point at one (`Rc`, in our own
