@@ -44,6 +44,16 @@ public sealed unsafe class Context : IDisposable
     /// <summary>Lays the tree out at <paramref name="width"/> x <paramref name="height"/>; true when the size changed.</summary>
     public bool Configure(int width, int height) => Done(BK_configure(Handle, width, height));
 
+    /// <summary>Renders into <paramref name="raster"/>: only damaged regions unless <paramref name="full"/>.
+    /// Returns the number of regions redrawn (0: nothing changed).</summary>
+    public int Render(Raster raster, bool full = false)
+    {
+        ArgumentNullException.ThrowIfNull(raster);
+        int n = BK_render(Handle, raster.Handle, raster.Width, raster.Height, full ? 1 : 0);
+        ThrowPending();
+        return n;
+    }
+
     /// <summary>Pointer press at window pixels; true when something changed.</summary>
     public bool Press(int x, int y, int mods = 0) => Done(BK_press(Handle, x, y, mods));
 

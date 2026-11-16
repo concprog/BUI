@@ -21,6 +21,9 @@ public unsafe class Node : KitRef, IDisposable
 
     private BKNode* handle;
 
+    // false for a borrowed wrapper of a node the kit built (a panel body): the kit frees it
+    private readonly bool owned = true;
+
     /// <summary>A node of a kit type ("button", "frame", "label", ...).</summary>
     /// <exception cref="ArgumentException">The kit has no such type.</exception>
     public Node(string type)
@@ -39,9 +42,17 @@ public unsafe class Node : KitRef, IDisposable
         BK_node_set_ref(handle, Ref);
     }
 
+    // A borrowed wrapper: the kit retains it until it frees the node.
+    private Node(BKNode* kitOwned)
+    {
+        handle = kitOwned;
+        owned = false;
+        BK_node_set_borrowed_ref(handle, Ref);
+    }
+
     ~Node()
     {
-        if (handle is not null)
+        if (owned && handle is not null)
         {
             Collected.Enqueue(((nint)handle, RefHandle));
         }
@@ -54,17 +65,25 @@ public unsafe class Node : KitRef, IDisposable
     public string Type => Utf8Z.Read(BK_node_type(Handle));
 
     /// <summary>The parent node, or null.</summary>
-    public Node? Parent => From<Node>(ParentRef());
+    public Node? Parent
+    {
+        get
+        {
+            BKNode* p = BK_node_parent(Handle);
+            return p is null ? null : Wrap(p);
+        }
+    }
 
     /// <summary>Number of child nodes, the kit's own parts included.</summary>
     public int ChildCount => BK_node_child_count(Handle);
 
-    /// <summary>Child <paramref name="index"/>, or null for a part the kit built itself (no wrapper).</summary>
-    public Node? Child(int index)
+    /// <summary>Child <paramref name="index"/>. A part the kit built itself (a panel's body)
+    /// gets a borrowed wrapper, kept for the node's lifetime.</summary>
+    public Node Child(int index)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(index);
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, ChildCount);
-        return From<Node>(BK_node_ref(BK_node_child(Handle, index)));
+        return Wrap(BK_node_child(Handle, index));
     }
 
     /// <summary>The native node; throws after <see cref="Dispose()"/>.</summary>
@@ -120,6 +139,51 @@ public unsafe class Node : KitRef, IDisposable
         }
     }
 
+    /// <summary>Sets a string-list property ("items", "headers", ...). Throws for a key this node does not have.</summary>
+    public void Set(string key, params string[] values)
+    {
+        ArgumentNullException.ThrowIfNull(values);
+        // all strings NUL-terminated in one pooled buffer, pointers into it
+        int size = 0;
+        foreach (string v in values)
+        {
+            size += System.Text.Encoding.UTF8.GetMaxByteCount(v.Length) + 1;
+        }
+        byte[] buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(Math.Max(size, 1));
+        nint[]? rentedPtrs = values.Length > 64 ? System.Buffers.ArrayPool<nint>.Shared.Rent(values.Length) : null;
+        Span<nint> offsets = rentedPtrs is null ? stackalloc nint[values.Length] : rentedPtrs;
+        try
+        {
+            int at = 0;
+            for (int i = 0; i < values.Length; i++)
+            {
+                offsets[i] = at;
+                at += System.Text.Encoding.UTF8.GetBytes(values[i], buffer.AsSpan(at));
+                buffer[at++] = 0;
+            }
+            using var k = new Utf8Z(key, stackalloc byte[Utf8Z.StackSize]);
+            fixed (byte* pk = k, pb = buffer)
+            {
+                for (int i = 0; i < values.Length; i++)
+                {
+                    offsets[i] += (nint)pb;
+                }
+                fixed (nint* pv = offsets)
+                {
+                    Check(BK_set_strs(Handle, (sbyte*)pk, (sbyte**)pv, values.Length), key);
+                }
+            }
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+            if (rentedPtrs is not null)
+            {
+                System.Buffers.ArrayPool<nint>.Shared.Return(rentedPtrs);
+            }
+        }
+    }
+
     /// <summary>A number property (0 for an unknown key).</summary>
     public double GetNumber(string key)
     {
@@ -169,7 +233,7 @@ public unsafe class Node : KitRef, IDisposable
 
     protected virtual void Dispose(bool disposing)
     {
-        if (handle is null)
+        if (handle is null || !owned)
         {
             return;
         }
@@ -199,11 +263,9 @@ public unsafe class Node : KitRef, IDisposable
         }
     }
 
-    private void* ParentRef()
-    {
-        BKNode* p = BK_node_parent(Handle);
-        return p is null ? null : BK_node_ref(p);
-    }
+    /// <summary>The wrapper of a native node: its own, its borrowed one, or a new borrowed one.</summary>
+    private static Node Wrap(BKNode* n) =>
+        From<Node>(BK_node_ref(n)) ?? From<Node>(BK_node_borrowed_ref(n)) ?? new Node(n);
 
     private static void Check(int ok, string key)
     {

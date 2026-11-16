@@ -4,6 +4,117 @@ using System.Runtime.InteropServices;
 
 namespace Bui.Interop
 {
+    public partial struct BuiRaster
+    {
+    }
+
+    public partial struct BuiWidgetBase
+    {
+        [NativeTypeName("float[4]")]
+        public _rect_e__FixedBuffer rect;
+
+        public float rad;
+
+        public float radi;
+
+        public int corners;
+
+        [NativeTypeName("float[4]")]
+        public _inner1_e__FixedBuffer inner1;
+
+        [NativeTypeName("float[4]")]
+        public _inner2_e__FixedBuffer inner2;
+
+        [NativeTypeName("float[4]")]
+        public _outline_e__FixedBuffer outline;
+
+        [NativeTypeName("float[4]")]
+        public _emboss_e__FixedBuffer emboss;
+
+        public int shade_horizontal;
+
+        public int alpha_checker;
+
+        public float pixelsize;
+
+        [InlineArray(4)]
+        public partial struct _rect_e__FixedBuffer
+        {
+            public float e0;
+        }
+
+        [InlineArray(4)]
+        public partial struct _inner1_e__FixedBuffer
+        {
+            public float e0;
+        }
+
+        [InlineArray(4)]
+        public partial struct _inner2_e__FixedBuffer
+        {
+            public float e0;
+        }
+
+        [InlineArray(4)]
+        public partial struct _outline_e__FixedBuffer
+        {
+            public float e0;
+        }
+
+        [InlineArray(4)]
+        public partial struct _emboss_e__FixedBuffer
+        {
+            public float e0;
+        }
+    }
+
+    public unsafe partial struct BuiPixmap
+    {
+        [NativeTypeName("const uint32_t *")]
+        public uint* px;
+
+        public int w;
+
+        public int h;
+
+        [NativeTypeName("uint64_t")]
+        public nuint key;
+
+        public int format;
+
+        [NativeTypeName("uint64_t")]
+        public nuint stream;
+    }
+
+    public partial struct BuiMeshVertex
+    {
+        public float x;
+
+        public float y;
+
+        public float u;
+
+        public float v;
+
+        [NativeTypeName("uint32_t")]
+        public uint col;
+    }
+
+    public partial struct BuiTextRun
+    {
+    }
+
+    public unsafe partial struct BuiGpuX11Window
+    {
+        public void* display;
+
+        [NativeTypeName("unsigned long")]
+        public nuint window;
+
+        [NativeTypeName("unsigned long")]
+        public nuint visual;
+    }
+
     public partial struct BKNode
     {
     }
@@ -249,7 +360,7 @@ namespace Bui.Interop
         public delegate* unmanaged[Cdecl]<void*, BKNode*, void> frame;
 
         [NativeTypeName("void (*)(void *, BKNode *, BuiRaster *, const int *)")]
-        public delegate* unmanaged[Cdecl]<void*, BKNode*, void*, int, void> draw;
+        public delegate* unmanaged[Cdecl]<void*, BKNode*, BuiRaster*, int, void> draw;
 
         [NativeTypeName("void (*)(void *, BKNode *)")]
         public delegate* unmanaged[Cdecl]<void*, BKNode*, void> free;
@@ -401,6 +512,221 @@ namespace Bui.Interop
 
     public static unsafe partial class Native
     {
+        public const uint BUI_FONT_BOLD = 1 << 0;
+        public const uint BUI_FONT_ITALIC = 1 << 1;
+        public const uint BUI_FONT_UNDERLINE = 1 << 2;
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern BuiRaster* BUI_raster_create(int width, int height);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_free(BuiRaster* r);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_begin_frame(BuiRaster* r, int width, int height);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_end_frame(BuiRaster* r);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_raster_width([NativeTypeName("const BuiRaster *")] BuiRaster* r);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_raster_height([NativeTypeName("const BuiRaster *")] BuiRaster* r);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [return: NativeTypeName("const uint32_t *")]
+        public static extern uint* BUI_raster_pixels([NativeTypeName("const BuiRaster *")] BuiRaster* r);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_raster_damage([NativeTypeName("const BuiRaster *")] BuiRaster* r, [NativeTypeName("const int (**)[4]")] int*** r_rects);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_invalidate(BuiRaster* r);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_set_alpha(BuiRaster* r, int on);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_raster_alpha([NativeTypeName("const BuiRaster *")] BuiRaster* r);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_clear(BuiRaster* r, int x, int y, int w, int h);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_set_clip(BuiRaster* r, int x, int y, int w, int h);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_fill_rect(BuiRaster* r, float x, float y, float w, float h, [NativeTypeName("const float[4]")] float* rgba);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_frame_rect(BuiRaster* r, float x, float y, float w, float h, float thickness, [NativeTypeName("const float[4]")] float* rgba);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_round_rect(BuiRaster* r, float x, float y, float w, float h, float radius, [NativeTypeName("const float[4]")] float* rgba);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_circle(BuiRaster* r, float cx, float cy, float radius, float line_width, [NativeTypeName("const float[4]")] float* rgba);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_line(BuiRaster* r, float x1, float y1, float x2, float y2, float width, [NativeTypeName("const float[4]")] float* rgba);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_ellipse(BuiRaster* r, float cx, float cy, float rx, float ry, float line_width, [NativeTypeName("const float[4]")] float* rgba);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_polygon(BuiRaster* r, [NativeTypeName("const float (*)[2]")] float** points, int n, [NativeTypeName("const float[4]")] float* rgba);
+
+        public const uint BUI_CORNER_TOP_LEFT = 1 << 0;
+        public const uint BUI_CORNER_TOP_RIGHT = 1 << 1;
+        public const uint BUI_CORNER_BOTTOM_RIGHT = 1 << 2;
+        public const uint BUI_CORNER_BOTTOM_LEFT = 1 << 3;
+        public const uint BUI_CORNER_ALL = 15;
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_widget(BuiRaster* r, float x, float y, float w, float h, float radius, int corners, [NativeTypeName("const float[4]")] float* inner_top, [NativeTypeName("const float[4]")] float* inner_bottom, [NativeTypeName("const float[4]")] float* outline, float outline_width, [NativeTypeName("const float[4]")] float* emboss);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_widget_base(BuiRaster* r, [NativeTypeName("const BuiWidgetBase *")] BuiWidgetBase* @params);
+
+        public const uint BUI_PIXMAP_ARGB = 0;
+        public const uint BUI_PIXMAP_NV12_BT601 = 1;
+        public const uint BUI_PIXMAP_NV12_BT709 = 2;
+
+        public const uint BUI_IMAGE_NEAREST = 1 << 0;
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_pixmap_read([NativeTypeName("const BuiPixmap *")] BuiPixmap* img, int y0, int rows, [NativeTypeName("uint32_t *")] uint* dst);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_image(BuiRaster* r, float x, float y, float w, float h, [NativeTypeName("const BuiPixmap *")] BuiPixmap* img, [NativeTypeName("const float[4]")] float* src, float alpha, int flags);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_image_forget([NativeTypeName("uint64_t")] nuint key);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_end_frame_region(BuiRaster* r, int x, int y, int w, int h);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_shadow(BuiRaster* r, float x, float y, float w, float h, float radius, float size, float alpha);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_triangles(BuiRaster* r, [NativeTypeName("const float (*)[2]")] float** coords, [NativeTypeName("const float (*)[4]")] float** colors, int count);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_hsv_circle(BuiRaster* r, float cx, float cy, float radius, float value);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_gradient(BuiRaster* r, float x, float y, float w, float h, [NativeTypeName("const float[4]")] float* tl, [NativeTypeName("const float[4]")] float* tr, [NativeTypeName("const float[4]")] float* br, [NativeTypeName("const float[4]")] float* bl);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_sphere(BuiRaster* r, float cx, float cy, float radius, [NativeTypeName("const float[3]")] float* light, [NativeTypeName("const float[4]")] float* rgba);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_points(BuiRaster* r, [NativeTypeName("const float (*)[2]")] float** coords, [NativeTypeName("const float (*)[4]")] float** colors, int count, float size);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_texture_create(int w, int h, [NativeTypeName("const void *")] void* rgba, int pitch);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_texture_update(int tex, int x, int y, int w, int h, [NativeTypeName("const void *")] void* rgba, int pitch);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_texture_free(int tex);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_texture_size(int tex, int* r_w, int* r_h);
+
+        public const uint BUI_MESH_INDEX32 = 1 << 0;
+        public const uint BUI_MESH_NEAREST = 1 << 1;
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_mesh(BuiRaster* r, [NativeTypeName("const BuiMeshVertex *")] BuiMeshVertex* vtx, int n_vtx, [NativeTypeName("const void *")] void* idx, int n_idx, int flags, int tex, [NativeTypeName("const float[4]")] float* clip, float ox, float oy);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_text_native();
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_set_font(BuiRaster* r, [NativeTypeName("const char *")] sbyte* family, int flags);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_raster_text(BuiRaster* r, float x, float y, [NativeTypeName("const char *")] sbyte* utf8, int len, float size, [NativeTypeName("const float[4]")] float* rgba);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_text_measure([NativeTypeName("const char *")] sbyte* family, int flags, float size, [NativeTypeName("const char *")] sbyte* utf8, int len, float* r_width);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [return: NativeTypeName("size_t")]
+        public static extern nuint BUI_raster_view_size();
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_view([NativeTypeName("const BuiRaster *")] BuiRaster* src, BuiRaster* dst, int x0, int y0, int x1, int y1);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [return: NativeTypeName("const BuiTextRun *")]
+        public static extern BuiTextRun* BUI_text_prepare([NativeTypeName("const char *")] sbyte* family, int flags, float size, [NativeTypeName("const char *")] sbyte* utf8, int len, float* r_width);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [return: NativeTypeName("unsigned int")]
+        public static extern uint BUI_text_generation();
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_text_run(BuiRaster* r, float x, float y, [NativeTypeName("const BuiTextRun *")] BuiTextRun* run, [NativeTypeName("const float[4]")] float* rgba);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [return: NativeTypeName("const uint8_t *")]
+        public static extern byte* BUI_text_run_mask([NativeTypeName("const BuiTextRun *")] BuiTextRun* run, int* r_w, int* r_h, int* r_ox, int* r_ascent);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_text_add_font([NativeTypeName("const char *")] sbyte* family, int flags, [NativeTypeName("const void *")] void* data, int len);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [return: NativeTypeName("const void *")]
+        public static extern void* BUI_text_default_font(int* r_len);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_raster_gpu_attach(BuiRaster* r, void* window_handle, int wait);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_raster_gpu_poll(BuiRaster* r);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_raster_gpu_pending([NativeTypeName("const BuiRaster *")] BuiRaster* r);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_raster_gpu_release(BuiRaster* r);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_raster_is_gpu([NativeTypeName("const BuiRaster *")] BuiRaster* r);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_gpu_set_default(int on);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_gpu_default();
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_gpu_set_slug(int on);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_gpu_slug();
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_effect_create([NativeTypeName("const char *")] sbyte* name, [NativeTypeName("const char *")] sbyte* source, int n_inputs, int n_floats);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern void BUI_effect_free(int id);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [return: NativeTypeName("const char *")]
+        public static extern sbyte* BUI_effect_error(int id);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_raster_effect(BuiRaster* r, float x, float y, float w, float h, int effect, [NativeTypeName("const int[8]")] int* inputs, [NativeTypeName("const float *")] float* floats, int n_floats);
+
+        [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        public static extern int BUI_raster_present_native(BuiRaster* r, void* window_handle, int full);
+
         [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern int BK_version();
 
@@ -1074,7 +1400,7 @@ namespace Bui.Interop
         public static extern BKNode* BK_context_root(BKContext* ctx);
 
         [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-        public static extern int BK_render(BKContext* ctx, [NativeTypeName("BuiRaster *")] void* r, int w, int h, int full);
+        public static extern int BK_render(BKContext* ctx, BuiRaster* r, int w, int h, int full);
 
         [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern int BK_configure(BKContext* ctx, int w, int h);
@@ -1212,8 +1538,7 @@ namespace Bui.Interop
         public static extern void BK_window_get_size(BKWindow* win, int* r_width, int* r_height);
 
         [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-        [return: NativeTypeName("BuiRaster *")]
-        public static extern void* BK_window_raster(BKWindow* win);
+        public static extern BuiRaster* BK_window_raster(BKWindow* win);
 
         [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern void BK_window_set_gpu(BKWindow* win, int on);
@@ -1303,7 +1628,7 @@ namespace Bui.Interop
         public const uint BK_CORNERS_ALL = 15;
 
         [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-        public static extern void BK_draw_widget([NativeTypeName("BuiRaster *")] void* r, [NativeTypeName("const BKWidgetDraw *")] BKWidgetDraw* w);
+        public static extern void BK_draw_widget(BuiRaster* r, [NativeTypeName("const BKWidgetDraw *")] BKWidgetDraw* w);
 
         [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern float BK_text_width([NativeTypeName("const char *")] sbyte* s, int len);
@@ -1329,6 +1654,18 @@ namespace Bui.Interop
         [DllImport("bui_kit", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         public static extern void BK_recent_searches_save([NativeTypeName("const char *")] sbyte* path);
 
+        [NativeTypeName("#define BUI_IMAGE_ATLAS_MAX 2047")]
+        public const int BUI_IMAGE_ATLAS_MAX = 2047;
+
+        [NativeTypeName("#define BUI_EFFECT_MAX_INPUTS 8")]
+        public const int BUI_EFFECT_MAX_INPUTS = 8;
+
+        [NativeTypeName("#define BUI_EFFECT_MAX_FLOATS 256")]
+        public const int BUI_EFFECT_MAX_FLOATS = 256;
+
+        [NativeTypeName("#define BUI_EFFECT_MAX_SOURCE 65536")]
+        public const int BUI_EFFECT_MAX_SOURCE = 65536;
+
         [NativeTypeName("#define BUI_KIT_VERSION_MAJOR 0")]
         public const int BUI_KIT_VERSION_MAJOR = 0;
 
@@ -1352,5 +1689,14 @@ namespace Bui.Interop
 
         [NativeTypeName("#define BK_EFFECT_MAX_SOURCE BUI_EFFECT_MAX_SOURCE")]
         public const int BK_EFFECT_MAX_SOURCE = 65536;
+
+        [NativeTypeName("#define BK_effect_create BUI_effect_create")]
+        public static readonly delegate*<sbyte*, sbyte*, int, int, int> BK_effect_create = &BUI_effect_create;
+
+        [NativeTypeName("#define BK_effect_free BUI_effect_free")]
+        public static readonly delegate*<int, void> BK_effect_free = &BUI_effect_free;
+
+        [NativeTypeName("#define BK_effect_error BUI_effect_error")]
+        public static readonly delegate*<int, sbyte*> BK_effect_error = &BUI_effect_error;
     }
 }

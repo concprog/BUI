@@ -7,6 +7,7 @@ BUI_kit.h
 ../../../gpu/include
 --traverse
 ../../../kit/include/BUI_kit.h
+../../../gpu/include/GPU_raster.h
 --namespace
 Bui.Interop
 --methodClassName
@@ -21,9 +22,5 @@ single-file
 unix-types
 generate-macro-bindings
 exclude-funcs-with-body
---remap
-BuiRaster=void
 --exclude
-BK_effect_create
-BK_effect_free
-BK_effect_error
+BUI_raster_sink
