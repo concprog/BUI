@@ -84,6 +84,9 @@ All notable changes to **blenderui** (BUI). The format follows
   - Examples: `examples/animation/` (a hero intro, a card grid, magnetic buttons, a marquee with drag and an equalizer).
 
 ### Changed
+- **Rust: an element's first child reserves one slot, not four.** `.child()` on an element without children
+  allocated four 136-byte slots (544 bytes) for the common single text child; a leaf now takes 136 bytes. A grid of
+  3,000 cells allocates 1.2 MB less per frame.
 - **Breaking default: videos play with sound.** A `<video>` / `BK_video` autoplays with its audio track now (it
   was silent): set `muted` (HTML attribute, `BK_video_set_muted`, `Video(muted=True)`, `Video::set_muted`) for a
   silent one. Closing a video no longer waits for its audio device (the stream is released on a thread of its

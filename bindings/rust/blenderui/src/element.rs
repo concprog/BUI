@@ -426,7 +426,12 @@ pub trait ParentElement: Sized {
     fn children_mut(&mut self) -> &mut Vec<AnyElement>;
 
     fn child(mut self, child: impl IntoElement) -> Self {
-        self.children_mut().push(child.into_any_element());
+        let children = self.children_mut();
+        // one slot for the first child: the default of four slots is 544 bytes
+        if children.capacity() == 0 {
+            children.reserve_exact(1);
+        }
+        children.push(child.into_any_element());
         self
     }
 
