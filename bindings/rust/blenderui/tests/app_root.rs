@@ -40,6 +40,33 @@ fn controls_keep_their_height_in_a_short_flex_column() {
     });
 }
 
+struct Marked;
+
+impl Render for Marked {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        app().child(div().id("top").h(px(20.0)).child("top")).child(rows())
+    }
+}
+
+#[test]
+fn a_touch_drag_scrolls_exactly_as_far_as_the_finger_went() {
+    Application::headless().run(|cx| {
+        let win = open(cx, 300.0, 200.0, Marked);
+        cx.draw(win.id);
+        cx.draw(win.id);
+        let at = cx.element_bounds(win.id, "top").unwrap().origin.y;
+        // the finger drags up by 7 px, then by 3.5: the content follows each, not a wheel notch
+        cx.simulate_scroll_px(win.id, 150.0, 100.0, -7.0);
+        cx.draw(win.id);
+        let moved = cx.element_bounds(win.id, "top").unwrap().origin.y;
+        assert!((at - moved - 7.0).abs() < 0.01, "moved {} not 7", at - moved);
+        cx.simulate_scroll_px(win.id, 150.0, 100.0, -3.5);
+        cx.draw(win.id);
+        let then = cx.element_bounds(win.id, "top").unwrap().origin.y;
+        assert!((moved - then - 3.5).abs() < 0.01, "moved {} not 3.5", moved - then);
+    });
+}
+
 struct Root;
 
 impl Render for Root {

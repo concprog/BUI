@@ -2967,7 +2967,9 @@ static BKNode *deepest(BKNode *n, int x, int y)
   return n;
 }
 
-static int in_BK_wheel(BKContext *ctx, int x, int y, int delta, int mods)
+/* `px`: the exact distance in pixels (BK_scroll_px; same sign as `delta`), 0 for a plain wheel step.
+ * Scroll containers and raw events use it, other widgets keep the step. */
+static int in_BK_wheel(BKContext *ctx, int x, int y, int delta, float px, int mods)
 {
   hide_tooltip(ctx);
   BKNode *target = hit_all(ctx, x, y);
@@ -2980,6 +2982,7 @@ static int in_BK_wheel(BKContext *ctx, int x, int y, int delta, int mods)
     }
     BKEvent e = make_event(ctx, n, x, y, mods);
     e.delta = delta;
+    e.wheel_y = px;
     if (n == target) {
       bk_event(n, BK_EV_WHEEL, mods, &e);
     }
@@ -2992,7 +2995,8 @@ static int in_BK_wheel(BKContext *ctx, int x, int y, int delta, int mods)
   /* scroll the region */
   const int view_h = ctx->win_h - ctx->header_h;
   if (ctx->content_h > view_h && !ctx->npopups) {
-    const int ns = BK_CLAMP(ctx->scroll - delta * 2 * bk_unit(), 0, ctx->content_h - view_h);
+    const int step = px != 0.0f ? (int)(px + (px > 0.0f ? 0.5f : -0.5f)) : delta * 2 * bk_unit();
+    const int ns = BK_CLAMP(ctx->scroll - step, 0, ctx->content_h - view_h);
     if (ns != ctx->scroll) {
       ctx->scroll = ns;
       ctx->layout_dirty = true;
@@ -3485,7 +3489,12 @@ int BK_motion(BKContext *ctx, int x, int y, int mods)
 
 int BK_wheel(BKContext *ctx, int x, int y, int delta, int mods)
 {
-  INPUT_ENTRY(in_BK_wheel(ctx, x, y, delta, mods));
+  INPUT_ENTRY(in_BK_wheel(ctx, x, y, delta, 0.0f, mods));
+}
+
+static int wheel_px(BKContext *ctx, int x, int y, int delta, float px, int mods)
+{
+  INPUT_ENTRY(in_BK_wheel(ctx, x, y, delta, px, mods));
 }
 
 int BK_key(BKContext *ctx, const char *text, const char *keysym, int mods)
@@ -3516,6 +3525,23 @@ int BK_scroll(BKContext *ctx, int x, int y, float dx, float dy, int mods)
   }
   if (dx != 0.0f) { /* X11's buttons 6 / 7: Shift + wheel, left = up */
     r |= BK_wheel(ctx, x, y, dx > 0.0f ? -1 : 1, mods | BK_SHIFT);
+  }
+  return r;
+}
+
+int BK_scroll_px(BKContext *ctx, int x, int y, float dx, float dy, int mods)
+{
+  const float notch = 2.0f * (float)bk_unit();
+  BKNode *t = BK_IS_CUSTOM(ctx->grab) ? ctx->grab : (ctx->modal ? NULL : hit_all(ctx, x, y));
+  if (BK_IS_CUSTOM(t) && NODE_ENABLED(t)) {
+    return BK_scroll(ctx, x, y, dx / notch, dy / notch, mods); /* custom nodes take notches */
+  }
+  int r = 0;
+  if (dy != 0.0f) {
+    r |= wheel_px(ctx, x, y, dy > 0.0f ? 1 : -1, dy, mods);
+  }
+  if (dx != 0.0f) { /* Shift + wheel, left = up, as BK_scroll */
+    r |= wheel_px(ctx, x, y, dx > 0.0f ? -1 : 1, -dx, mods | BK_SHIFT);
   }
   return r;
 }
@@ -3610,7 +3636,7 @@ static void raw_event(BKNode *n, int kind, int mods, const BKEvent *e, int butto
   }
   snprintf(buf, sizeof(buf), "%d %d", mods, button);
   if (kind == BK_EV_WHEEL && e) {
-    bk_emit(n, kind, buf, e->delta, 0);
+    bk_emit(n, kind, buf, e->delta, e->wheel_y); /* b: the exact pixels of BK_scroll_px, else 0 */
     return;
   }
   bk_emit(n, kind, buf, e ? e->x - n->x : 0, e ? e->y - n->y : 0);

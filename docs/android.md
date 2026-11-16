@@ -49,8 +49,11 @@ formats).
   (`dpi / 160`), so Rust layout and Blender's 20-unit widgets come out at a phone's size.
 - **Touch.** One finger is the pointer. A tap is a click (sent when the finger lifts in place). A drag
   that starts on a widget that drags (sliders, number fields, text, scrollbars, panels) drags it;
-  anywhere else it scrolls, and keeps going after the finger lifts (a fling, slowing down like Android's
-  own; a touch stops it). Two fingers always scroll. `BK_window_wm(win, "touch_drag", 1, 0)` gives
+  anywhere else it scrolls. The content follows the finger exactly (`BK_scroll_px`: the distance in
+  pixels, not a wheel notch per touch event) and keeps going after the finger lifts at the velocity of
+  the last 100 ms, slowing down the way UIScrollView does (0.998 per millisecond); a touch stops it. A
+  touch in the 20 dp strip at the right edge of a custom or canvas node is the app's press and drag
+  (a list's scrollbar thumb), so a huge list can be dragged to any place. Two fingers always scroll. `BK_window_wm(win, "touch_drag", 1, 0)` gives
   the drags of custom and canvas nodes to the app instead (a paint app); by default they scroll.
 - **Keyboard.** The soft keyboard opens while a text field or area is being edited (through the input
   method manager: the activity's view is not a text editor, so `ANativeActivity_showSoftInput` is

@@ -37,10 +37,14 @@
 
 #  define MAX_TIMERS 16
 #  define TOUCH_SLOP_DP 8.0f
-/* fling: slowest and fastest (dp/s) and how fast it slows down (1/s), close to Android's own */
-#  define FLING_MIN_DP 50.0f
+/* fling: slowest and fastest (dp/s) and how fast it slows down (1/s): UIScrollView's normal
+ * deceleration, 0.998 per millisecond, is exp(-2.0) per second */
+#  define FLING_MIN_DP 40.0f
 #  define FLING_MAX_DP 8000.0f
-#  define FLING_FRICTION 2.6f
+#  define FLING_FRICTION 2.0f
+#  define TRAIL 12 /* touches kept for the fling's velocity */
+/* a touch this close to the right edge of a custom node is the app's: its scrollbar */
+#  define EDGE_DP 20.0f
 #  define WINDOW_FORMAT_RGBX 0x2
 
 typedef struct Timer {
@@ -48,6 +52,11 @@ typedef struct Timer {
   int id;
   int user; /* BK_window_timer (on_timer) rather than the kit's own (BK_timer) */
 } Timer;
+
+typedef struct Sample { /* one touch of a scroll: when and where */
+  double t;
+  float x, y;
+} Sample;
 
 struct BKWindow {
   BKContext *ctx;
@@ -71,9 +80,11 @@ struct BKWindow {
   int pending_tap; /* a finger is down on something that does not drag: a click if it lifts in place */
   int drag_custom; /* custom and canvas nodes take drags (BK_window_wm "touch_drag"); else they scroll */
   float down_x, down_y, scroll_x, scroll_y;
-  /* momentum: the finger's velocity (px/s) while one finger scrolls, and the fling that goes on after */
+  /* momentum: the last touches of a one-finger scroll, and the fling (velocity in px/s) after it */
+  Sample trail[TRAIL];
+  int trail_n;
   float vel_x, vel_y;
-  double move_ms, fling_ms;
+  double fling_ms;
   int fling;
 };
 
@@ -487,6 +498,19 @@ static int drags(const BKWindow *win, const BKNode *n)
   return 0;
 }
 
+/* A touch in the strip at the right edge of a custom or canvas node: the app draws its scrollbar
+ * there (a list's thumb), so the touch is its press and drag, not a scroll. */
+static int on_edge(const BKWindow *win, const BKNode *n, float x)
+{
+  const char *t = n ? BK_node_type(n) : "";
+  if (strcmp(t, "custom") != 0 && strcmp(t, "canvas") != 0) {
+    return 0;
+  }
+  int r[4];
+  BK_node_rect(n, r);
+  return x >= (float)(r[0] + r[2]) - EDGE_DP * win->density;
+}
+
 static void pointer_up(BKWindow *win, float x, float y)
 {
   if (win->pointer_down) {
@@ -510,9 +534,9 @@ static void cancel_press(BKWindow *win)
 /* Scrolls the content under (x, y) by (dx, dy) pixels. */
 static void scroll_px(BKWindow *win, float x, float y, float dx, float dy)
 {
-  const float notch = (float)BK_unit() * 2.0f; /* px per wheel step */
   BK_motion(win->ctx, (int)x, (int)y, 0); /* a page that scrolls under the pointer needs to know it */
-  BK_scroll(win->ctx, (int)x, (int)y, dx / notch, dy / notch, 0);
+  BK_scroll_px(win->ctx, (int)x, (int)y, dx, dy, 0); /* the content follows the finger exactly */
+  BK_motion(win->ctx, -1, -1, 0); /* a scrolling touch is no hover: nothing under it lights up */
 }
 
 static void scroll_by(BKWindow *win, float x, float y, float *last_x, float *last_y)
@@ -522,29 +546,45 @@ static void scroll_by(BKWindow *win, float x, float y, float *last_x, float *las
   *last_y = y;
 }
 
-/* A one-finger scroll to (x, y): the finger's velocity is kept (smoothed) for the fling. */
+/* A one-finger scroll to (x, y): the touch is recorded for the fling's velocity. */
 static void scroll_finger(BKWindow *win, float x, float y)
 {
   const double t = now_ms();
-  const float dt = (float)(t - win->move_ms) * 0.001f;
-  if (win->move_ms != 0.0 && dt > 0.0f) {
-    win->vel_x = 0.5f * win->vel_x + 0.5f * (x - win->scroll_x) / dt;
-    win->vel_y = 0.5f * win->vel_y + 0.5f * (y - win->scroll_y) / dt;
-  }
-  win->move_ms = t;
+  Sample *s = &win->trail[win->trail_n++ % TRAIL];
+  s->t = t;
+  s->x = x;
+  s->y = y;
   scroll_by(win, x, y, &win->scroll_x, &win->scroll_y);
 }
 
-/* The finger lifted while scrolling: carry on at its velocity, slowing down (Android's feel). */
+/* The finger lifted while scrolling: carry on at its velocity, over the last 100 ms of touches
+ * (a finger that rested before lifting does not fling), slowing down the way UIScrollView does. */
 static void fling_start(BKWindow *win)
 {
   const float max = FLING_MAX_DP * win->density, min = FLING_MIN_DP * win->density;
   const double t = now_ms();
-  float vx = win->vel_x, vy = win->vel_y;
+  const int n = win->trail_n < TRAIL ? win->trail_n : TRAIL;
   win->vel_x = win->vel_y = 0.0f;
-  if (win->move_ms == 0.0 || t - win->move_ms > 80.0) { /* the finger rested: no fling */
+  if (n < 2) {
     return;
   }
+  const Sample last = win->trail[(win->trail_n - 1) % TRAIL];
+  if (t - last.t > 80.0) { /* the finger rested: no fling */
+    return;
+  }
+  Sample first = last;
+  for (int i = 2; i <= n; i++) { /* the oldest touch within 100 ms of the last */
+    const Sample s = win->trail[(win->trail_n - i) % TRAIL];
+    if (last.t - s.t > 100.0) {
+      break;
+    }
+    first = s;
+  }
+  const float dt = (float)(last.t - first.t) * 0.001f;
+  if (dt <= 0.0f) {
+    return;
+  }
+  float vx = (last.x - first.x) / dt, vy = (last.y - first.y) / dt;
   vx = vx > max ? max : (vx < -max ? -max : vx);
   vy = vy > max ? max : (vy < -max ? -max : vy);
   if (vx * vx + vy * vy >= min * min) {
@@ -585,9 +625,10 @@ static int32_t on_touch(BKWindow *win, AInputEvent *e)
       win->down_y = win->scroll_y = y;
       win->scrolling = win->fling = 0; /* a touch stops a fling */
       win->vel_x = win->vel_y = 0.0f;
-      win->move_ms = 0.0;
+      win->trail_n = 1; /* the velocity of a scroll counts from the touch down */
+      win->trail[0] = (Sample){now_ms(), x, y};
       BK_motion(win->ctx, (int)x, (int)y, 0);
-      win->draggable = drags(win, BK_hover(win->ctx));
+      win->draggable = drags(win, BK_hover(win->ctx)) || on_edge(win, BK_hover(win->ctx), x);
       if (win->draggable) { /* a slider, a text field ...: it gets the press now */
         BK_press(win->ctx, (int)x, (int)y, 0);
         win->pointer_down = 1;
@@ -619,7 +660,6 @@ static int32_t on_touch(BKWindow *win, AInputEvent *e)
         if (dx * dx + dy * dy > slop * slop) { /* not a click: scroll, from where the finger went down */
           win->pending_tap = 0;
           win->scrolling = 1;
-          win->move_ms = now_ms() - 16.0; /* one frame ago: a first velocity for a swipe of few events */
           scroll_finger(win, x, y);
         }
       }

@@ -1336,7 +1336,8 @@ static int scroll_wheel(BKNode *n, BKEvent *e)
     return 0;
   }
   const int old = n->scroll;
-  scroll_set(n, n->scroll - e->delta * u() * 2);
+  const float px = e->wheel_y; /* BK_scroll_px: the exact distance, else a step */
+  scroll_set(n, n->scroll - (px != 0.0f ? (int)(px + (px > 0.0f ? 0.5f : -0.5f)) : e->delta * u() * 2));
   return n->scroll != old;
 }
 

@@ -766,6 +766,11 @@ int BK_wheel(BKContext *ctx, int x, int y, int delta, int mods);
  * dx > 0 right, dy > 0 up. Custom nodes receive the deltas as they are;
  * other widgets get BK_wheel steps (horizontal ones as Shift + wheel). */
 int BK_scroll(BKContext *ctx, int x, int y, float dx, float dy, int mods);
+
+/* Like BK_scroll, in pixels: dx / dy are the distance the content moves (touch drags and flings),
+ * so scroll containers follow it exactly instead of stepping a notch per event. Raw wheel events
+ * (BK_EV_WHEEL) carry the pixels in `b`. */
+int BK_scroll_px(BKContext *ctx, int x, int y, float dx, float dy, int mods);
 int BK_key(BKContext *ctx, const char *text, const char *keysym, int mods);
 int BK_context_menu(BKContext *ctx, int x, int y, int mods);
 

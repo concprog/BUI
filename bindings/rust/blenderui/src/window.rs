@@ -850,6 +850,14 @@ impl App {
         });
     }
 
+    /// A touch drag at (x, y): the content moves `dy` logical pixels down (negative: up), exactly.
+    pub fn simulate_scroll_px(&mut self, window: WindowId, x: f32, y: f32, dy: f32) {
+        self.simulate_mouse_move(window, x, y);
+        self.input(window, |ctx, s| unsafe {
+            sys::BK_scroll_px(ctx, (x * s) as c_int, (y * s) as c_int, 0.0, dy * s, 0);
+        });
+    }
+
     /// Type text / press a key (`keysym` as in Tk: "Return", "BackSpace", "a" ...).
     pub fn simulate_key(&mut self, window: WindowId, text: &str, keysym: &str) {
         let (t, k) = (CString::new(text).unwrap_or_default(), CString::new(keysym).unwrap_or_default());
@@ -1853,12 +1861,14 @@ impl Window {
             sys::BK_EV_WHEEL => {
                 let (modifiers, _) = self.pointer_event(&ev.text);
                 let (px_, py_) = self.pointer;
-                let e = ScrollWheelEvent { position: point(px(px_), px(py_)), delta: ev.a as f32, modifiers };
+                // `b`: the exact device pixels of a touch drag (BK_scroll_px), 0 for a wheel notch
+                let pixels = (ev.b != 0.0).then(|| ev.b as f32 / self.scale);
+                let e = ScrollWheelEvent { position: point(px(px_), px(py_)), delta: ev.a as f32, pixels, modifiers };
                 let path = self.path_at(px_, py_);
                 if let Some(&deepest) = path.last() {
                     self.emit(app, deepest, &e, |l| l.scroll.iter().collect());
                 }
-                self.scroll_by(&path, -(ev.a as f32) * 40.0, modifiers.shift);
+                self.scroll_by(&path, -pixels.unwrap_or(ev.a as f32 * 40.0), modifiers.shift);
             }
             sys::BK_EV_KEY | sys::BK_EV_KEYRELEASE => {
                 let mut parts = ev.text.splitn(2, '\t');

@@ -415,6 +415,8 @@ unsafe extern "C" {
     pub fn BK_release(ctx: *mut BKContext, x: c_int, y: c_int, mods: c_int) -> c_int;
     pub fn BK_motion(ctx: *mut BKContext, x: c_int, y: c_int, mods: c_int) -> c_int;
     pub fn BK_wheel(ctx: *mut BKContext, x: c_int, y: c_int, delta: c_int, mods: c_int) -> c_int;
+    pub fn BK_scroll_px(ctx: *mut BKContext, x: c_int, y: c_int, dx: f32, dy: f32, mods: c_int)
+        -> c_int;
     pub fn BK_key(ctx: *mut BKContext, text: *const c_char, keysym: *const c_char, mods: c_int)
         -> c_int;
     pub fn BK_key_release(ctx: *mut BKContext, keysym: *const c_char, mods: c_int) -> c_int;
