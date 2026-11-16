@@ -54,6 +54,22 @@ namespace blender {
 #  pragma fenv_access(on)
 #endif
 
+#ifndef FE_DIVBYZERO
+/* wasi-libc (WebAssembly) has no floating-point exception flags: nothing is raised or tested, so there
+ * `1 / 0` is infinity and `sqrt(-1)` is NaN instead of an expression error. */
+#  define FE_DIVBYZERO 0
+#  define FE_INVALID 0
+#  define FE_ALL_EXCEPT 0
+static inline int feclearexcept(int /*flags*/)
+{
+  return 0;
+}
+static inline int fetestexcept(int /*flags*/)
+{
+  return 0;
+}
+#endif
+
 /* -------------------------------------------------------------------- */
 /** \name Internal Types
  * \{ */

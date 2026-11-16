@@ -293,12 +293,8 @@ impl Application {
         Application { headless: true, gpu: None, slug: None, keep_alive: false, theme: None }
     }
 
-    /// Run `f`, then the event loop until every window is closed.
-    pub fn run(self, f: impl FnOnce(&mut App)) {
-        // the C kit keeps global state: one application at a time per process
-        static KIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = KIT.lock().unwrap_or_else(|e| e.into_inner());
-        let headless = self.headless || unsafe { sys::BK_window_supported() } == 0;
+    /// The kit's global settings for this application (renderer, text, theme, off-screen scale).
+    fn configure(&self, headless: bool) {
         if let Some(on) = self.gpu {
             unsafe { sys::BUI_gpu_set_default(on as c_int) };
         }
@@ -315,6 +311,29 @@ impl Application {
                 unsafe { sys::BK_set_scale(s) };
             }
         }
+    }
+
+    /// Run `f` and hand back the application, off-screen and with a real clock, for a host that has no
+    /// event loop for BUI to run (a web page, which calls back on every animation frame): it feeds the
+    /// events (`simulate_*`) and takes the frames ([`App::frame_if_needed`]). The kit keeps global
+    /// state: one application per process, and the host must not start a second.
+    pub fn start(self, f: impl FnOnce(&mut App)) -> App {
+        self.configure(true);
+        let mut app = App::create(true);
+        // a page's animations follow its clock, not the virtual one tests step by hand
+        crate::motion::start_clock(true);
+        f(&mut app);
+        app.flush();
+        app
+    }
+
+    /// Run `f`, then the event loop until every window is closed.
+    pub fn run(self, f: impl FnOnce(&mut App)) {
+        // the C kit keeps global state: one application at a time per process
+        static KIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = KIT.lock().unwrap_or_else(|e| e.into_inner());
+        let headless = self.headless || unsafe { sys::BK_window_supported() } == 0;
+        self.configure(headless);
         let mut app = App::create(headless);
         f(&mut app);
         app.flush();
@@ -519,6 +538,42 @@ impl App {
     pub fn run_pending(&mut self) {
         self.drain();
         self.flush();
+    }
+
+    /// The windows that are open.
+    pub fn window_ids(&self) -> Vec<WindowId> {
+        self.windows.iter().enumerate().filter(|(_, w)| w.as_deref().is_some_and(|w| !w.closed)).map(|(i, _)| WindowId(i)).collect()
+    }
+
+    /// The window's next frame, when something changed in it or it is animating (else `None`: nothing to
+    /// show): the work a host does on each animation frame ([`Application::start`]).
+    pub fn frame_if_needed(&mut self, id: WindowId) -> Option<(usize, usize, Vec<u32>)> {
+        self.run_pending();
+        let ctx = self.windows.get(id.0).and_then(|w| w.as_deref()).map(|w| w.ctx)?;
+        // SAFETY: the window's own context, alive while the window is
+        let due = unsafe { sys::BK_needs_render(ctx) != 0 || sys::BK_animating(ctx) != 0 };
+        due.then(|| self.draw(id))
+    }
+
+    /// Resize an off-screen window to `width` x `height` device pixels (a host whose canvas changed size).
+    pub fn resize_window(&mut self, id: WindowId, width: usize, height: usize) {
+        let Some(w) = self.windows.get_mut(id.0).and_then(|w| w.as_deref_mut()) else {
+            return;
+        };
+        let phys = (width as i32, height as i32);
+        if phys == w.phys || phys.0 <= 0 || phys.1 <= 0 {
+            return;
+        }
+        w.phys = phys;
+        w.dirty = true;
+        // SAFETY: the raster was made for the old size and belongs to this window; `draw` makes a new one
+        unsafe {
+            if !w.raster.is_null() {
+                sys::BUI_raster_free(w.raster);
+                w.raster = std::ptr::null_mut();
+            }
+            sys::BK_node_relayout(w.root);
+        }
     }
 
     /// Call `f` whenever the user closes a window.
