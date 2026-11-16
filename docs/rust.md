@@ -268,6 +268,14 @@ div().styled().child(div().attr("styled", "false"))   // opt a subtree back out
 Your own CSS still wins over either set of defaults. From JavaScript use
 `el.setAttribute('styled', '')`, or `<div styled>` in JSX.
 
+**An app's root: `app()`.** A `body` that is `styled`, has no margin, is as tall as
+the window and scrolls when its content is taller (the window is not a scrolling
+document, so an overflowing page needs it, or a scroll container of a definite
+height such as `.css("height", "100vh")`). `app().child(h1().child("Title"))`.
+Outside `styled`, a `button()` / `input()` is a browser-look control and ignores
+`.bg()`. A control keeps its own height in a flex column that is shorter than its
+content (the column scrolls or overflows, it never squashes the control).
+
 **Dark or light.** `styled` follows Blender's theme, which is Dark by default.
 Switch every window to Blender's Light preset with
 `Application::new().theme("light")`, `blenderui::set_theme("light")` at run

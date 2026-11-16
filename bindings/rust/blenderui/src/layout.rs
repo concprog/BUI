@@ -1853,6 +1853,11 @@ impl<'a> Builder<'a> {
                 }
                 if s.size.height == Dimension::auto() {
                     s.size.height = Dimension::length(h);
+                    // a control's automatic minimum height is its own: a flex column with a
+                    // definite height must scroll or overflow, never squash it to nothing
+                    if s.min_size.height == LengthPercentageAuto::auto() {
+                        s.min_size.height = LengthPercentageAuto::length(h);
+                    }
                 }
                 return self.leaf(i, s);
             }
