@@ -256,17 +256,16 @@ static void draw(BKWindow *win)
   win->frames++;
 }
 
+static void ime_set(int show);
+
 static void sync_keyboard(BKWindow *win)
 {
   BKImeState st;
   if (!BK_ime_state(win->ctx, &st)) {
     return;
   }
-  if (st.enabled && !win->ime_on) {
-    ANativeActivity_showSoftInput(g_app->activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED);
-  }
-  else if (!st.enabled && win->ime_on) {
-    ANativeActivity_hideSoftInput(g_app->activity, 0);
+  if (st.enabled != win->ime_on) {
+    ime_set(st.enabled);
   }
   win->ime_on = st.enabled;
 }
@@ -293,16 +292,82 @@ static int mods_of(int32_t meta)
 
 /* The character a key press types (KeyEvent.getUnicodeChar through JNI: NativeActivity gives the key
  * code and meta state, the layout is the framework's). */
-static int unicode_of(int32_t code, int32_t meta)
+static JNIEnv *jni_enter(int *attached)
 {
   JavaVM *vm = g_app->activity->vm;
   JNIEnv *env = NULL;
-  int attached = 0;
+  *attached = 0;
   if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
     if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) {
-      return 0;
+      return NULL;
     }
-    attached = 1;
+    *attached = 1;
+  }
+  return env;
+}
+
+static void jni_leave(JNIEnv *env, int attached)
+{
+  if ((*env)->ExceptionCheck(env)) {
+    (*env)->ExceptionClear(env);
+  }
+  if (attached) {
+    (*g_app->activity->vm)->DetachCurrentThread(g_app->activity->vm);
+  }
+}
+
+/* Shows or hides the soft keyboard. ANativeActivity_showSoftInput does nothing on current Android
+ * ("view is not served": NativeActivity's view is not a text editor), so the input method manager is
+ * asked directly: toggleSoftInput(SHOW_FORCED) opens it without a served view. */
+static void ime_set(int show)
+{
+  int attached;
+  JNIEnv *env = jni_enter(&attached);
+  if (!env) {
+    return;
+  }
+  jobject act = g_app->activity->clazz;
+  jclass ac = (*env)->GetObjectClass(env, act);
+  jmethodID gss = (*env)->GetMethodID(env, ac, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
+  jstring name = (*env)->NewStringUTF(env, "input_method");
+  jobject imm = gss ? (*env)->CallObjectMethod(env, act, gss, name) : NULL;
+  if (imm) {
+    jclass ic = (*env)->GetObjectClass(env, imm);
+    if (show) {
+      jmethodID toggle = (*env)->GetMethodID(env, ic, "toggleSoftInput", "(II)V");
+      if (toggle) {
+        (*env)->CallVoidMethod(env, imm, toggle, 2 /* SHOW_FORCED */, 0);
+      }
+    }
+    else {
+      jmethodID hide = (*env)->GetMethodID(env, ic, "hideSoftInputFromWindow", "(Landroid/os/IBinder;I)Z");
+      jmethodID gw = (*env)->GetMethodID(env, ac, "getWindow", "()Landroid/view/Window;");
+      jobject window = gw ? (*env)->CallObjectMethod(env, act, gw) : NULL;
+      jobject deco = NULL, token = NULL;
+      if (window) {
+        jclass wc = (*env)->GetObjectClass(env, window);
+        jmethodID gd = (*env)->GetMethodID(env, wc, "getDecorView", "()Landroid/view/View;");
+        deco = gd ? (*env)->CallObjectMethod(env, window, gd) : NULL;
+      }
+      if (deco) {
+        jclass vc = (*env)->GetObjectClass(env, deco);
+        jmethodID gt = (*env)->GetMethodID(env, vc, "getWindowToken", "()Landroid/os/IBinder;");
+        token = gt ? (*env)->CallObjectMethod(env, deco, gt) : NULL;
+      }
+      if (hide && token) {
+        (*env)->CallBooleanMethod(env, imm, hide, token, 0);
+      }
+    }
+  }
+  jni_leave(env, attached);
+}
+
+static int unicode_of(int32_t code, int32_t meta)
+{
+  int attached;
+  JNIEnv *env = jni_enter(&attached);
+  if (!env) {
+    return 0;
   }
   int ch = 0;
   jclass cls = (*env)->FindClass(env, "android/view/KeyEvent");
@@ -318,12 +383,7 @@ static int unicode_of(int32_t code, int32_t meta)
     }
     (*env)->DeleteLocalRef(env, cls);
   }
-  if ((*env)->ExceptionCheck(env)) {
-    (*env)->ExceptionClear(env);
-  }
-  if (attached) {
-    (*vm)->DetachCurrentThread(vm);
-  }
+  jni_leave(env, attached);
   return ch;
 }
 

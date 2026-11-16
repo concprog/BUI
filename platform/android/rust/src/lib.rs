@@ -12,25 +12,28 @@ impl Render for Demo {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut rows = div().flex().flex_col().gap_1();
         for i in 1..=30 {
-            rows = rows.child(div().child(format!("Row {i}")));
+            rows = rows.child(div().px_3().py_2().child(format!("Row {i}")));
         }
-        div()
+        body()
             .id("root")
+            .styled() // Blender's theme for this subtree: colors, buttons, inputs
+            .m_0()
             .css("height", "100vh") // a definite height: this is the scroll container
             .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap_2()
             .p_4()
-            .child(h1().child("BUI + Rust on Android"))
-            .child(button().child(format!("Tapped {} times", self.taps)).on_click(cx.listener(
-                |this, _, _, cx| {
+            // the scroll container is a flex column: its children keep their size and it scrolls
+            .child(h1().flex_shrink_0().child("BUI + Rust on Android"))
+            .child(button().flex_shrink_0().child(format!("Tapped {} times", self.taps)).on_click(
+                cx.listener(|this, _, _, cx| {
                     this.taps += 1;
                     cx.notify();
-                },
-            )))
-            .child(input().attr("placeholder", "tap to type"))
-            .child(rows)
+                }),
+            ))
+            .child(input().flex_shrink_0().attr("placeholder", "tap to type"))
+            .child(rows.flex_shrink_0())
     }
 }
 
