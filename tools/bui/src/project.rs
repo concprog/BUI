@@ -136,7 +136,7 @@ fn guess(dir: &Path) -> Option<Meta> {
         };
         let language = if dir.join("tsconfig.json").exists() { Language::TypeScript } else { Language::JavaScript };
         Stack::Js(JsApp { framework, language, pm })
-    } else if read(dir, "pyproject.toml").contains("blenderui") {
+    } else if depends_on_blenderui(&read(dir, "pyproject.toml")) {
         Stack::Python(PythonApp { api: PyApi::Components })
     } else if read(dir, "main.lua").contains("require(\"bui\")") || read(dir, "main.lua").contains("require('bui')") {
         Stack::Lua(LuaApp {})
@@ -146,6 +146,11 @@ fn guess(dir: &Path) -> Option<Meta> {
         return None;
     };
     Some(Meta { name, stack })
+}
+
+/// A `pyproject.toml` that uses blenderui (not the one of blenderui itself, which is named that).
+fn depends_on_blenderui(pyproject: &str) -> bool {
+    pyproject.contains("blenderui") && !pyproject.contains("name = \"blenderui\"")
 }
 
 pub fn require(from: &Path) -> Result<Project> {
