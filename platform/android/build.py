@@ -7,6 +7,7 @@
     python platform/android/build.py --lua examples/android    # a Lua app: the folder's *.lua are assets/
     python platform/android/build.py --rust platform/android/rust   # a Rust app (a staticlib crate)
     python platform/android/build.py --js app.jsx        # a JavaScript app (React, Vue, Svelte): QuickJS + the bundle
+    python platform/android/build.py --imgui [app.cpp]   # a Dear ImGui app (C++; the default is the demo in imgui_app.cpp)
 
 ANDROID_HOME / ANDROID_SDK_ROOT (else the usual per-user SDK folder) locates the SDK; the NDK is
 the newest one in it (or ANDROID_NDK_HOME).
@@ -149,6 +150,7 @@ def main():
     ap.add_argument("--rust", metavar="CRATE", help="a Rust app: a staticlib crate that defines bui_app_main (platform/android/rust)")
     ap.add_argument("--lua", metavar="DIR", help="a Lua app: DIR/main.lua returns the root node; every *.lua in DIR is an asset")
     ap.add_argument("--js", metavar="ENTRY", help="a JavaScript app: ENTRY (.js, .jsx, .vue, .svelte) is bundled (bindings/node: bui bundle, needs Bun) and run on QuickJS")
+    ap.add_argument("--imgui", nargs="?", const="", metavar="FILE", help="a Dear ImGui app: a C++ file that defines bui_app_main (default: platform/android/imgui_app.cpp)")
     a = ap.parse_args()
     app_args, assets = ["-DBUI_ANDROID_APP=demo", "-DBUI_BUILD_LUA_BINDINGS=OFF"], {}
     rust = a.rust
@@ -162,6 +164,10 @@ def main():
                     full = os.path.join(dirpath, f)
                     assets[os.path.relpath(full, a.lua).replace(os.sep, "/")] = full
         assets["bui.lua"] = os.path.join(ROOT, "bindings", "lua", "bui.lua")  # the wrapper `require("bui")` finds
+    if a.imgui is not None:
+        app_args = ["-DBUI_ANDROID_APP=imgui", "-DBUI_BUILD_IMGUI=ON", "-DBUI_BUILD_LUA_BINDINGS=OFF"]
+        if a.imgui:
+            app_args.append("-DBUI_ANDROID_IMGUI_SRC=" + os.path.abspath(a.imgui).replace("\\", "/"))
     if a.js:
         rust = os.path.join(ROOT, "platform", "android", "js")
         main_js = os.path.join(a.out, "main.js")

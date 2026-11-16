@@ -15,6 +15,7 @@ python platform/android/build.py --install             # adb install -r, then st
 python platform/android/build.py --lua examples/android        # a Lua app (the folder's *.lua are assets)
 python platform/android/build.py --rust platform/android/rust  # a Rust app (a staticlib crate)
 python platform/android/build.py --js app.jsx                  # a JavaScript app: React, Vue or Svelte on QuickJS
+python platform/android/build.py --imgui [app.cpp]             # a Dear ImGui app (C++)
 ```
 
 Needs the Android SDK (`ANDROID_HOME`; build-tools, platform 34), an NDK (the newest in the SDK, or
@@ -29,6 +30,7 @@ Needs the Android SDK (`ANDROID_HOME`; build-tools, platform 34), an NDK (the ne
 | **Rust** | an ordinary `blenderui` app in a `staticlib` crate with `#[unsafe(no_mangle)] pub extern "C" fn bui_app_main() { Application::new().run(...) }` (`platform/android/rust`) | `--rust CRATE` |
 | **Lua** | an ordinary BUI Lua script, `assets/main.lua`, ending in `bui.open{root=...}` or `bui.Window(...)` + `bui.run()`; `require` finds your other `.lua` files and `bui.lua` in the APK | `--lua DIR` |
 | **JavaScript** | an ordinary `@blender-ui/native`, React, Vue or Svelte app (`.js`, `.jsx`, `.vue`, `.svelte`); it is bundled into one script (`bui bundle`, needs Bun) and runs on QuickJS (`bindings/rust/blenderui-qjs`, the engine `bui build` embeds), as `assets/main.js`; `console.log` goes to logcat (tag `bui-js`) | `--js ENTRY` |
+| **Dear ImGui** | an ordinary ImGui frame function in a C++ file with `bui_app_main` (`ImGui_ImplBUI_CreateApp` / `RunApp`; `platform/android/imgui_app.cpp`), plus `BK_window_wm(win, "touch_drag", 1, 0)` so a drag is ImGui's (sliders, window moves) | `--imgui [FILE]` |
 | **C** | `void bui_app_main(void)`: build nodes, `BK_context_new`, `BK_window_new`, `BK_window_run` (`platform/android/demo.c`) | the default |
 
 Python, Qt, tkinter and D are not available on Android: each needs its

@@ -5,9 +5,17 @@
 
 /* The app: build a UI, open a window (BK_window_new) and run it (BK_window_run), exactly as on a
  * desktop. Returns when the window is closed. C, Lua and Rust apps each define it. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void bui_app_main(void);
 
 /* Registers the system's fonts (Roboto, Droid Sans Mono): nothing is embedded in the build. */
 void bui_android_fonts(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

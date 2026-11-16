@@ -3,7 +3,7 @@ title: Android
 description: Run BUI on a phone from C, Lua or Rust with the same code as on a desktop. One NativeActivity, no Java and no Gradle, damage-driven software rendering, touch that scrolls, the soft keyboard, and an APK of about 1 to 2 MB.
 section: Concepts
 order: 69
-sources: ["kit/intern/kit_window_android.c", "platform/android/bui_android.c", "platform/android/bui_app.h", "platform/android/fonts.c", "platform/android/demo.c", "platform/android/lua_app.c", "platform/android/rust/src/lib.rs", "platform/android/js/src/lib.rs", "bindings/rust/blenderui-qjs/src/lib.rs", "platform/android/CMakeLists.txt", "platform/android/AndroidManifest.xml", "platform/android/build.py", "examples/android/main.lua", "docs/android.md"]
+sources: ["kit/intern/kit_window_android.c", "platform/android/bui_android.c", "platform/android/bui_app.h", "platform/android/fonts.c", "platform/android/demo.c", "platform/android/lua_app.c", "platform/android/rust/src/lib.rs", "platform/android/js/src/lib.rs", "platform/android/imgui_app.cpp", "bindings/rust/blenderui-qjs/src/lib.rs", "platform/android/CMakeLists.txt", "platform/android/AndroidManifest.xml", "platform/android/build.py", "examples/android/main.lua", "docs/android.md"]
 ---
 
 On Android the kit's window is the activity's surface (`kit/intern/kit_window_android.c`, which implements `BK_window_*` like the Windows and Linux hosts do). An app opens a window and runs it exactly as on a desktop, so Rust, Lua and C apps are the code they would be anywhere else. Nothing changes for other platforms: the Android code is in `platform/android`, the kit's Android-only branches and `if(ANDROID)` blocks.
@@ -13,6 +13,7 @@ python platform/android/build.py                       # the C demo: arm64-v8a +
 python platform/android/build.py --lua examples/android        # a Lua app
 python platform/android/build.py --rust platform/android/rust  # a Rust app
 python platform/android/build.py --js app.jsx          # JavaScript: React, Vue, Svelte
+python platform/android/build.py --imgui                  # Dear ImGui (C++)
 python platform/android/build.py --install             # install and start it
 ```
 
@@ -60,6 +61,21 @@ render(<Counter />, { title: "App" })
 ```
 
 `build.py --js app.jsx` bundles it (with `bui bundle`, which needs Bun) and QuickJS runs it as `assets/main.js`, as `bui build` does on a desktop. React, Vue (`.vue`) and Svelte (`.svelte`) all run; `console.log` goes to logcat (tag `bui-js`). The APK is about 2.8 MB (arm64-v8a: the 5.6 MB library plus the bundle; React is 200 KB).
+</Tab>
+<Tab label="Dear ImGui">
+
+```cpp
+static void frame(void *) { ImGui::ShowDemoWindow(); }
+
+void bui_app_main(void) {
+  ImGui::CreateContext();
+  ImGui_ImplBUI_App *app = ImGui_ImplBUI_CreateApp("App", 360, 720, frame, nullptr);
+  BK_window_wm(ImGui_ImplBUI_AppWindow(app), "touch_drag", 1, 0);  // a drag is ImGui's
+  ImGui_ImplBUI_RunApp(app);
+}
+```
+
+`build.py --imgui app.cpp` (no file: the demo in `platform/android/imgui_app.cpp`). About 1.8 MB.
 </Tab>
 <Tab label="C">
 
