@@ -7,6 +7,7 @@ use std::sync::Arc;
 use taffy::prelude::*;
 
 use crate::color::Rgba;
+use crate::effects::{Side, Tile};
 use crate::geometry::{rect, Bounds, Length, Units};
 use crate::shader::ShaderEffect;
 use crate::layout::{BoxNode, Content, Frame, Key, Replaced, StyleStore};
@@ -417,7 +418,7 @@ impl Painter {
             let (start, end) = self.ranges[i];
             let n = &frame.nodes[i];
             let at = self.items.len();
-            if n.visible && n.opacity > 0.0 && (self.sel.is_some() || !offscreen(frame, styles, i, vp)) {
+            if n.visible && n.opacity > 0.0 && self.in_view(frame, styles, i, vp) {
                 self.opacity = n.opacity;
                 self.clip = n.clip;
                 paint_node(frame, styles, tc, i, self, vp, app);
@@ -437,6 +438,11 @@ impl Painter {
         self.clip = None;
         self.partial = true;
         true
+    }
+
+    /// Whether box `i` is painted: a selection paints everything, else only what the view shows.
+    fn in_view(&self, frame: &Frame, styles: &StyleStore, i: usize, vp: (f32, f32)) -> bool {
+        self.sel.is_some() || !offscreen(frame, styles, i, vp)
     }
 
     fn push(&mut self, kind: Kind, coords: Coords, fill: Rgba) {
@@ -857,7 +863,7 @@ pub(crate) fn paint_frame(frame: &Frame, styles: &StyleStore, tc: &mut TextCache
                 p.note_widget(n.key, n.clip.map_or(n.bounds, |c| c.intersect(&n.bounds)));
             }
             let start = p.items.len() as u32;
-            if p.sel.is_some() || !offscreen(frame, styles, i, vp) {
+            if p.in_view(frame, styles, i, vp) {
                 paint_node(frame, styles, tc, i, p, vp, app);
             }
             p.ranges[i] = (start, p.items.len() as u32);
@@ -963,43 +969,43 @@ fn paint_list(cx: &mut LayerCx, list: &[usize], p: &mut Painter, root: Option<us
 
 /// How far a box paints past its bounds: its outline, shadows and border image.
 fn paint_reach(c: &Computed) -> f32 {
-    let mut grow = c.outline.0 + c.outline.2.max(0.0);
-    for sh in c.shadows.iter().filter(|s| !s.inset) {
-        grow = grow.max(sh.x.abs().max(sh.y.abs()) + sh.blur + sh.spread.max(0.0));
-    }
-    if let Some(bi) = c.effects.as_ref().and_then(|e| e.border_image.as_ref()) {
-        for o in bi.outset {
-            if let crate::effects::Side::Len(Length::Px(v)) = o {
-                grow = grow.max(v);
-            }
-        }
-    }
-    grow
+    let outline = c.outline.0 + c.outline.2.max(0.0);
+    let shadows = c.shadows.iter().filter(|s| !s.inset).map(|s| s.x.abs().max(s.y.abs()) + s.blur + s.spread.max(0.0));
+    let image = c.effects.as_ref().and_then(|e| e.border_image.as_ref()).into_iter().flat_map(|bi| bi.outset).filter_map(|o| match o {
+        Side::Len(Length::Px(v)) => Some(v),
+        _ => None,
+    });
+    shadows.chain(image).fold(outline, f32::max)
 }
 
-/// Whether box `i` paints nothing the view shows: what it can reach lies
-/// outside the viewport or its clip. Text can spill past its box, so it gets
-/// a margin of one em per byte (and one line per byte below).
+/// How far box `i` can paint past its bounds, (across, down); `None` when that is not known.
+/// Text can spill past its box: one em per byte across, one line per byte down.
+fn spill(n: &BoxNode, c: &Computed) -> Option<(f32, f32)> {
+    match &n.content {
+        Content::Element | Content::Replaced(_) if n.taffy.is_some() && n.marker.is_none() => {
+            Some((paint_reach(c), paint_reach(c)))
+        }
+        Content::Word { .. } if c.text_shadow.is_none() => Some((c.font_size, c.font_size)),
+        Content::Text(t) if (n.taffy.is_some() || n.folded) && c.text_shadow.is_none() => {
+            let bytes = t.len() as f32 + 1.0;
+            Some((bytes * c.font_size, bytes * c.line_px().max(c.font_size)))
+        }
+        _ => None,
+    }
+}
+
+/// Whether box `i` paints nothing the view shows: all it can reach lies
+/// outside the viewport or its clip.
 fn offscreen(frame: &Frame, styles: &StyleStore, i: usize, vp: (f32, f32)) -> bool {
     let n = &frame.nodes[i];
-    let c = &styles[n.style];
-    let (mx, my) = match &n.content {
-        Content::Element | Content::Replaced(_) if n.taffy.is_some() && n.marker.is_none() => {
-            let g = paint_reach(c);
-            (g, g)
-        }
-        Content::Word { .. } if c.text_shadow.is_none() => (c.font_size, c.font_size),
-        Content::Text(t) if (n.taffy.is_some() || n.folded) && c.text_shadow.is_none() => {
-            ((t.len() as f32 + 1.0) * c.font_size, (t.len() as f32 + 1.0) * c.line_px().max(c.font_size))
-        }
-        _ => return false,
-    };
-    let b = n.bounds;
-    let view = n.clip.map_or(rect(0.0, 0.0, vp.0, vp.1), |k| k.intersect(&rect(0.0, 0.0, vp.0, vp.1)));
-    b.origin.x + b.size.width + mx < view.origin.x
-        || b.origin.x - mx > view.origin.x + view.size.width
-        || b.origin.y + b.size.height + my < view.origin.y
-        || b.origin.y - my > view.origin.y + view.size.height
+    let Some((mx, my)) = spill(n, &styles[n.style]) else { return false };
+    let screen = rect(0.0, 0.0, vp.0, vp.1);
+    let view = n.clip.map_or(screen, |clip| clip.intersect(&screen));
+    let (b, at) = (n.bounds, view.origin);
+    b.origin.x + b.size.width + mx < at.x
+        || b.origin.x - mx > at.x + view.size.width
+        || b.origin.y + b.size.height + my < at.y
+        || b.origin.y - my > at.y + view.size.height
 }
 
 /// The logical-pixel area a layer's content can cover: its boxes, their
@@ -1781,7 +1787,6 @@ fn crop(img: &Arc<Image>, x: u32, y: u32, w: u32, h: u32) -> Option<Arc<Image>> 
 /// the corners of the border-image area, edges are stretched or tiled along
 /// the sides, and the middle is drawn with `fill`.
 fn paint_border_image(p: &mut Painter, bi: &crate::effects::BorderImage, b: Bounds<f32>, bw: &[f32; 4], u: &Units) {
-    use crate::effects::{Side, Tile};
     let resolve = |v: Side, k: usize, basis: f32| -> f32 {
         match v {
             Side::Num(n) => n * bw[k],
