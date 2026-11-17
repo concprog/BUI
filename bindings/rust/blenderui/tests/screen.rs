@@ -68,6 +68,49 @@ fn open(cx: &mut App, v: Screens) -> WindowId {
     id
 }
 
+static CLOSED: AtomicUsize = AtomicUsize::new(0);
+
+struct Closing;
+
+impl Render for Closing {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let editors = Editors::new()
+            .editor("Keep", "A", |_| Editor::new(div().id("keep").child("keep")))
+            .editor("Gone", "B", |area: &AreaRef| {
+                // a factory may close its own area: the screen must not place an element on it
+                if CLOSED.fetch_add(1, Ordering::Relaxed) == 0 {
+                    assert!(area.close());
+                    assert!(!area.close(), "closing twice does nothing");
+                    assert_eq!(area.editor(), "", "a closed area shows nothing");
+                }
+                Editor::new(div().id("gone").child("gone"))
+            });
+        body().m_0().w(px(900.0)).h(px(600.0)).child(
+            Screen().editors(editors).layout(AreaSplit::v(0.5, "Keep", "Gone")),
+        )
+    }
+}
+
+#[test]
+fn an_editor_factory_can_close_its_area() {
+    Application::headless().run(|cx| {
+        let opts = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(900.0), px(600.0)),
+            })),
+            ..Default::default()
+        };
+        let id = cx.open_window(opts, |_, cx| cx.new(|_| Closing)).unwrap().id;
+        for _ in 0..3 {
+            cx.draw(id);
+        }
+        assert!(CLOSED.load(Ordering::Relaxed) >= 1);
+        let keep = cx.element_bounds(id, "keep").expect("the surviving area's editor");
+        assert!(keep.size.width > 800.0, "the neighbor took the closed area's place");
+    });
+}
+
 #[test]
 fn screen_layout_regions_split_and_restore() {
     Application::headless().run(|cx| {

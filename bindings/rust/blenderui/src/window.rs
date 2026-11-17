@@ -1527,6 +1527,7 @@ impl Window {
             return self.rebuild(app);
         }
         let Some(frame) = self.frame.take() else { return };
+        self.screens.replace(&frame, self.scale); // a screen inside a scrolled box moved with it
         self.widgets.keep(); // no layout ran: the widgets are the last frame's
         self.same_frame = true; // the same boxes: the selection's index of them stays
         self.present(app, frame, None);

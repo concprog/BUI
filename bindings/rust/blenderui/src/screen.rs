@@ -30,7 +30,7 @@
 //! region's number its size and `checked` whether it is hidden.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::fmt::Write as _;
 
@@ -384,6 +384,9 @@ impl Editor {
     }
 }
 
+/// How many times the editor factories may change the screen's areas in one sync.
+const MAKE_PASSES: usize = 4;
+
 type Factory = Box<dyn Fn(&AreaRef) -> Editor>;
 
 /// The editors a screen's areas show: each fills every area showing it, the ones the user makes
@@ -413,15 +416,18 @@ impl Editors {
 
     fn make(&self, area: &AreaRef) -> Editor {
         let name = area.editor();
-        let entry = self.list.iter().find(|(n, _, _)| n == name).or_else(|| self.list.first());
+        let entry = self.list.iter().find(|(n, _, _)| **n == *name).or_else(|| self.list.first());
         entry.map_or_else(|| Editor::new(""), |(_, _, f)| f(area))
     }
 }
 
 thread_local! {
-    /// The kit areas alive now (an `AreaRef` checks before it acts): kept as the kit makes and
-    /// frees them (`kit_event`, from the kit's callback, at once).
-    static LIVE: std::cell::RefCell<HashSet<usize>> = std::cell::RefCell::new(HashSet::new());
+    /// The kit areas alive now, each with the generation it was made under (an `AreaRef` checks
+    /// both before it acts: a new area at a freed one's address is another area): kept as the kit
+    /// makes and frees them (`kit_event`, from the kit's callback, at once).
+    static LIVE: std::cell::RefCell<HashMap<usize, u64>> = std::cell::RefCell::new(HashMap::new());
+    /// The generation the next new area gets.
+    static GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// The editor of an area that asked for a window, read before the kit closed it.
     static WINDOWED: std::cell::RefCell<HashMap<usize, String>> = std::cell::RefCell::new(HashMap::new());
 }
@@ -430,20 +436,41 @@ thread_local! {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AreaRef {
     node: *mut sys::BKNode,
+    generation: u64,
 }
 
 impl AreaRef {
-    fn live(self) -> bool {
-        LIVE.with(|l| l.borrow().contains(&(self.node as usize)))
+    /// A fresh area the kit just made: it gets a generation no earlier area at this address had.
+    fn made(node: *mut sys::BKNode) -> AreaRef {
+        let generation = GENERATION.with(|g| {
+            g.set(g.get() + 1);
+            g.get()
+        });
+        LIVE.with(|l| l.borrow_mut().insert(node as usize, generation));
+        AreaRef { node, generation }
     }
 
-    /// The editor it shows ("" when the area is gone).
-    pub fn editor(&self) -> &str {
+    /// An area the kit has (made earlier, or by the user): known by its generation, else adopted.
+    fn of(node: *mut sys::BKNode) -> AreaRef {
+        let known = LIVE.with(|l| l.borrow().get(&(node as usize)).copied());
+        known.map_or_else(|| Self::made(node), |generation| AreaRef { node, generation })
+    }
+
+    fn live(self) -> bool {
+        LIVE.with(|l| l.borrow().get(&(self.node as usize)) == Some(&self.generation))
+    }
+
+    /// The editor it shows ("" when the area is gone). An owned copy: the kit frees its own
+    /// string with the area, so nothing borrowed from it may outlive this call.
+    pub fn editor(&self) -> String {
         if !self.live() {
-            return "";
+            return String::new();
         }
-        // SAFETY: a live area; the string is the node's and stays until its editor changes.
-        unsafe { CStr::from_ptr(sys::BK_get_str(self.node, c"editor".as_ptr())) }.to_str().unwrap_or("")
+        // SAFETY: a live area; the string is the node's, copied before anything can free it.
+        unsafe { CStr::from_ptr(sys::BK_get_str(self.node, c"editor".as_ptr())) }
+            .to_str()
+            .unwrap_or("")
+            .to_owned()
     }
 
     /// A new area off this one (Blender's `area_split`): `factor` from the left (`V`) or the bottom
@@ -455,10 +482,7 @@ impl AreaRef {
         let a = if axis == Axis::V { c_int_of(b'v') } else { c_int_of(b'h') };
         // SAFETY: a live area node.
         let n = unsafe { sys::BK_area_split(self.node, a, factor) };
-        (!n.is_null()).then(|| {
-            LIVE.with(|l| l.borrow_mut().insert(n as usize));
-            AreaRef { node: n }
-        })
+        (!n.is_null()).then(|| AreaRef::made(n))
     }
 
     /// `other` joins into this area (they share an edge).
@@ -795,7 +819,7 @@ fn build(area: *mut sys::BKNode, split: &AreaSplit) {
                 build(area, first);
                 return;
             }
-            LIVE.with(|l| l.borrow_mut().insert(new as usize));
+            AreaRef::made(new);
             // the new area is the side past 0.5
             let new_is_first = if *axis == Axis::V { kit <= 0.5 } else { kit > 0.5 };
             let (f, s) = if new_is_first { (new, area) } else { (area, new) };
@@ -818,7 +842,7 @@ impl KitScreen {
             sys::BK_geom_set_manager(node, sys::BK_GEOM_PLACE);
             let first = sys::BK_node_new(c"area".as_ptr());
             sys::BK_node_add(node, first, -1);
-            LIVE.with(|l| l.borrow_mut().insert(first as usize));
+            AreaRef::made(first);
             match spec.first {
                 Some(split) => build(first, split),
                 None => {
@@ -841,12 +865,9 @@ impl KitScreen {
         let n = unsafe { sys::BK_node_child_count(self.node) };
         let kit: Vec<*mut sys::BKNode> = (0..n).map(|i| unsafe { sys::BK_node_child(self.node, i) }).collect();
         self.areas.retain(|a| kit.contains(&a.node));
-        LIVE.with(|l| {
-            let mut l = l.borrow_mut();
-            for &k in &kit {
-                l.insert(k as usize);
-            }
-        });
+        for &k in &kit {
+            AreaRef::of(k); // the user's splits arrive here too
+        }
         for (i, &k) in kit.iter().enumerate() {
             match self.areas.iter().position(|a| a.node == k) {
                 Some(p) if p == i => {}
@@ -864,6 +885,57 @@ impl KitScreen {
                     };
                     self.areas.insert(i, AreaNode { node: k, serial: self.next_serial, regions: Default::default(),
                                                     main });
+                }
+            }
+        }
+    }
+
+    /// Runs the editor factories, one element per area, in the screen's order. A factory may
+    /// split or close areas (it holds an `AreaRef`): the records are refreshed after it, and the
+    /// areas it made get their own factory run, so no element is placed on a closed area.
+    fn make_editors(&mut self, editors: &Editors, div: &mut Div) {
+        let mut made: Vec<(*mut sys::BKNode, AnyElement)> = Vec::with_capacity(self.areas.len());
+        for _ in 0..MAKE_PASSES {
+            for i in 0..self.areas.len() {
+                let node = self.areas[i].node;
+                let area = AreaRef::of(node);
+                if area.live() && !made.iter().any(|(n, _)| *n == node) {
+                    made.push((node, editors.make(&area).into_area().into_any_element()));
+                }
+            }
+            if !self.stale() {
+                break;
+            }
+            self.sync_areas();
+        }
+        div.children.clear();
+        for a in &self.areas {
+            let el = made.iter().position(|(n, _)| *n == a.node).map(|p| made.swap_remove(p).1);
+            // an area still without one (a factory that keeps splitting) stays empty
+            div.children.push(el.unwrap_or_else(|| Div::new("bui-area").hidden().into_any_element()));
+        }
+    }
+
+    /// Whether the kit's areas are no longer the records' (a factory split or closed some).
+    fn stale(&self) -> bool {
+        // SAFETY: our live screen node.
+        let n = unsafe { sys::BK_node_child_count(self.node) };
+        n as usize != self.areas.len()
+            || self.areas.iter().any(|a| !LIVE.with(|l| l.borrow().contains_key(&(a.node as usize))))
+    }
+
+    /// Puts the kit's screen node where its element is in `frame` (device pixels).
+    fn place(&mut self, frame: &Frame, key: Key, scale: f32) {
+        let Some(&i) = frame.by_key().get(&key) else { return };
+        let b = frame.nodes[i].bounds;
+        let want = [(b.origin.x * scale).round() as i32, (b.origin.y * scale).round() as i32,
+                    (b.size.width * scale).round() as i32, (b.size.height * scale).round() as i32];
+        if want != self.placed {
+            self.placed = want;
+            // SAFETY: our live screen node, placed on the canvas.
+            unsafe {
+                for (k, v) in [c"x", c"y", c"width", c"height"].iter().zip(want) {
+                    sys::BK_geom_set(self.node, k.as_ptr(), f64::from(v));
                 }
             }
         }
@@ -928,10 +1000,7 @@ impl Screens {
         scr.seen = true;
         scr.sync_areas();
         if let Some(editors) = spec.editors {
-            div.children.clear();
-            for a in &scr.areas {
-                div.children.push(editors.make(&AreaRef { node: a.node }).into_area().into_any_element());
-            }
+            scr.make_editors(editors, div);
         }
         let origin = rect(scr.node);
         let header = theme(c"area_header.background");
@@ -1030,21 +1099,17 @@ impl Screens {
                 unsafe { sys::BK_node_free(scr.node) };
                 return false;
             }
-            let Some(&i) = frame.by_key().get(key) else { return true };
-            let b = frame.nodes[i].bounds;
-            let want = [(b.origin.x * scale).round() as i32, (b.origin.y * scale).round() as i32,
-                        (b.size.width * scale).round() as i32, (b.size.height * scale).round() as i32];
-            if want != scr.placed {
-                scr.placed = want;
-                // SAFETY: our live screen node, placed on the canvas.
-                unsafe {
-                    for (k, v) in [c"x", c"y", c"width", c"height"].iter().zip(want) {
-                        sys::BK_geom_set(scr.node, k.as_ptr(), f64::from(v));
-                    }
-                }
-            }
+            scr.place(frame, *key, scale);
             true
         });
+    }
+
+    /// A frame placed again after scrolling alone (no sync ran): the screens follow their
+    /// elements to the new offsets, so their edges and input targets stay where they show.
+    pub(crate) fn replace(&mut self, frame: &Frame, scale: f32) {
+        for (key, (_, scr)) in &mut self.map {
+            scr.place(frame, *key, scale);
+        }
     }
 
     /// What `node` is, when it belongs to one of these screens.
@@ -1084,14 +1149,14 @@ pub(crate) fn kit_event(node: *mut sys::BKNode, kind: std::os::raw::c_int, a: f6
             // SAFETY: the screen node sending it; its child `a` is the new area.
             let n = unsafe { sys::BK_node_child(node, a as std::os::raw::c_int) };
             if !n.is_null() {
-                LIVE.with(|l| l.borrow_mut().insert(n as usize));
+                AreaRef::made(n);
             }
         }
         sys::BK_AREA_CLOSE => {
             LIVE.with(|l| l.borrow_mut().remove(&(node as usize)));
         }
         sys::BK_AREA_WINDOW => {
-            let editor = AreaRef { node }.editor().to_owned();
+            let editor = AreaRef::of(node).editor();
             WINDOWED.with(|w| w.borrow_mut().insert(node as usize, editor));
         }
         _ => {}
@@ -1117,6 +1182,20 @@ pub(crate) fn change_event(target: &Target, screens: &Screens, node: *mut sys::B
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_area_at_a_freed_address_is_another_area() {
+        let node = 0x1000 as *mut sys::BKNode; // never dereferenced: a stale ref says nothing of it
+        let old = AreaRef::made(node);
+        assert!(old.live());
+        LIVE.with(|l| l.borrow_mut().remove(&(node as usize))); // the kit freed it
+        assert!(!old.live() && old.editor().is_empty() && !old.close());
+        let new = AreaRef::made(node); // a new area got the same address
+        assert!(new.live() && !old.live());
+        assert!(!old.close(), "the old ref must not act on the new area");
+        assert!(AreaRef::of(node).live());
+        LIVE.with(|l| l.borrow_mut().remove(&(node as usize)));
+    }
 
     #[test]
     fn area_split_text_round_trip() {

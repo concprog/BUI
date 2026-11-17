@@ -1,7 +1,17 @@
 //! Render targets: effects that draw into textures, with feedback. Needs a GPU device (Direct3D 11 or
 //! OpenGL 3.3); without one each test says so and passes.
 
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
 use blenderui::{GpuTarget, RenderTarget, ShaderEffect, TargetFormat};
+
+/// The native effect registry is not synchronized and the harness runs tests in parallel: every
+/// test takes this first (declared before any GPU object, so it is released after they drop).
+static GPU: Mutex<()> = Mutex::new(());
+
+fn gpu_lock() -> MutexGuard<'static, ()> {
+    GPU.lock().unwrap_or_else(PoisonError::into_inner) // a failed test must not fail the rest
+}
 
 /// state.r += U[0], read back exactly (`input_load`), written to the other target of a pair
 const STEP: &str = "vec4 effect(vec2 p) {
@@ -37,6 +47,7 @@ fn accumulate(gpu: &mut GpuTarget, format: TargetFormat, passes: usize) -> u32 {
 
 #[test]
 fn float_targets_keep_what_a_byte_cannot() {
+    let _lock = gpu_lock();
     let Some(mut gpu) = GpuTarget::new(8, 8) else {
         eprintln!("no GPU device: skipped");
         return;
@@ -50,6 +61,7 @@ fn float_targets_keep_what_a_byte_cannot() {
 
 #[test]
 fn a_pass_runs_over_the_whole_target_with_its_own_pixels() {
+    let _lock = gpu_lock();
     let Some(mut gpu) = GpuTarget::new(8, 8) else {
         return;
     };
@@ -66,6 +78,7 @@ fn a_pass_runs_over_the_whole_target_with_its_own_pixels() {
 
 #[test]
 fn a_target_can_be_cleared_and_holds_values_over_one() {
+    let _lock = gpu_lock();
     let Some(mut gpu) = GpuTarget::new(8, 8) else {
         return;
     };
@@ -82,6 +95,7 @@ fn a_target_can_be_cleared_and_holds_values_over_one() {
 
 #[test]
 fn a_pass_cannot_sample_the_target_it_draws_into() {
+    let _lock = gpu_lock();
     let Some(mut gpu) = GpuTarget::new(8, 8) else {
         return;
     };
