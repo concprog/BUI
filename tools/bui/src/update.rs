@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -32,6 +32,10 @@ pub fn run(args: &UpdateArgs) -> Result<()> {
         Some(_) => ui::success(format!("bui {have} is the newest")),
     }
 
+    if args.cli_only {
+        ui::outro("Done");
+        return Ok(());
+    }
     let Some(p) = project::find(Path::new(".")) else {
         ui::outro("Done (run it inside a project to update its packages too)");
         return Ok(());
@@ -48,9 +52,14 @@ pub fn run(args: &UpdateArgs) -> Result<()> {
             ui::success("Nothing to update in the project");
         } else if ui::confirm("Update the project's BUI packages to the newest?", true)? {
             for s in &steps {
-                if !s.work.perform(&s.title)? {
-                    break;
+                if s.work.perform(&s.title)? {
+                    continue;
                 }
+                // the reason was shown; an optional step may fail, a required one leaves the project half updated
+                if !s.optional {
+                    bail!("{} failed: the project's packages are not fully updated (`bui doctor` shows what is left)", s.title);
+                }
+                ui::warn(format!("{} did not work; carrying on", s.title));
             }
             let outdated: Vec<Check> = app.checks(&p.dir).into_iter().filter(|c| !c.is_ok()).collect();
             for c in &outdated {
@@ -126,14 +135,49 @@ fn replace_self(tag: &str) -> Result<()> {
         }
         out
     };
-    let staged = std::env::temp_dir().join(format!("bui-update-{}{}", std::process::id(), if zip { ".exe" } else { "" }));
-    fs::write(&staged, binary)?;
+    let staged = stage(&binary, zip)?;
+    // the file that goes in is the one that was verified: read back, it is the same bytes
+    if fs::read(&staged).ok().is_none_or(|b| Sha256::digest(&b) != Sha256::digest(&binary)) {
+        bail!("the staged copy of the new bui changed before it could be installed: not installing it");
+    }
+    // `staged` deletes itself when it goes out of scope, installed or not
+    self_replace::self_replace(&staged).context("replacing the running bui")
+}
+
+/// Writes `binary` to a new file with a random name that nothing else can have made (it must not exist) and
+/// only this user can read or change, beside the running bui (the same disk, in a folder that is already
+/// the user's) or else in the temp folder. The file is deleted when the returned path is dropped.
+fn stage(binary: &[u8], zip: bool) -> Result<tempfile::TempPath> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".bui-update-").suffix(if zip { ".exe" } else { "" });
+    let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf));
+    let mut file = match beside.map(|dir| builder.tempfile_in(dir)) {
+        Some(Ok(file)) => file,
+        _ => builder.tempfile().context("making a private file for the new bui")?, // 0600 on Unix, exclusive
+    };
+    file.write_all(binary)?;
+    file.flush()?;
+    let path = file.into_temp_path(); // closes the file; the path still deletes it
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
     }
-    let result = self_replace::self_replace(&staged).context("replacing the running bui");
-    let _ = fs::remove_file(&staged);
-    result
+    Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_staged_binary_is_a_new_file_that_goes_away() {
+        let one = stage(b"one", false).unwrap();
+        let two = stage(b"two", false).unwrap();
+        assert_ne!(one.to_path_buf(), two.to_path_buf(), "names are random, never reused");
+        assert_eq!(fs::read(&one).unwrap(), b"one");
+        let path = one.to_path_buf();
+        drop(one);
+        assert!(!path.exists());
+    }
 }

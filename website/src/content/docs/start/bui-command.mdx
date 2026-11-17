@@ -41,7 +41,7 @@ This builds `tools/bui` from a clone of the repository in a minute or two. It ne
 </Tab>
 </LangTabs>
 
-Both installers take `BUI_VERSION` (install that release instead of the newest) and `BUI_INSTALL_DIR`; `BUI_NO_MODIFY_PATH=1` leaves your shell profile alone.
+Both installers take `BUI_VERSION` (install that release instead of the newest) and `BUI_INSTALL_DIR`; `BUI_NO_MODIFY_PATH=1` leaves your shell profile alone. A new `bui` is written beside the old one and renamed over it, so an interrupted install leaves the old one working.
 
 ## Make an app
 
@@ -56,7 +56,7 @@ bui init              # in the folder you are in
 2. **That language's choices.** JavaScript asks for the framework (React, Svelte or plain DOM), TypeScript or JavaScript, and the runtime and package manager (Bun, or Node.js with npm or pnpm). Python asks for the API: Blender's components, Qt syntax or tkinter syntax.
 3. **The tools.** If something the language needs is missing (Rust, Bun, uv, a C compiler, CMake, LuaRocks...), `bui` shows the command that installs the newest one on your system and asks before it runs it.
 4. **The packages.** Before it writes anything, `bui` lists the exact commands that install BUI and the tooling at their newest versions (`bun add ...`, `cargo add blenderui`, ...) and asks whether to run them now. Say no and `bui doctor` does it later.
-5. **The project.** It writes the files, offers to start a git repository, runs the install, and ends with every command you will need.
+5. **The project.** It writes the files (files you already have are kept: in a folder with a `package.json`, `bui init` adds only the scripts `bui` runs that are missing, says which, and stops before changing anything if the file is not valid JSON), offers to start a git repository, runs the install, and ends with every command you will need.
 
 What you get, by language:
 
@@ -102,7 +102,7 @@ Nothing is installed or changed without your answer: `--fix` says yes for you, a
 
 ### bui update
 
-`bui update` looks for a newer `bui` (a download with a progress bar, checked against its published checksum), then offers to bring the project's `blenderui` packages to the newest version. `bui update --check` only reports.
+`bui update` looks for a newer `bui` (a download with a progress bar, checked against its published checksum), then offers to bring the project's `blenderui` packages to the newest version. `bui update --check` only reports, and `bui update --cli-only` updates `bui` itself and leaves the project alone (what `bui doctor --fix` runs for an old `bui`). If a step that has to work fails, the command exits with an error instead of saying it is done.
 
 ## Scripts, CI and flags
 
@@ -128,6 +128,10 @@ Without a terminal and without `--yes`, a question that cannot be answered stops
 
 <Callout type="note" title="Svelte runs on Node.js">
 `@blender-ui/svelte`'s loader fails under Bun today, so a Svelte project runs on Node.js (with npm or pnpm). React and plain DOM projects run on Bun or Node.js.
+</Callout>
+
+<Callout type="note" title="Building needs Bun">
+`bui build` runs `@blender-ui/native`'s `bui`, which bundles your app with Bun, so Bun is checked (and offered for install) before a build even in an npm or pnpm project.
 </Callout>
 
 - **Python needs 3.11 or newer.** BUI's wheels cover CPython 3.11 to 3.14 on Windows, Linux x86_64 and macOS.

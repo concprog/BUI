@@ -15,6 +15,7 @@ Examples:
   bui build                               make a release build
   bui doctor --fix                        find what is wrong and fix it
   bui update --check                      see what is out of date
+  bui update --cli-only                   update bui itself, leave the app's packages
 
 Docs: https://bui.preetham.top   (or run: bui docs)";
 
@@ -154,4 +155,7 @@ pub struct UpdateArgs {
     /// Only say what is out of date
     #[arg(long)]
     pub check: bool,
+    /// Update bui itself only, not the packages of the app you are in
+    #[arg(long, conflicts_with = "check")]
+    pub cli_only: bool,
 }

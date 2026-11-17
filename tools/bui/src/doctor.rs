@@ -87,7 +87,7 @@ fn gather(project: Option<&project::Project>, all: bool) -> Vec<Section> {
         let app = p.meta.stack.app();
         task.set("Checking the toolchain");
         sections.push(Section { title: format!("{} ({})", p.meta.name, app.label()), checks: Vec::new() });
-        let toolchain: Vec<Check> = app.tools().into_iter().map(check::tool).collect();
+        let toolchain: Vec<Check> = app.build_tools().into_iter().map(check::tool).collect();
         let toolchain_ok = toolchain.iter().all(Check::is_ok);
         let mut checks = toolchain;
         // a project's own checks need its tools (they run them)
@@ -121,7 +121,7 @@ fn gather(project: Option<&project::Project>, all: bool) -> Vec<Section> {
 fn bui_checks() -> Vec<Check> {
     let have = env!("CARGO_PKG_VERSION");
     let exe = std::env::current_exe().map_or_else(|_| "bui".into(), |p| p.to_string_lossy().into_owned());
-    let fix = Fix::run("updates bui", vec![Cmd::new(&exe, ["update", "--yes"])]);
+    let fix = Fix::run("updates bui", vec![Cmd::new(&exe, ["update", "--yes", "--cli-only"])]);
     match registry::release_tag() {
         Some(tag) if semver(&tag) > semver(have) => vec![Check::warn("bui", format!("{have}, newest is {}", tag.trim_start_matches('v')), Some(fix))],
         Some(_) => vec![Check::ok("bui", format!("{have} (newest)"))],

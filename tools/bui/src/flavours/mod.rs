@@ -9,7 +9,7 @@ pub mod python;
 pub mod rust;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 use include_dir::{Dir, include_dir};
@@ -37,9 +37,15 @@ pub fn optional(title: &str, cmd: Cmd) -> Step {
     Step { optional: true, ..step(title, cmd) }
 }
 
-/// A step that changes a file's text.
-pub fn rewrite(title: &str, path: PathBuf, from: String, to: String) -> Step {
-    Step { title: title.to_owned(), work: Work::Rewrite { path, from, to }, optional: false }
+/// A step that does `work`, such as a change to a file's text.
+pub fn work_step(title: &str, work: Work) -> Step {
+    Step { title: title.to_owned(), work, optional: false }
+}
+
+/// A file the project already had that `adopt` changed: which, and what was done.
+pub struct Adopted {
+    pub path: &'static str,
+    pub note: String,
 }
 
 pub struct File {
@@ -117,7 +123,16 @@ pub trait Flavour {
     fn label(&self) -> String;
     /// The programs needed to make, run and build the project.
     fn tools(&self) -> Vec<Tool>;
+    /// The programs `bui build` needs: those of `tools` unless the build needs more (JavaScript bundles with Bun).
+    fn build_tools(&self) -> Vec<Tool> {
+        self.tools()
+    }
     fn files(&self, vars: &Vars) -> Vec<File>;
+    /// Makes the project's existing files fit (`bui init` in a folder that has them), before anything is
+    /// written: an error stops `init` with nothing changed. Everything else of theirs is left as it is.
+    fn adopt(&self, _dir: &Path) -> Result<Vec<Adopted>> {
+        Ok(Vec::new())
+    }
     /// Installs BUI and the language's tooling at their newest versions, in the new project.
     fn deps(&self, dir: &Path) -> Vec<Step>;
     /// Runs the app (a dev server where the language has one), as a list of commands. `args` are the

@@ -41,7 +41,8 @@ cargo test
 - Nothing is installed or changed without an answer: a prompt, `--fix`, or `--install-tools`. Without a
   terminal and without `--yes` a question stops the program instead of guessing.
 - `BUI_RELEASE_TAG` and `BUI_DOWNLOAD_BASE` point `bui update` at another release or a mirror (used by the tests of
-  the update path); `BUI_INSTALLER_BASE_URL` does the same for the installers.
+  the update path); `BUI_INSTALLER_BASE_URL` does the same for the installers (and `BUI_LATEST_URL`, in `install.ps1`, replaces the page whose
+  redirect names the newest release).
 
 ## Release
 

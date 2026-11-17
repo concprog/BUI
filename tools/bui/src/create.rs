@@ -82,12 +82,18 @@ fn make(name: &str, dir: &Path, choices: &Choices, new_folder: bool) -> Result<(
         ui::confirm("Install them now?", true)?
     };
 
+    // the files that are there already, made to fit (a manifest that cannot be read stops here, with nothing written)
+    let adopted = app.adopt(dir)?;
     let writing = ui::task("Writing your app");
     fs::create_dir_all(dir)?;
     let mut files = app.files(&Vars::new(name, &release_tag()));
     files.push(File { path: FILE.into(), body: Meta { name: name.to_owned(), stack: stack.clone() }.to_toml()? });
-    let (wrote, skipped) = write_files(dir, files)?;
+    let (wrote, mut skipped) = write_files(dir, files)?;
+    skipped.retain(|f| !adopted.iter().any(|a| a.path == f));
     writing.done(&format!("Wrote {wrote} files"));
+    for a in &adopted {
+        ui::success(format!("{}: {}", a.path, a.note));
+    }
     if !skipped.is_empty() {
         ui::warn(format!("Left your existing {} as it was", skipped.join(", ")));
     }

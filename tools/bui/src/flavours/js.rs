@@ -3,11 +3,11 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{File, Flavour, Step, Vars, read, render, step};
+use super::{Adopted, File, Flavour, Step, Vars, read, render, step};
 use crate::check::{self, Check, Fix};
 use crate::project::{Framework, Language, PackageManager};
 use crate::registry;
@@ -92,7 +92,8 @@ impl JsApp {
         }
     }
 
-    fn package_json(&self, name: &str) -> String {
+    /// The scripts `bui dev`, `bui build` and the formatting step run through the package manager.
+    fn scripts(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut scripts = serde_json::Map::new();
         let mut put = |k: &str, v: String| {
             scripts.insert(k.into(), json!(v));
@@ -106,11 +107,15 @@ impl JsApp {
         put("lint", "biome check .".into());
         put("format", "biome format --write .".into());
         put("fix", "biome check --write .".into());
+        scripts
+    }
+
+    fn package_json(&self, name: &str) -> String {
         let mut doc = json!({
             "name": name,
             "version": "0.1.0",
             "private": true,
-            "scripts": scripts,
+            "scripts": self.scripts(),
         });
         if !self.uses_tsx() {
             doc["type"] = json!("module");
@@ -183,6 +188,46 @@ impl Flavour for JsApp {
         tools
     }
 
+    /// `@blender-ui/native`'s `bui` bundles with Bun (bindings/node/bundle.js has no other path), whatever runs the app.
+    fn build_tools(&self) -> Vec<Tool> {
+        let mut tools = self.tools();
+        if !tools.contains(&Tool::Bun) {
+            tools.push(Tool::Bun);
+        }
+        tools
+    }
+
+    /// An existing `package.json` keeps everything it has; the scripts the commands run are added when absent.
+    fn adopt(&self, dir: &Path) -> Result<Vec<Adopted>> {
+        let path = dir.join("package.json");
+        let Some(text) = read(dir, "package.json") else {
+            return Ok(Vec::new());
+        };
+        let mut doc: serde_json::Value = serde_json::from_str(&text).with_context(|| format!("{} is not valid JSON: fix it first, then run `bui init` again", path.display()))?;
+        let Some(root) = doc.as_object_mut() else {
+            bail!("{} is not a JSON object: fix it first, then run `bui init` again", path.display());
+        };
+        let scripts = root.entry("scripts").or_insert_with(|| json!({}));
+        let Some(scripts) = scripts.as_object_mut() else {
+            bail!("\"scripts\" in {} is not an object: fix it first, then run `bui init` again", path.display());
+        };
+        let mut added = Vec::new();
+        for (name, command) in self.scripts() {
+            if !scripts.contains_key(&name) {
+                scripts.insert(name.clone(), command);
+                added.push(name);
+            }
+        }
+        let note = if added.is_empty() {
+            "has every script bui runs; left as it was".to_owned()
+        } else {
+            std::fs::write(&path, format!("{}
+", serde_json::to_string_pretty(&doc)?)).with_context(|| format!("writing {}", path.display()))?;
+            format!("kept as it was, and added the scripts {}", added.join(", "))
+        };
+        Ok(vec![Adopted { path: "package.json", note }])
+    }
+
     fn files(&self, vars: &Vars) -> Vec<File> {
         let flavour = match (self.framework, self.language) {
             (Framework::React, Language::TypeScript) => "js/react-ts",
@@ -233,5 +278,60 @@ impl Flavour for JsApp {
 
     fn update(&self, dir: &Path) -> Vec<Step> {
         vec![step("Updating packages", self.pm.update(dir))]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app() -> JsApp {
+        JsApp { framework: Framework::Vanilla, language: Language::JavaScript, pm: PackageManager::Npm }
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("bui-js-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_existing_manifest_gets_only_the_missing_scripts() {
+        let dir = scratch("adopt");
+        let manifest = r#"{"name":"mine","zeta":1,"scripts":{"dev":"vite","test":"vitest"},"alpha":2}"#;
+        std::fs::write(dir.join("package.json"), manifest).unwrap();
+        let adopted = app().adopt(&dir).unwrap();
+        assert_eq!(adopted.len(), 1);
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("package.json")).unwrap()).unwrap();
+        assert_eq!(doc["scripts"]["dev"], "vite", "their script is kept");
+        assert_eq!(doc["scripts"]["test"], "vitest");
+        assert_eq!(doc["scripts"]["build"], "bui build src/main.js");
+        assert_eq!(doc["scripts"]["fix"], "biome check --write .");
+        let keys: Vec<&String> = doc.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["name", "zeta", "scripts", "alpha"], "their order is kept");
+        let again = std::fs::read_to_string(dir.join("package.json")).unwrap();
+        assert!(app().adopt(&dir).unwrap()[0].note.contains("left as it was"));
+        assert_eq!(again, std::fs::read_to_string(dir.join("package.json")).unwrap(), "a second pass changes nothing");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_manifest_that_cannot_be_read_stops_init() {
+        let dir = scratch("broken");
+        std::fs::write(dir.join("package.json"), "{ not json").unwrap();
+        assert!(app().adopt(&dir).is_err());
+        assert_eq!(std::fs::read_to_string(dir.join("package.json")).unwrap(), "{ not json", "it is not touched");
+        std::fs::write(dir.join("package.json"), r#"{"scripts": []}"#).unwrap();
+        assert!(app().adopt(&dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn building_needs_bun_whatever_runs_the_app() {
+        for pm in [PackageManager::Npm, PackageManager::Pnpm, PackageManager::Bun] {
+            let tools = JsApp { pm, ..app() }.build_tools();
+            assert_eq!(tools.iter().filter(|t| **t == Tool::Bun).count(), 1);
+        }
+        assert!(!app().tools().contains(&Tool::Bun), "running does not");
     }
 }
