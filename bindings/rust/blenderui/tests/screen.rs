@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use blenderui::prelude::*;
-use blenderui::screen::{AreaRef, AreaSplit, Editor, Editors, Region, Screen, ScreenEvent};
+use blenderui::screen::{AreaRef, AreaSplit, Axis, Editor, Editors, Region, Screen, ScreenEvent};
 
 static MADE: AtomicUsize = AtomicUsize::new(0);
 static CHANGES: AtomicUsize = AtomicUsize::new(0);
@@ -108,6 +108,57 @@ fn an_editor_factory_can_close_its_area() {
         assert!(CLOSED.load(Ordering::Relaxed) >= 1);
         let keep = cx.element_bounds(id, "keep").expect("the surviving area's editor");
         assert!(keep.size.width > 800.0, "the neighbor took the closed area's place");
+    });
+}
+
+thread_local! {
+    static FIRST: std::cell::Cell<Option<AreaRef>> = const { std::cell::Cell::new(None) };
+}
+
+struct Churn;
+
+impl Render for Churn {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let editors = Editors::new()
+            .editor("A", "A", |area: &AreaRef| {
+                assert_eq!(area.editor(), "A", "a factory only ever gets a live area");
+                FIRST.with(|f| f.set(Some(*area)));
+                Editor::new(div().id("a").child("a"))
+            })
+            .editor("B", "B", |area: &AreaRef| {
+                // closes itself, then splits the first area: the new one may take B's address
+                if let Some(first) = FIRST.with(std::cell::Cell::get) {
+                    if area.close() {
+                        first.split(Axis::V, 0.5);
+                    }
+                }
+                Editor::new(div().id("b").child("b"))
+            })
+            .editor("C", "C", |area: &AreaRef| {
+                assert!(!area.editor().is_empty());
+                Editor::new(div().id("c").child("c"))
+            });
+        body().m_0().w(px(900.0)).h(px(600.0)).child(
+            Screen().editors(editors).layout(AreaSplit::v(0.3, "A", AreaSplit::v(0.5, "B", "C"))),
+        )
+    }
+}
+
+#[test]
+fn a_factory_that_closes_one_area_and_splits_another_leaves_no_stale_records() {
+    Application::headless().run(|cx| {
+        let opts = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(900.0), px(600.0)),
+            })),
+            ..Default::default()
+        };
+        let id = cx.open_window(opts, |_, cx| cx.new(|_| Churn)).unwrap().id;
+        for _ in 0..4 {
+            cx.draw(id); // the records follow the kit's areas without touching freed ones
+        }
+        assert!(cx.element_bounds(id, "c").is_some(), "the untouched area still has its editor");
     });
 }
 

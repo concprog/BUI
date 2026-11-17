@@ -456,6 +456,12 @@ impl AreaRef {
         known.map_or_else(|| Self::made(node), |generation| AreaRef { node, generation })
     }
 
+    /// The area the kit has at `node` if it is a known live one: never adopts (a freed address
+    /// stays unknown, so a stale node is not handed out as an area).
+    fn known(node: *mut sys::BKNode) -> Option<AreaRef> {
+        LIVE.with(|l| l.borrow().get(&(node as usize)).copied()).map(|generation| AreaRef { node, generation })
+    }
+
     fn live(self) -> bool {
         LIVE.with(|l| l.borrow().get(&(self.node as usize)) == Some(&self.generation))
     }
@@ -756,6 +762,9 @@ const PROPS: [&str; 7] = ["size", "hidden", "side", "overlap", "resizable", "max
 
 struct AreaNode {
     node: *mut sys::BKNode,
+    /// The generation of the kit area this record was made for: another one at the same address
+    /// (a closed area's, reused) makes the record's pointers stale.
+    generation: u64,
     serial: u32,
     regions: [Option<RegionNode>; KINDS.len()],
     main: *mut sys::BKNode,
@@ -864,10 +873,9 @@ impl KitScreen {
         // SAFETY: our live screen node.
         let n = unsafe { sys::BK_node_child_count(self.node) };
         let kit: Vec<*mut sys::BKNode> = (0..n).map(|i| unsafe { sys::BK_node_child(self.node, i) }).collect();
-        self.areas.retain(|a| kit.contains(&a.node));
-        for &k in &kit {
-            AreaRef::of(k); // the user's splits arrive here too
-        }
+        // a record whose address now holds another area is dropped: its main and regions are freed
+        self.areas.retain(|a| kit.contains(&a.node) && AreaRef::known(a.node).is_some_and(|r| r.generation == a.generation));
+        let refs: Vec<AreaRef> = kit.iter().map(|&k| AreaRef::of(k)).collect(); // the user's splits arrive here too
         for (i, &k) in kit.iter().enumerate() {
             match self.areas.iter().position(|a| a.node == k) {
                 Some(p) if p == i => {}
@@ -883,7 +891,7 @@ impl KitScreen {
                         sys::BK_node_add(k, m, -1);
                         m
                     };
-                    self.areas.insert(i, AreaNode { node: k, serial: self.next_serial, regions: Default::default(),
+                    self.areas.insert(i, AreaNode { node: k, generation: refs[i].generation, serial: self.next_serial, regions: Default::default(),
                                                     main });
                 }
             }
@@ -894,13 +902,16 @@ impl KitScreen {
     /// split or close areas (it holds an `AreaRef`): the records are refreshed after it, and the
     /// areas it made get their own factory run, so no element is placed on a closed area.
     fn make_editors(&mut self, editors: &Editors, div: &mut Div) {
-        let mut made: Vec<(*mut sys::BKNode, AnyElement)> = Vec::with_capacity(self.areas.len());
+        let mut made: Vec<(*mut sys::BKNode, u64, AnyElement)> = Vec::with_capacity(self.areas.len());
         for _ in 0..MAKE_PASSES {
             for i in 0..self.areas.len() {
                 let node = self.areas[i].node;
-                let area = AreaRef::of(node);
-                if area.live() && !made.iter().any(|(n, _)| *n == node) {
-                    made.push((node, editors.make(&area).into_area().into_any_element()));
+                // an area an earlier factory closed is unknown now: skipped, never adopted
+                let Some(area) = AreaRef::known(node) else { continue };
+                if area.generation == self.areas[i].generation
+                    && !made.iter().any(|(n, g, _)| *n == node && *g == area.generation)
+                {
+                    made.push((node, area.generation, editors.make(&area).into_area().into_any_element()));
                 }
             }
             if !self.stale() {
@@ -910,7 +921,7 @@ impl KitScreen {
         }
         div.children.clear();
         for a in &self.areas {
-            let el = made.iter().position(|(n, _)| *n == a.node).map(|p| made.swap_remove(p).1);
+            let el = made.iter().position(|(n, g, _)| *n == a.node && *g == a.generation).map(|p| made.swap_remove(p).2);
             // an area still without one (a factory that keeps splitting) stays empty
             div.children.push(el.unwrap_or_else(|| Div::new("bui-area").hidden().into_any_element()));
         }
@@ -921,7 +932,7 @@ impl KitScreen {
         // SAFETY: our live screen node.
         let n = unsafe { sys::BK_node_child_count(self.node) };
         n as usize != self.areas.len()
-            || self.areas.iter().any(|a| !LIVE.with(|l| l.borrow().contains_key(&(a.node as usize))))
+            || self.areas.iter().any(|a| AreaRef::known(a.node).is_none_or(|r| r.generation != a.generation))
     }
 
     /// Puts the kit's screen node where its element is in `frame` (device pixels).
