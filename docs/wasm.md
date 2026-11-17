@@ -60,9 +60,10 @@ root `height: 100vh` (the window is not a scrolling document), and `m_0()` to dr
 It needs:
 
 * Rust with the target: `rustup target add wasm32-wasip1` (the script adds it),
-* LLVM's clang 19 or newer (wasi-sdk 34's libc++ needs it; the script refuses an older one) with the `wasm32`
-  backend, and CMake. Apple's clang has no `wasm32` backend: install LLVM (on Ubuntu, `apt.llvm.org`'s
-  `clang-19 llvm-19 lld-19`) and set `WASI_CLANG` to its `bin` folder (`/usr/lib/llvm-19/bin`),
+* LLVM's clang 21 or newer with the `wasm32` backend, and CMake. wasi-sdk 34's libc++ needs a recent clang:
+  clang 19 fails on its `#pragma clang attribute` / `__visibility__` headers, and the script refuses older ones
+  (on Ubuntu: `clang-21 llvm-21 lld-21` from apt.llvm.org, then `WASI_CLANG=/usr/lib/llvm-21/bin`). Apple's
+  clang has no `wasm32` backend: install LLVM and set `WASI_CLANG` to its `bin` folder,
 * `make` or Ninja,
 * the WASI sysroot (wasi-libc and libc++): `python platform/wasm/build.py --fetch-sysroot` downloads
   wasi-sdk's once into `~/.bui/wasi-sysroot` (0.2 GB download, 94 MB kept), or point `WASI_SYSROOT` at one.

@@ -33,7 +33,9 @@ import urllib.request
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 TARGET = "wasm32-wasip1"
 WASI_SDK = "34"
-MIN_CLANG = 19  # wasi-sdk 34's libc++ headers use __builtin_clzg
+# wasi-sdk 34's libc++ is built from a recent LLVM and does not compile with an older clang: clang 19 stops at
+# `#pragma clang attribute` on `__visibility__` in its headers. clang 21 is the oldest verified to work.
+MIN_CLANG = 21
 WASI_SDK_URL = ("https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-%s/wasi-sdk-%s.0-%s.tar.gz")
 SYSROOT_HOME = os.path.join(os.path.expanduser("~"), ".bui", "wasi-sysroot")
 
@@ -132,7 +134,8 @@ def find_clang():
             continue
         if "wasm32" in subprocess.run([exe, "--print-targets"], capture_output=True, text=True).stdout:
             return c
-    sys.exit("no clang %d or newer with the wasm32 backend: install LLVM (https://releases.llvm.org, or apt.llvm.org) or set"
+    sys.exit("no clang %d or newer with the wasm32 backend (wasi-sdk 34's libc++ needs a recent clang: clang 19 fails on its"
+             " `#pragma clang attribute` / `__visibility__` headers): install LLVM (https://releases.llvm.org, or apt.llvm.org) or set"
              " WASI_CLANG to its bin folder (Apple's clang has no wasm32 backend)%s"
              % (MIN_CLANG, "; too old: " + ", ".join(too_old) if too_old else ""))
 
