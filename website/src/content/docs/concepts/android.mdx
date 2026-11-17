@@ -24,8 +24,16 @@ You need the Android SDK (`ANDROID_HOME`), an NDK, CMake and a JDK for `keytool`
 <LangTabs>
 <Tab label="Rust">
 
-```rust
+```rust title="src/lib.rs"
 use blenderui::prelude::*;
+
+struct MyApp;
+
+impl Render for MyApp {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        app().child(h1().child("Hello, Android")).child(button().child("Go"))
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bui_app_main() {
@@ -39,10 +47,12 @@ A `staticlib` crate (see `platform/android/rust`). Give the root a definite heig
 </Tab>
 <Tab label="Lua">
 
-```lua
+```lua title="main.lua"
 local bui = require("bui")
 local root = bui.Node("column")
--- ... build the UI ...
+local hello = bui.Node("label")
+hello:set("text", "Hello, Android")
+root:add(hello)
 bui.open({ root = root })
 ```
 
@@ -64,7 +74,12 @@ render(<Counter />, { title: "App" })
 </Tab>
 <Tab label="Dear ImGui">
 
-```cpp
+```cpp title="app.cpp"
+#include "BUI_kit.h"
+#include "bui_app.h"
+#include "imgui.h"
+#include "imgui_impl_bui.h"
+
 static void frame(void *) { ImGui::ShowDemoWindow(); }
 
 void bui_app_main(void) {
@@ -79,12 +94,26 @@ void bui_app_main(void) {
 </Tab>
 <Tab label="C">
 
-```c
+```c title="app.c"
+#include "BUI_kit.h"
+#include "bui_app.h"
+
+static BKNode *build_ui(void) {
+  BKNode *page = BK_node_new("column");
+  BK_set_num(page, "padding", 12);
+  BKNode *hello = BK_node_new("label");
+  BK_set_str(hello, "text", "Hello, Android");
+  BK_node_add(page, hello, -1);
+  return page;
+}
+
 void bui_app_main(void) {
   BKContext *ctx = BK_context_new(build_ui());
   BKWindow *win = BK_window_new(ctx, "App", 360, 720);
   BK_window_show(win);
   BK_window_run();
+  BK_window_free(win);
+  BK_context_free(ctx);
 }
 ```
 </Tab>

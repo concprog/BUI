@@ -310,18 +310,7 @@ static int l_node_free(lua_State *L) {
 
 /* Push the wrapper of a node the kit made (a new area), mapping it. */
 static void push_node(lua_State *L, BKNode *n) {
-  if (!n) {
-    lua_pushnil(L);
-    return;
-  }
-  if (luabui_lookup_node(L, n)) return;
-  luabui_Node *ud = (luabui_Node *)lua_newuserdata(L, sizeof(luabui_Node));
-  ud->node = n;
-  luaL_getmetatable(L, LUABUI_NODE_MT);
-  lua_setmetatable(L, -2);
-  lua_newtable(L);
-  lua_setuservalue(L, -2);
-  luabui_map_node(L, n, -1);
+  if (!luabui_push_node(L, n)) lua_pushnil(L);
 }
 
 static BKNode *live_node(lua_State *L, int idx) {
