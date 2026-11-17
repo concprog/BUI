@@ -87,11 +87,11 @@ pub fn frame() -> bool {
             return false;
         };
         h.size = (w, ht);
-        h.rgba.clear();
-        h.rgba.reserve(bgr.len() * 4);
-        // the kit's 0x00RRGGBB words as the canvas's R, G, B, A bytes
-        for p in bgr {
-            h.rgba.extend_from_slice(&[(p >> 16) as u8, (p >> 8) as u8, p as u8, 255]);
+        h.rgba.resize(bgr.len() * 4, 0);
+        // the kit's 0x00RRGGBB words as the canvas's R, G, B, A bytes (a fixed-size chunk per pixel, so
+        // there is no capacity check in the loop and the compiler can vectorize it)
+        for (out, p) in h.rgba.chunks_exact_mut(4).zip(bgr) {
+            out.copy_from_slice(&[(p >> 16) as u8, (p >> 8) as u8, p as u8, 255]);
         }
         true
     })
