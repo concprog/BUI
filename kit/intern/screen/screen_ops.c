@@ -710,7 +710,10 @@ void screen_op_cancel(BKNode *screen_node)
 {
   BKScreen *screen = SCREEN(screen_node);
   if (screen->op == OP_MOVE) {
-    area_move_apply(screen_node, 0); /* area_move_cancel: back where it started */
+    /* area_move_cancel: back where it started, exactly: an edge that began off the grid
+     * must not snap onto it */
+    screen->md.snap_type = SNAP_NONE;
+    area_move_apply(screen_node, 0);
     area_move_exit(screen_node, false);
   }
   screen->op = OP_NONE;
@@ -892,7 +895,7 @@ int screen_context_items(BKNode *screen_node, BKMenuSpec *items, int max)
 {
   BKScreen *screen = SCREEN(screen_node);
   BKContext *ctx = bk_ctx(screen_node);
-  if (!ctx || screen->resize_only || screen->state != SCREENNORMAL || max < 8) {
+  if (!ctx || screen->resize_only || screen->state != SCREENNORMAL || max < 9) {
     return 0;
   }
   int x, y;
@@ -990,6 +993,7 @@ static void menu_area_close(void *data)
   BKNode *area_node = menu_area(data);
   BKNode *screen_node = AREA_SCREEN(area_node);
   if (screen_area_close(screen_node, area_node, NULL)) {
+    screen_remove_unused_scredges(screen_node);
     screen_remove_unused_scrverts(SCREEN(screen_node));
     screen_changed(screen_node);
   }
@@ -1170,15 +1174,9 @@ int area_op_press(BKNode *area_node, BKEvent *e)
   if (region->sizey == 0) {
     region->sizey = (short)(region->winy / UI_SCALE_FAC);
   }
-  /* Reset our saved widths if the region is hidden: otherwise you can't drag it out again. */
-  if (region->flag & RGN_FLAG_HIDDEN) {
-    if (edge_is_x(area->rmd.edge)) {
-      region->winx = region->sizex = 0;
-    }
-    else {
-      region->winy = region->sizey = 0;
-    }
-  }
+  /* A hidden region's saved size resets only once the user drags (so it can be dragged out
+   * again); a plain click on its tab keeps the size it comes back with. */
+  area->rmd.hidden_start = (region->flag & RGN_FLAG_HIDDEN) != 0;
   area->rmd.origval = edge_is_x(area->rmd.edge) ? region->sizex : region->sizey;
   area->rmd.maxsize = BK_CLAMP(area->rmd.maxsize, 0, 1000);
   area->rmd.active = true;
@@ -1204,6 +1202,12 @@ int area_op_drag(BKNode *area_node, BKEvent *e)
   }
   delta = (int)(delta / UI_SCALE_FAC); /* region sizes now get multiplied */
   short *size = x_axis ? &region->sizex : &region->sizey;
+  if (area->rmd.hidden_start) {
+    area->rmd.hidden_start = false;
+    *(x_axis ? &region->winx : &region->winy) = 0;
+    *size = 0;
+    area->rmd.origval = 0;
+  }
   const int size_no_snap = area->rmd.origval + delta;
   /* Clamp before snapping, so the snapping doesn't use a size that's invalid anyway. */
   *size = (short)BK_CLAMP(size_no_snap, 0, area->rmd.maxsize);

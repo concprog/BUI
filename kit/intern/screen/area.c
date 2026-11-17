@@ -182,6 +182,21 @@ bool region_is_hidden(const BKRegion *region)
   return (region->flag & RGN_FLAG_HIDDEN) != 0;
 }
 
+/* A side region that was narrowed to fit takes its share of the remainder (not one that
+ * overlaps: that one floats over it), so the main region doesn't get the same rectangle. */
+static void rct_consume_x(rcti *remainder, const BKRegion *region, bool from_right)
+{
+  if (region->overlap) {
+    return;
+  }
+  if (from_right) {
+    remainder->xmax = region->winrct.xmin - 1;
+  }
+  else {
+    remainder->xmin = region->winrct.xmax + 1;
+  }
+}
+
 /* dir is direction to check, not the splitting edge direction! */
 static int rct_fits(const rcti *rect, const eScreenAxis dir_axis, int size)
 {
@@ -370,6 +385,7 @@ static void region_rect_calc(BKArea *area, BKNode **regions, int index, int coun
                                                                   UI_TOOLBAR_WIDTH));
       if (width > min) {
         region->winrct = *winrct; /* adjust width to fit */
+        rct_consume_x(winrct, region, alignment == RGN_ALIGN_RIGHT);
         BLI_rcti_sanitize(winrct);
       }
       else if (info->category_tabs) {
@@ -382,6 +398,7 @@ static void region_rect_calc(BKArea *area, BKNode **regions, int index, int coun
         else {
           region->winrct.xmax = region->winrct.xmin + cat_min - 1;
         }
+        rct_consume_x(winrct, region, alignment == RGN_ALIGN_RIGHT);
         BLI_rcti_sanitize(winrct);
       }
       else {

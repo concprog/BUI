@@ -223,9 +223,21 @@ typedef struct BKArea {
     AZEdge edge;
     int origval, maxsize, orig_xy[2];
     bool active;
+    bool hidden_start; /* pressed on a hidden region: its saved size resets once a drag starts */
   } rmd;
   BKNode *menu_region; /* the region a context menu was opened over */
+  struct BKRegionRecord *pending_regions; /* saved region state the host has not made yet */
 } BKArea;
+
+/* A saved region (screen_layout_set) waiting for the host to create it: applied as soon as the
+ * area has the region (area_restore_regions at the next layout). */
+typedef struct BKRegionRecord {
+  struct BKRegionRecord *next;
+  int type;
+  int size;
+  int hidden;
+  char side[8]; /* "" keeps the region's own side */
+} BKRegionRecord;
 
 #define AREA(n) ((BKArea *)(n)->ext)
 
@@ -411,5 +423,8 @@ int area_key(BKNode *area_node, BKEvent *e);
 
 const char *screen_layout_get(BKNode *screen_node);
 int screen_layout_set(BKNode *screen_node, const char *text);
+/* Applies (and drops) the saved region records whose regions the area has by now. */
+void area_restore_regions(BKNode *area_node);
+void area_free_pending_regions(BKArea *area);
 
 /** \} */

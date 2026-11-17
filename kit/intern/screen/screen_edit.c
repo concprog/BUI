@@ -83,22 +83,36 @@ void screen_area_free(BKNode *screen_node, BKNode *area_node)
   if (screen->active == area_node) {
     screen->active = NULL;
   }
+  /* A join leaves its areas in the operator's state: never a freed one. */
+  if (screen->jd.sa1 == area_node) {
+    screen->jd.sa1 = NULL;
+  }
+  if (screen->jd.sa2 == area_node) {
+    screen->jd.sa2 = NULL;
+  }
   if (area_node == screen->detaching) {
     return; /* the host is removing it already */
   }
   const int index = area_index(screen_node, area_node);
+  void *ref = area_node->ref;
+  bk_retain(ref); /* the close handler may drop the host's last hold: the area outlives it */
+  const bool attached = area_node->parent == screen_node;
+  if (attached) {
+    screen->detaching = area_node; /* guard first: the geometry is done, no closing again */
+  }
   if (index >= 0) {
     bk_emit(area_node, BK_EV_AREA, NULL, index, BK_AREA_CLOSE); /* on the area: its host object */
   }
-  if (area_node->parent == screen_node) {
-    void *ref = area_node->ref;
-    screen->detaching = area_node; /* the geometry is done: no closing again in detach */
-    BK_node_remove(screen_node, area_node);
+  if (attached) {
+    if (area_node->parent == screen_node) {
+      BK_node_remove(screen_node, area_node);
+    }
     screen->detaching = NULL;
     if (!ref) {
       BK_node_free(area_node); /* made here (a split): nobody else holds it */
     }
   }
+  bk_release(ref);
 }
 
 static void area_new_notify(BKNode *screen_node, BKNode *newa, BKNode *src)
@@ -361,6 +375,9 @@ static BKNode *screen_area_trim(BKNode *screen_node, BKNode **area, int size, eS
   float fac = (float)abs(size) / (float)(vertical ? (a->v3->x - a->v1->x) : (a->v3->y - a->v1->y));
   fac = (reverse == vertical) ? 1.0f - fac : fac;
   BKNode *newsa = area_split(screen_node, *area, vertical ? SCREEN_AXIS_V : SCREEN_AXIS_H, fac);
+  if (newsa == NULL) {
+    return NULL; /* too narrow to slice: nothing to swap */
+  }
   /* area_split always returns smallest of the two areas, so might have to swap. */
   if (((fac > 0.5f) == vertical) != reverse) {
     BKNode *temp = *area;
@@ -472,15 +489,18 @@ bool area_docking_apply(BKNode *screen_node, BKNode *sa1, BKNode *sa2,
     const eScreenAxis dir = (dock_target == DOCK_LEFT || dock_target == DOCK_RIGHT) ?
                                 SCREEN_AXIS_V :
                                 SCREEN_AXIS_H;
-    float fac = factor;
-    if (dock_target == DOCK_RIGHT || dock_target == DOCK_TOP) {
-      fac = 1.0f - fac;
+    const bool far_side = (dock_target == DOCK_RIGHT || dock_target == DOCK_TOP);
+    float fac = far_side ? 1.0f - factor : factor;
+    if (far_side && fac == 0.5f) {
+      fac = nextafterf(0.5f, 1.0f); /* a tie would hand back the near half: tip it to the far one */
     }
     BKNode *newa = area_split(screen_node, sa2, dir, fac);
     if (newa == NULL) {
       return false;
     }
-    if (factor <= 0.5f) {
+    /* area_split hands back the right/top part when fac > 0.5 and the left/bottom one
+     * otherwise: pick the half on the docked side from that, not from the factor alone. */
+    if ((fac > 0.5f) == far_side) {
       sa2 = newa;
     }
   }

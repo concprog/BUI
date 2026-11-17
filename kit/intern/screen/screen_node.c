@@ -226,6 +226,7 @@ static void screen_detach(BKNode *n, BKNode *child)
     screen_geom_free(screen); /* the last one: the screen starts over */
   }
   else if (screen_area_close(n, child, NULL)) {
+    screen_remove_unused_scredges(n);
     screen_remove_unused_scrverts(screen);
   }
   screen->detaching = NULL;
@@ -319,6 +320,7 @@ static void area_init(BKNode *n)
 
 static void area_free(BKNode *n)
 {
+  area_free_pending_regions(AREA(n));
   free(n->ext);
   n->ext = NULL;
 }
@@ -352,6 +354,9 @@ static void area_measure(BKNode *n, int *rw, int *rh)
 
 static void area_arrange(BKNode *n)
 {
+  if (AREA(n)->pending_regions) {
+    area_restore_regions(n); /* the host has had its chance to create them */
+  }
   BKNode *screen_node = AREA_SCREEN(n);
   rcti rect;
   if (screen_node) {

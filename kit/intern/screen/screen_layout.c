@@ -15,6 +15,8 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
+#include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -125,7 +127,9 @@ const char *screen_layout_get(BKNode *screen_node)
       const int size = (r->alignment == RGN_ALIGN_TOP || r->alignment == RGN_ALIGN_BOTTOM) ?
                            r->sizey :
                            r->sizex;
-      buf_printf(&b, ", \"size\": %d, \"hidden\": %d}", size, region_is_hidden(r));
+      /* Focus mode hides panels temporarily: save the state to come back to. */
+      const short flag = area->full == SCREENFULL ? r->flagfullscreen : r->flag;
+      buf_printf(&b, ", \"size\": %d, \"hidden\": %d}", size, (flag & RGN_FLAG_HIDDEN) != 0);
     }
     buf_add(&b, "]}", 2);
   }
@@ -143,7 +147,24 @@ const char *screen_layout_get(BKNode *screen_node)
 
 static int json_int(const BKJson *v, int fallback)
 {
-  return (v && v->type == BK_JSON_NUMBER) ? (int)v->number : fallback;
+  /* in int range, or the fallback (the cast of anything else is undefined) */
+  return (v && v->type == BK_JSON_NUMBER && v->number >= (double)INT_MIN &&
+          v->number <= (double)INT_MAX) ?
+             (int)v->number :
+             fallback;
+}
+
+/* A flag: the numbers screen_layout_get writes, or a JSON boolean. */
+static int json_flag(const BKJson *v, int fallback)
+{
+  return (v && v->type == BK_JSON_BOOL) ? (int)v->boolean : json_int(v, fallback);
+}
+
+/* A vertex coordinate: a whole number a ScrVert (short) holds. */
+static bool json_coord_ok(const BKJson *v)
+{
+  return v && v->type == BK_JSON_NUMBER && v->number >= (double)SHRT_MIN &&
+         v->number <= (double)SHRT_MAX && v->number == floor(v->number);
 }
 
 static const BKJson *json_at(const BKJson *arr, int i)
@@ -175,9 +196,7 @@ static bool layout_valid(const BKJson *verts, const BKJson *areas)
   }
   for (int i = 0; i < nverts; i++) {
     const BKJson *v = json_at(verts, i);
-    if (json_len(v) != 2 || !json_at(v, 0) || json_at(v, 0)->type != BK_JSON_NUMBER ||
-        json_at(v, 1)->type != BK_JSON_NUMBER)
-    {
+    if (json_len(v) != 2 || !json_coord_ok(json_at(v, 0)) || !json_coord_ok(json_at(v, 1))) {
       return false;
     }
   }
@@ -206,6 +225,42 @@ static bool layout_valid(const BKJson *verts, const BKJson *areas)
   return true;
 }
 
+static void region_record_apply(BKNode *node, const BKRegionRecord *rec)
+{
+  if (rec->side[0]) {
+    bk_region_set_str(node, "side", rec->side);
+  }
+  bk_region_set_num(node, "size", rec->size);
+  bk_region_set_num(node, "hidden", rec->hidden);
+}
+
+void area_free_pending_regions(BKArea *area)
+{
+  while (area->pending_regions) {
+    BKRegionRecord *next = area->pending_regions->next;
+    free(area->pending_regions);
+    area->pending_regions = next;
+  }
+}
+
+void area_restore_regions(BKNode *area_node)
+{
+  BKArea *area = AREA(area_node);
+  BKRegionRecord **link = &area->pending_regions;
+  while (*link) {
+    BKRegionRecord *rec = *link;
+    BKNode *node = area_region_find(area_node, rec->type);
+    if (node && node->rgn) {
+      region_record_apply(node, rec);
+      *link = rec->next;
+      free(rec);
+    }
+    else {
+      link = &rec->next;
+    }
+  }
+}
+
 static void region_from_json(BKNode *area_node, const BKJson *r)
 {
   const BKJson *type = bk_json_get(r, "region");
@@ -213,16 +268,35 @@ static void region_from_json(BKNode *area_node, const BKJson *r)
     return;
   }
   const int t = region_type_from_name(type->string);
-  BKNode *node = t >= 0 ? area_region_find(area_node, t) : NULL;
-  if (!node || !node->rgn) {
-    return; /* the host didn't give this area that region (yet): nothing to restore */
+  if (t < 0) {
+    return;
   }
+  BKRegionRecord rec = {.type = t,
+                        .size = json_int(bk_json_get(r, "size"), 0),
+                        .hidden = json_flag(bk_json_get(r, "hidden"), 0)};
   const BKJson *side = bk_json_get(r, "side");
   if (side && side->type == BK_JSON_STRING) {
-    bk_region_set_str(node, "side", side->string);
+    snprintf(rec.side, sizeof(rec.side), "%s", side->string);
   }
-  bk_region_set_num(node, "size", json_int(bk_json_get(r, "size"), 0));
-  bk_region_set_num(node, "hidden", json_int(bk_json_get(r, "hidden"), 0));
+  BKNode *node = area_region_find(area_node, t);
+  if (node && node->rgn) {
+    region_record_apply(node, &rec);
+    return;
+  }
+  /* The host hasn't given this area that region yet (a host that answers BK_AREA_NEW later
+   * does so after this returns): keep the record for it. */
+  BKArea *area = AREA(area_node);
+  BKRegionRecord **link = &area->pending_regions;
+  while (*link && (*link)->type != t) {
+    link = &(*link)->next;
+  }
+  if (!*link) { /* appended; an older record of this type is replaced in place */
+    *link = (BKRegionRecord *)calloc(1, sizeof(rec));
+  }
+  if (*link) {
+    rec.next = (*link)->next;
+    **link = rec;
+  }
 }
 
 int screen_layout_set(BKNode *screen_node, const char *text)
@@ -237,6 +311,15 @@ int screen_layout_set(BKNode *screen_node, const char *text)
   }
   BKScreen *screen = SCREEN(screen_node);
   const int nareas = json_len(areas);
+
+  /* Leave maximized / focus mode first: that gives the hidden areas and regions back (the
+   * restored layout then enters its own state, if any). */
+  SCREEN_AREAS_ITER (screen_node, other) {
+    if (other->full) {
+      screen_state_toggle(screen_node, other->node, other->full);
+      break;
+    }
+  }
 
   /* Areas: children in order take the saved ones; the rest are made or closed. */
   for (int i = screen_node->nkids - 1; i >= nareas; i--) {
@@ -272,6 +355,7 @@ int screen_layout_set(BKNode *screen_node, const char *text)
       c[k] = vs[json_int(json_at(av, k), 0)];
     }
     area->full = 0;
+    area_free_pending_regions(area); /* an older layout's records no longer apply */
     screen_area_attach(screen_node, node, c[0], c[1], c[2], c[3]);
     ScrVert *loop[5] = {c[0], c[1], c[2], c[3], c[0]};
     for (int k = 0; k < 4; k++) {

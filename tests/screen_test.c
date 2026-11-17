@@ -6,6 +6,7 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -61,6 +62,61 @@ static void rect_of(BKNode *n, int r[4])
 {
   render();
   BK_node_rect(n, r);
+}
+
+static BKHost g_host;
+
+/* A screen of one area "A" in its own context (g_ctx, until free_screen). */
+static BKNode *test_screen(BKNode **r_area)
+{
+  BKNode *s = BK_node_new("screen");
+  BKNode *a = BK_node_new("area");
+  BK_set_str(a, "editor", "A");
+  BK_node_add(s, a, -1);
+  g_ctx = BK_context_new(s);
+  g_host.request = request;
+  g_host.emit = emit;
+  BK_context_set_host(g_ctx, &g_host);
+  BK_render(g_ctx, g_r, W, H, 1);
+  *r_area = a;
+  return s;
+}
+
+static void free_screen(BKNode *s)
+{
+  BK_context_free(g_ctx);
+  BK_node_free(s);
+}
+
+/* Docks a copy of the layout's left area onto its right one at the default factor and says
+ * whether the source ended up on the `where` side of the target. */
+static bool dock_lands(BKDock where)
+{
+  BKNode *a;
+  BKNode *s = test_screen(&a);
+  BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);
+  BKNode *c = BK_area_split(b, BK_AXIS_H, 0.5f); /* a is full height, b is not: not aligned */
+  int rs[4], rt[4];
+  bool ok = a && b && c && BK_area_dock(a, b, where, 0.5f);
+  rect_of(a, rs);
+  rect_of(b, rt);
+  ok = ok && BK_node_child_count(s) == 3 && rt[2] > 0 && rt[3] > 0; /* the target stays */
+  switch (where) {
+    case BK_DOCK_LEFT:
+      ok = ok && rs[0] < rt[0];
+      break;
+    case BK_DOCK_RIGHT:
+      ok = ok && rs[0] > rt[0];
+      break;
+    case BK_DOCK_TOP:
+      ok = ok && rs[1] < rt[1];
+      break;
+    default:
+      ok = ok && rs[1] > rt[1];
+      break;
+  }
+  free_screen(s);
+  return ok;
 }
 
 static void drag(int x0, int y0, int x1, int y1, int mods)
@@ -246,7 +302,7 @@ int main(void)
   CHECK(BK_node_add(panel, side, -1));
   CHECK(BK_node_add(panel, body, -1));
   CHECK(!BK_node_add(panel, body2, -1)); /* one main region */
-  CHECK(!BK_set_str(body2, "region", "sidebar") || 1);
+  CHECK(BK_set_str(body2, "region", "sidebar")); /* a loose node may become any region */
   BKNode *tools = BK_node_new("column");
   CHECK(BK_set_str(tools, "region", "toolbar"));
   CHECK(BK_node_add(panel, tools, -1));
@@ -258,7 +314,7 @@ int main(void)
   BKNode *dup = BK_node_new("column");
   CHECK(BK_set_str(dup, "region", "toolbar"));
   CHECK(BK_node_add(panel, dup, -1)); /* allowed in, but not the region: it takes no place */
-  CHECK(!BK_set_str(dup, "region", "toolbar") || 1);
+  CHECK(!BK_set_str(dup, "region", "toolbar")); /* a second one is refused */
 
   BKContext *pc = BK_context_new(panel);
   BK_context_set_host(pc, &host);
@@ -365,6 +421,131 @@ int main(void)
   }
   BK_context_free(g_ctx);
   BK_node_free(screen);
+
+  /* -- reordering an area inside its screen keeps it: no close, no lost geometry -- */
+  {
+    BKNode *a;
+    BKNode *s = test_screen(&a);
+    BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);
+    BKNode *c = BK_area_split(b, BK_AXIS_H, 0.5f);
+    const int closes = g_close;
+    CHECK(BK_node_add(s, a, 2));
+    CHECK(BK_node_child_count(s) == 3 && BK_node_parent(a) == s);
+    CHECK(BK_node_child(s, 0) == b && BK_node_child(s, 1) == c && BK_node_child(s, 2) == a);
+    CHECK(BK_node_add(s, a, 0)); /* and back to the front */
+    CHECK(BK_node_child(s, 0) == a && BK_node_child(s, 1) == b && BK_node_child(s, 2) == c);
+    CHECK(BK_node_add(s, a, -1)); /* -1: the end */
+    CHECK(BK_node_child(s, 2) == a);
+    CHECK(g_close == closes);
+    int rr[4];
+    rect_of(a, rr);
+    CHECK(rr[2] > 0 && rr[3] > 0);
+    free_screen(s);
+  }
+
+  /* -- docking at exactly one half picks the requested side -- */
+  CHECK(dock_lands(BK_DOCK_LEFT));
+  CHECK(dock_lands(BK_DOCK_RIGHT));
+  CHECK(dock_lands(BK_DOCK_TOP));
+  CHECK(dock_lands(BK_DOCK_BOTTOM));
+
+  /* -- a maximized screen restored from a normal layout shows all its areas again -- */
+  {
+    BKNode *a;
+    BKNode *s = test_screen(&a);
+    BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);
+    CHECK(b != NULL);
+    const char *l = BK_get_str(s, "layout");
+    char *normal = malloc(strlen(l) + 1);
+    strcpy(normal, l);
+    CHECK(BK_set_str(a, "full", "maximized"));
+    int rr[4];
+    rect_of(b, rr);
+    CHECK(rr[2] == 0 || rr[3] == 0); /* hidden behind the maximized one */
+    CHECK(BK_set_str(s, "layout", normal));
+    rect_of(b, rr);
+    CHECK(rr[2] > 0 && rr[3] > 0);
+    /* coordinates a ScrVert cannot hold are refused up front */
+    CHECK(!BK_set_str(s, "layout",
+                      "{\"bui_screen\": 1, \"verts\": [[0,0],[0,10],[65536,10],[65536,0]], "
+                      "\"areas\": [{\"v\": [0,1,2,3], \"editor\": \"A\"}]}"));
+    CHECK(!BK_set_str(s, "layout",
+                      "{\"bui_screen\": 1, \"verts\": [[0,0],[0,10],[20.5,10],[20.5,0]], "
+                      "\"areas\": [{\"v\": [0,1,2,3], \"editor\": \"A\"}]}"));
+    CHECK(BK_node_child_count(s) == 2);
+    free(normal);
+    free_screen(s);
+  }
+
+  /* -- saved region state: booleans for hidden, and regions the host creates later -- */
+  {
+    BKNode *a;
+    BKNode *s = test_screen(&a);
+    BKNode *side_a = BK_node_new("sidebar");
+    CHECK(BK_node_add(a, side_a, -1));
+    CHECK(BK_set_num(side_a, "size", 250));
+    BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);
+    CHECK(b != NULL);
+    rect_of(a, r);
+    const char *l = BK_get_str(s, "layout");
+    CHECK(strstr(l, "\"sidebar\"") && strstr(l, "\"size\": 250"));
+    char *saved = malloc(strlen(l) + 1);
+    strcpy(saved, l);
+    /* "hidden": true restores as hidden */
+    char *hidden = malloc(strlen(l) + 8);
+    char *at = strstr(saved, "\"hidden\": 0");
+    CHECK(at != NULL);
+    snprintf(hidden, strlen(l) + 8, "%.*s\"hidden\": true%s", (int)(at - saved), saved,
+             at + strlen("\"hidden\": 0"));
+    CHECK(BK_set_str(s, "layout", hidden));
+    CHECK(BK_get_num(side_a, "hidden") == 1);
+    CHECK(BK_set_str(s, "layout", saved));
+    CHECK(BK_get_num(side_a, "hidden") == 0);
+    free(hidden);
+    free_screen(s);
+
+    /* a second screen restores the saved one: its new area is filled by the host after the
+     * notification, and still gets the saved sidebar size */
+    BKNode *a2;
+    BKNode *s2 = test_screen(&a2);
+    CHECK(BK_set_str(s2, "layout", saved));
+    CHECK(BK_node_child_count(s2) == 2);
+    BKNode *b2 = BK_node_child(s2, 1);
+    BKNode *side_b = BK_node_new("sidebar");
+    CHECK(BK_node_add(a2, side_b, -1)); /* the host answers late (the first area) */
+    { int rr[4]; rect_of(b2, rr); }
+    CHECK(BK_get_num(side_b, "size") == 250);
+    free_screen(s2);
+    free(saved);
+  }
+
+  /* -- a plain scroll of a quarter pixel adds up -- */
+  {
+    BKNode *col = BK_node_new("column");
+    BKNode *rows[40];
+    for (int i = 0; i < 40; i++) {
+      rows[i] = BK_node_new("label");
+      BK_set_str(rows[i], "text", "row");
+      BK_node_add(col, rows[i], -1);
+    }
+    BKContext *sc = BK_context_new(col);
+    BK_context_set_host(sc, &g_host);
+    BK_render(sc, g_r, 200, 100, 1);
+    int y0[4], y1[4];
+    BK_node_rect(rows[0], y0);
+    for (int i = 0; i < 3; i++) {
+      BK_scroll_px(sc, 10, 50, 0.0f, -0.25f, 0);
+    }
+    BK_render(sc, g_r, 200, 100, 0);
+    BK_node_rect(rows[0], y1);
+    CHECK(y1[1] == y0[1]); /* three quarters: not a whole pixel yet */
+    BK_scroll_px(sc, 10, 50, 0.0f, -0.25f, 0);
+    BK_render(sc, g_r, 200, 100, 0);
+    BK_node_rect(rows[0], y1);
+    CHECK(y1[1] == y0[1] - 1); /* the fourth completes it */
+    BK_context_free(sc);
+    BK_node_free(col);
+  }
   BUI_raster_free(g_r);
   if (!g_fail) {
     printf("screen_test: ok\n");

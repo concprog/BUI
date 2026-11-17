@@ -336,7 +336,7 @@ void screen_geom_edge_aligned_merge(BKNode *screen_node, ScrEdge *edge)
     if (dir_axis == SCREEN_AXIS_V && abs(v->x - edge->v2->x) < EDGE_ALIGN_TOLERANCE) {
       v->x = edge->v2->x;
     }
-    else if (abs(v->y - edge->v2->y) < EDGE_ALIGN_TOLERANCE) {
+    else if (dir_axis == SCREEN_AXIS_H && abs(v->y - edge->v2->y) < EDGE_ALIGN_TOLERANCE) {
       v->y = edge->v2->y;
     }
   }
