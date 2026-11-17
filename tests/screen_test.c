@@ -119,6 +119,28 @@ static bool dock_lands(BKDock where)
   return ok;
 }
 
+/* The "id" of each area in the screen's layout JSON, in its order; returns how many. */
+static int layout_ids(BKNode *s, unsigned *ids, int max)
+{
+  const char *p = BK_get_str(s, "layout");
+  int n = 0;
+  while (p && n < max && (p = strstr(p, "\"id\": ")) != NULL) {
+    p += 6;
+    ids[n++] = (unsigned)strtoul(p, NULL, 10);
+  }
+  return n;
+}
+
+static bool has_id(const unsigned *ids, int n, unsigned id)
+{
+  for (int i = 0; i < n; i++) {
+    if (ids[i] == id) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static void drag(int x0, int y0, int x1, int y1, int mods)
 {
   BK_motion(g_ctx, x0, y0, mods);
@@ -440,6 +462,44 @@ int main(void)
     int rr[4];
     rect_of(a, rr);
     CHECK(rr[2] > 0 && rr[3] > 0);
+    free_screen(s);
+  }
+
+  /* -- area ids: in the layout, unique, and stable through drags, splits, joins and reorders -- */
+  {
+    BKNode *a;
+    BKNode *s = test_screen(&a);
+    unsigned id0[8], id1[8], id2[8];
+    CHECK(layout_ids(s, id0, 8) == 1 && id0[0] != 0);
+    BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);
+    CHECK(b != NULL);
+    CHECK(layout_ids(s, id1, 8) == 2);
+    CHECK(id1[0] != id1[1]);
+    CHECK(has_id(id1, 2, id0[0])); /* the split kept the id on the kept half */
+    unsigned b_id = id1[0] == id0[0] ? id1[1] : id1[0];
+    /* an edge drag changes the rectangles, not the ids */
+    int ra[4];
+    rect_of(a, ra);
+    drag(ra[0] + ra[2] + 1, H / 2, ra[0] + ra[2] - 80, H / 2, 0);
+    CHECK(layout_ids(s, id2, 8) == 2 && has_id(id2, 2, id0[0]) && has_id(id2, 2, b_id));
+    /* a reorder keeps them */
+    CHECK(BK_node_add(s, a, 1));
+    CHECK(layout_ids(s, id2, 8) == 2 && has_id(id2, 2, id0[0]) && has_id(id2, 2, b_id));
+    /* a join keeps the surviving area's id; a later split never reuses the one that went */
+    CHECK(BK_area_join(a, b));
+    CHECK(layout_ids(s, id2, 8) == 1 && id2[0] == id0[0]);
+    BKNode *c = BK_area_split(a, BK_AXIS_H, 0.5f);
+    CHECK(c != NULL);
+    CHECK(layout_ids(s, id2, 8) == 2 && !has_id(id2, 2, b_id));
+    /* restoring a layout leaves the areas their own ids */
+    const char *l = BK_get_str(s, "layout");
+    char *saved = malloc(strlen(l) + 1);
+    strcpy(saved, l);
+    unsigned before[8];
+    layout_ids(s, before, 8);
+    CHECK(BK_set_str(s, "layout", saved));
+    CHECK(layout_ids(s, id2, 8) == 2 && has_id(id2, 2, before[0]) && has_id(id2, 2, before[1]));
+    free(saved);
     free_screen(s);
   }
 

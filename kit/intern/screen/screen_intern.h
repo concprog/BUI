@@ -210,6 +210,7 @@ typedef struct AZone {
 
 typedef struct BKArea {
   BKNode *node;
+  unsigned id; /* stable for the area's life (moves, resizes, reorders), never reused: saved as "id" */
   ScrVert *v1, *v2, *v3, *v4; /* bottom-left, top-left, top-right, bottom-right */
   rcti totrct;
   int winx, winy;

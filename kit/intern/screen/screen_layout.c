@@ -3,13 +3,14 @@
  * anywhere.
  *
  *   {"bui_screen": 1, "size": [w, h], "verts": [[x, y], ...],
- *    "areas": [{"v": [1, 0, 3, 2], "editor": "3D Viewport",
+ *    "areas": [{"v": [1, 0, 3, 2], "id": 1, "editor": "3D Viewport",
  *               "regions": [{"region": "sidebar", "side": "right", "size": 280,
  *                            "hidden": false}, ...]}, ...]}
  *
  * Vertices are in the screen's pixels (y up) at the saved size; restoring
  * scales them to the screen's current size (screen_geom_vertices_scale).
- * Edges are rebuilt from the areas' outlines. Restoring makes the screen
+ * "id" is the area's serial (stable, never reused; ignored when restoring: areas keep their
+ * own). Edges are rebuilt from the areas' outlines. Restoring makes the screen
  * have the saved areas: children in order take the saved areas, missing
  * ones are created (BK_AREA_NEW), extra ones are closed (BK_AREA_CLOSE).
  *
@@ -110,7 +111,8 @@ const char *screen_layout_get(BKNode *screen_node)
       idx[k] = BLI_findindex(&screen->vertbase, vs[k]);
     }
     buf_printf(&b, "{\"v\": [%d, %d, ", idx[0], idx[1]);
-    buf_printf(&b, "%d, %d], \"editor\": ", idx[2], idx[3]);
+    buf_printf(&b, "%d, %d], ", idx[2], idx[3]);
+    buf_printf(&b, "\"id\": %d, \"editor\": ", (int)area->id, 0);
     buf_str(&b, area->node->text);
     buf_printf(&b, ", \"full\": %d, \"regions\": [", area->full, 0);
     int nr = 0;

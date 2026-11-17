@@ -313,7 +313,9 @@ const BKClass bk_cls_screen = {.name = "screen",
 
 static void area_init(BKNode *n)
 {
+  static unsigned next_id = 0; /* never reused: ids outlive the areas that had them */
   BKArea *area = (BKArea *)calloc(1, sizeof(BKArea));
+  area->id = ++next_id;
   area->node = n;
   n->ext = area;
 }
