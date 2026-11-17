@@ -17,6 +17,7 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 import argparse
 import glob
+import json
 import os
 import shutil
 import subprocess
@@ -60,6 +61,27 @@ RUST_TARGETS = {"arm64-v8a": "aarch64-linux-android", "x86_64": "x86_64-linux-an
                 "armeabi-v7a": "armv7-linux-androideabi"}
 
 
+def staticlib(messages, manifest):
+    """The staticlib cargo built for `manifest`, from its JSON messages: wherever its target
+    directory is (the workspace's, CARGO_TARGET_DIR, the crate's own), and whatever [lib].name is."""
+    found = None
+    for line in messages.splitlines():
+        try:
+            m = json.loads(line)
+        except ValueError:
+            continue
+        if m.get("reason") != "compiler-artifact" or "staticlib" not in m.get("target", {}).get("crate_types", []):
+            continue
+        if os.path.normcase(os.path.abspath(m.get("manifest_path", ""))) != os.path.normcase(manifest):
+            continue
+        libs = [f for f in m.get("filenames", []) if f.endswith(".a") or f.endswith(".lib")]
+        if libs:
+            found = libs[-1]
+    if not found:
+        sys.exit("cargo built no staticlib for %s (crate-type = [\"staticlib\"] in its [lib])" % manifest)
+    return found
+
+
 def build_rust(crate, ndk, abi, make):
     """cargo builds the app's staticlib (and, through blenderui-sys, the kit) for one ABI."""
     triple = RUST_TARGETS[abi]
@@ -79,11 +101,15 @@ def build_rust(crate, ndk, abi, make):
                PATH=os.path.dirname(make) + os.pathsep + os.environ["PATH"])
     # bindgen (QuickJS bindings): the NDK's libclang and sysroot
     sysroot = os.path.join(llvm, "..", "sysroot")
-    env.update(LIBCLANG_PATH=llvm, **{"BINDGEN_EXTRA_CLANG_ARGS_" + var: "--sysroot=" + sysroot.replace("\\", "/")})
-    run(["cargo", "build", "--release", "--target", triple, "--manifest-path",
-         os.path.join(crate, "Cargo.toml")], env=env)
-    name = open(os.path.join(crate, "Cargo.toml"), encoding="utf-8").read().split('name = "')[1].split('"')[0]
-    return os.path.join(crate, "target", triple, "release", "lib%s.a" % name.replace("-", "_"))
+    # libclang is in bin/ on Windows and lib/ elsewhere; a LIBCLANG_PATH the user set wins
+    env.setdefault("LIBCLANG_PATH", llvm if os.name == "nt" else os.path.normpath(os.path.join(llvm, "..", "lib")))
+    env.update(**{"BINDGEN_EXTRA_CLANG_ARGS_" + var: "--sysroot=" + sysroot.replace("\\", "/")})
+    manifest = os.path.abspath(os.path.join(crate, "Cargo.toml"))
+    cmd = ["cargo", "build", "--release", "--target", triple, "--manifest-path", manifest,
+           "--message-format=json-render-diagnostics"]
+    print("+", " ".join(cmd))
+    done = subprocess.run(cmd, env=env, check=True, stdout=subprocess.PIPE, text=True)
+    return staticlib(done.stdout, manifest)
 
 
 def build_abi(ndk, abi, out, app_args, rust=None):
@@ -166,8 +192,9 @@ def main():
         assets["bui.lua"] = os.path.join(ROOT, "bindings", "lua", "bui.lua")  # the wrapper `require("bui")` finds
     if a.imgui is not None:
         app_args = ["-DBUI_ANDROID_APP=imgui", "-DBUI_BUILD_IMGUI=ON", "-DBUI_BUILD_LUA_BINDINGS=OFF"]
-        if a.imgui:
-            app_args.append("-DBUI_ANDROID_IMGUI_SRC=" + os.path.abspath(a.imgui).replace("\\", "/"))
+        # always named: CMake caches it, so a bare --imgui after --imgui custom.cpp must reset it
+        imgui_src = a.imgui or os.path.join(ROOT, "platform", "android", "imgui_app.cpp")
+        app_args.append("-DBUI_ANDROID_IMGUI_SRC=" + os.path.abspath(imgui_src).replace("\\", "/"))
     if a.js:
         rust = os.path.join(ROOT, "platform", "android", "js")
         main_js = os.path.join(a.out, "main.js")

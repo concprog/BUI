@@ -24,14 +24,22 @@ int luaopen__bui(lua_State *L);
 /* Load assets/<name> (dots in a module name are folders) as a chunk; 0 when there is none. */
 static int load_asset(lua_State *L, const char *path)
 {
-  AAsset *a = AAssetManager_open((AAssetManager *)BK_android_assets(), path, AASSET_MODE_BUFFER);
+  AAssetManager *assets = (AAssetManager *)BK_android_assets(); /* NULL before an app is attached */
+  if (!assets) {
+    return 0;
+  }
+  AAsset *a = AAssetManager_open(assets, path, AASSET_MODE_BUFFER);
   if (!a) {
     return 0;
   }
-  const int status = luaL_loadbuffer(L, (const char *)AAsset_getBuffer(a), (size_t)AAsset_getLength(a),
-                                     path);
+  const char *code = (const char *)AAsset_getBuffer(a); /* NULL when it cannot be mapped */
+  if (!code) {
+    AAsset_close(a);
+    return 0;
+  }
+  const int status = luaL_loadbuffer(L, code, (size_t)AAsset_getLength(a), path);
   AAsset_close(a);
-  return status == LUA_OK ? 1 : -1;
+  return status == LUA_OK ? 1 : -1; /* -1: the error message is on the stack */
 }
 
 /* package.searchers entry: `require("a.b")` reads assets/a/b.lua */
@@ -72,6 +80,13 @@ static void show_error(const char *message)
   BK_context_free(ctx);
 }
 
+/* The error on top of the stack as text: a script may raise a table or nil. */
+static const char *error_text(lua_State *L)
+{
+  const char *m = lua_tostring(L, -1);
+  return m ? m : lua_pushfstring(L, "(error object is a %s value)", luaL_typename(L, -1));
+}
+
 void bui_app_main(void)
 {
   lua_State *L = luaL_newstate();
@@ -91,10 +106,10 @@ void bui_app_main(void)
 
   const int loaded = load_asset(L, "main.lua");
   if (loaded <= 0) {
-    show_error(loaded < 0 ? lua_tostring(L, -1) : "assets/main.lua is missing");
+    show_error(loaded < 0 ? error_text(L) : "assets/main.lua is missing");
   }
   else if (lua_pcall(L, 0, 0, 0) != LUA_OK) { /* runs until the window closes */
-    show_error(lua_tostring(L, -1));
+    show_error(error_text(L));
   }
   lua_close(L);
 }

@@ -19,16 +19,25 @@ unsafe extern "C" {
 
 /// The bytes of `assets/<name>`.
 fn asset(name: &std::ffi::CStr) -> Option<Vec<u8>> {
-    // SAFETY: the manager lives as long as the activity; the asset is read whole and closed.
+    // SAFETY: the manager lives as long as the activity; the asset is read whole and closed on
+    // every path after it opened.
     unsafe {
-        let a = AAssetManager_open(BK_android_assets(), name.as_ptr(), 3 /* AASSET_MODE_BUFFER */);
+        let manager = BK_android_assets(); // null before an app is attached
+        if manager.is_null() {
+            return None;
+        }
+        let a = AAssetManager_open(manager, name.as_ptr(), 3 /* AASSET_MODE_BUFFER */);
         if a.is_null() {
             return None;
         }
-        let mut bytes = vec![0u8; usize::try_from(AAsset_getLength64(a)).ok()?];
+        let Ok(len) = usize::try_from(AAsset_getLength64(a)) else {
+            AAsset_close(a);
+            return None;
+        };
+        let mut bytes = vec![0u8; len];
         let read = AAsset_read(a, bytes.as_mut_ptr().cast(), bytes.len());
         AAsset_close(a);
-        (usize::try_from(read).ok()? == bytes.len()).then_some(bytes)
+        (usize::try_from(read) == Ok(len)).then_some(bytes)
     }
 }
 

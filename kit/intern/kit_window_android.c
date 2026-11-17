@@ -28,6 +28,7 @@
 #  include <android/native_window.h>
 #  include <jni.h>
 #  include <math.h>
+#  include <stdatomic.h>
 #  include <stdlib.h>
 #  include <string.h>
 #  include <time.h>
@@ -92,7 +93,7 @@ static BKWindow *g_win;
 static struct android_app *g_app;
 static int g_quit, g_keep_alive;
 static void (*g_wake_cb)(void);
-static volatile int g_wake_flag;
+static atomic_int g_wake_flag; /* set by any thread (BK_window_wake), consumed by the loop */
 static int (*g_stop)(void);
 
 static double now_ms(void)
@@ -258,8 +259,11 @@ static void draw(BKWindow *win)
    * date. Locking may also have widened the rectangle: send all of it. */
   const uint32_t *src = BUI_raster_pixels(win->raster);
   uint32_t *dst = (uint32_t *)buf.bits + (size_t)win->oy * buf.stride + win->ox;
-  const int back[4] = {dirty.left - win->ox, dirty.top - win->oy, dirty.right - dirty.left,
-                       dirty.bottom - dirty.top};
+  /* Locking may have widened `dirty` past what was asked (to the whole buffer, say): only the
+   * part inside the content has pixels in the raster to copy. */
+  const int bx0 = BK_MAX(dirty.left - win->ox, 0), by0 = BK_MAX(dirty.top - win->oy, 0);
+  const int bx1 = BK_MIN(dirty.right - win->ox, win->w), by1 = BK_MIN(dirty.bottom - win->oy, win->h);
+  const int back[4] = {bx0, by0, BK_MAX(bx1 - bx0, 0), BK_MAX(by1 - by0, 0)};
   if (full) {
     for (int y = 0; y < win->sh; y++) {
       uint32_t *row = (uint32_t *)buf.bits + (size_t)y * buf.stride;
@@ -271,7 +275,9 @@ static void draw(BKWindow *win)
       }
     }
   }
-  convert(src, win->w, dst, buf.stride, full ? whole[0] : back);
+  if (full || (back[2] > 0 && back[3] > 0)) {
+    convert(src, win->w, dst, buf.stride, full ? whole[0] : back);
+  }
   ANativeWindow_unlockAndPost(surface);
   win->frames++;
 }
@@ -763,7 +769,10 @@ static int open_windows(void)
 /* Milliseconds the loop may sleep: forever when idle. */
 static int wait_ms(const BKWindow *win)
 {
-  if (g_wake_flag || (win && (win->dirty || win->want_frame || win->fling || BK_animating(win->ctx)))) {
+  /* With no surface nothing can be drawn, so a pending frame must not keep the loop spinning: it
+   * waits for the surface (APP_CMD_INIT_WINDOW wakes the looper). */
+  if (atomic_load(&g_wake_flag) ||
+      (win && (win->fling || (g_app->window && (win->dirty || win->want_frame || BK_animating(win->ctx)))))) {
     return 0;
   }
   double next = 0.0;
@@ -824,8 +833,7 @@ static void step(int block)
     g_quit = 1;
     return;
   }
-  if (g_wake_flag) {
-    g_wake_flag = 0;
+  if (atomic_exchange(&g_wake_flag, 0)) {
     if (g_wake_cb) {
       g_wake_cb();
     }
@@ -882,7 +890,7 @@ int BK_window_wake_init(void (*cb)(void))
 
 void BK_window_wake(void)
 {
-  g_wake_flag = 1; /* any thread: the loop calls the wake callback soon */
+  atomic_store(&g_wake_flag, 1); /* any thread: the loop calls the wake callback soon */
   if (g_app) {
     ALooper_wake(g_app->looper);
   }
