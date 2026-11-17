@@ -607,9 +607,50 @@ final class Node {
         return other !is null && BK_area_swap(handle, other.handle) != 0;
     }
 
-    /// A neighbor takes this area's place.
+    /// A neighbor takes this area's place. D-owned nodes inside the area are detached, not freed,
+    /// and keep their handlers: they move with the area when it survives (a D-owned area), or to
+    /// the survivors themselves when the kit frees the area (one the screen made).
     bool close() {
-        return BK_area_close(handle) != 0;
+        if (handle is null) {
+            return false;
+        }
+        if (owned) {
+            stashSubtreeHandlers();
+            const closed = BK_area_close(handle) != 0;
+            rehomeSubtreeHandlers(); // the area lives on, detached: re-own them (or restore them)
+            return closed;
+        }
+        // The kit frees this area and its C-owned nodes: note them and the D-owned survivors now,
+        // as the native tree is gone after. Only pointers of freed nodes are compared, never read.
+        BKNode*[] gone;
+        Node[] survivors;
+        collectClosing(handle, gone, survivors);
+        auto owner = handlerOwner();
+        auto store = owner is null ? &store_ : &owner.store_;
+        if (BK_area_close(handle) == 0) {
+            return false;
+        }
+        foreach (survivor; survivors) {
+            survivor.store_.drop();
+            store.takeSubtree(survivor.handle, &survivor.store_);
+        }
+        foreach (node; gone) {
+            store.take(node);
+        }
+        return true;
+    }
+
+    private static void collectClosing(BKNode* h, ref BKNode*[] gone, ref Node[] survivors) {
+        gone ~= h;
+        for (int i = 0, n = BK_node_child_count(h); i < n; ++i) {
+            auto child = BK_node_child(h, i);
+            if (BK_node_ref(child) is null) {
+                collectClosing(child, gone, survivors); // freed with the area
+            }
+            else if (auto wrapper = wrapperAt(child)) {
+                survivors ~= wrapper;
+            }
+        }
     }
 
     /// x, y, w, h in window pixels.

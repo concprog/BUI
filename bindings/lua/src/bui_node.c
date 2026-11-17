@@ -293,6 +293,11 @@ void luabui_invalidate_subtree(lua_State *L, BKNode *n) {
 
 static int l_node_free(lua_State *L) {
   luabui_Node *ud = CHECK_NODE(L, 1);
+  if (ud->node && luabui_in_close_notice(ud->node)) {
+    /* the area's close handler is running: its screen frees the area right after (and nodes above it
+     * are in use): freeing here would leave the screen with a dangling pointer */
+    return luaL_error(L, "cannot free a node while its area is closing (the screen frees it)");
+  }
   if (ud->node) {
     BKNode *n = ud->node; /* keep it: invalidation NULLs this wrapper too */
     luabui_invalidate_subtree(L, n);

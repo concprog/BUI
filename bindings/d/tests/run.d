@@ -1349,6 +1349,15 @@ void testScreen() {
     check(first.rect[2] < r0[2] - 90, "the edge moved");
     check(cslice(BK_get_str(screen.handle, "layout")).length > 0, "the layout as text");
 
+    // A D-owned node in an area the screen made keeps its handlers when that area closes.
+    auto pane = new Node("column");
+    right.add(pane);
+    int clicks;
+    pane.onClick((NodeEvent) { ++clicks; });
+    check(right.close(), "close an area");
+    pane.dispatch(BK_EV_CLICK, null, 0, 0);
+    check(clicks == 1, "a D-owned node keeps its handlers when its area closes");
+
     auto area = new Node("area");
     auto side = new Node("sidebar");
     check(BK_set_num(side.handle, "size", 200) == 1, "a sidebar's size");
