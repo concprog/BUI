@@ -200,13 +200,21 @@ impl Flavour for JsApp {
     /// An existing `package.json` keeps everything it has; the scripts the commands run are added when absent.
     fn adopt(&self, dir: &Path) -> Result<Vec<Adopted>> {
         let path = dir.join("package.json");
-        let Some(text) = read(dir, "package.json") else {
-            return Ok(Vec::new());
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e).with_context(|| format!("reading {}: fix it first, then run `bui init` again", path.display())),
         };
         let mut doc: serde_json::Value = serde_json::from_str(&text).with_context(|| format!("{} is not valid JSON: fix it first, then run `bui init` again", path.display()))?;
         let Some(root) = doc.as_object_mut() else {
             bail!("{} is not a JSON object: fix it first, then run `bui init` again", path.display());
         };
+        if self.uses_tsx() && root.get("type").and_then(serde_json::Value::as_str) == Some("module") {
+            bail!(
+                "{} has \"type\": \"module\", and `tsx` would then load the entry as an ES module, where Node cannot import the named exports of the CommonJS @blender-ui/react that way: remove \"type\" (or pick JavaScript, or another framework), then run `bui init` again",
+                path.display()
+            );
+        }
         let scripts = root.entry("scripts").or_insert_with(|| json!({}));
         let Some(scripts) = scripts.as_object_mut() else {
             bail!("\"scripts\" in {} is not an object: fix it first, then run `bui init` again", path.display());
@@ -323,6 +331,19 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("package.json")).unwrap(), "{ not json", "it is not touched");
         std::fs::write(dir.join("package.json"), r#"{"scripts": []}"#).unwrap();
         assert!(app().adopt(&dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unreadable_manifests_and_module_type_with_tsx_stop_init() {
+        let dir = scratch("stop");
+        std::fs::write(dir.join("package.json"), [0xff, 0xfe, 0x7b]).unwrap();
+        assert!(app().adopt(&dir).is_err(), "invalid UTF-8 is an error, not an absent file");
+        let tsx = JsApp { framework: Framework::React, language: Language::TypeScript, pm: PackageManager::Npm };
+        std::fs::write(dir.join("package.json"), r#"{"type":"module"}"#).unwrap();
+        assert!(tsx.adopt(&dir).is_err(), "tsx cannot import the CommonJS react package as ESM");
+        assert!(app().adopt(&dir).is_ok(), "plain JavaScript can");
+        assert_eq!(app().adopt(&scratch("none")).unwrap().len(), 0, "no manifest, nothing adopted");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

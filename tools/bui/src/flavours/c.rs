@@ -18,15 +18,33 @@ fn cmake(dir: &Path, args: &[&str]) -> Cmd {
     Cmd::new("cmake", args.iter().copied()).in_dir(dir)
 }
 
+/// `s` with every character a space of the same byte length, newlines kept.
+fn blank(s: &str) -> String {
+    s.chars().map(|c| if c == '\n' || c == '\r' { c.to_string() } else { " ".repeat(c.len_utf8()) }).collect()
+}
+
 /// BUI's own `FetchContent_Declare(...)` in a CMakeLists: the text up to where its tag begins, and the
 /// tag (`v0.5.1`). Other dependencies' blocks have tags of their own, which are not ours to read or move.
 fn bui_pin(text: &str) -> Option<(&str, &str)> {
-    const DECLARE: &str = "fetchcontent_declare(";
-    let lower = text.to_ascii_lowercase(); // same byte offsets as `text`
+    const DECLARE: &str = "fetchcontent_declare";
+    // lower-cased, with comments blanked out, keeping every byte offset of `text`: a commented-out tag is not the tag
+    let lower: String = text
+        .split_inclusive('\n')
+        .map(|line| match line.find('#') {
+            Some(at) => format!("{}{}", line[..at].to_ascii_lowercase(), blank(&line[at..])),
+            None => line.to_ascii_lowercase(),
+        })
+        .collect();
     let mut from = 0;
     while let Some(i) = lower[from..].find(DECLARE) {
         let start = from + i;
-        let body = start + DECLARE.len();
+        let after = start + DECLARE.len();
+        let open = lower[after..].trim_start_matches([' ', '\t']);
+        if !open.starts_with('(') {
+            from = after;
+            continue;
+        }
+        let body = lower.len() - open.len() + 1;
         let end = lower[body..].find(')').map_or(text.len(), |j| body + j);
         from = end;
         let block = &lower[body..end];
@@ -34,7 +52,7 @@ fn bui_pin(text: &str) -> Option<(&str, &str)> {
         if !(matches!(name, "bui" | "blender-ui" | "blenderui") || block.contains("ppmpreetham/bui")) {
             continue;
         }
-        let key = text[start..end].find("GIT_TAG")? + "GIT_TAG".len();
+        let key = lower[start..end].find("git_tag")? + "git_tag".len();
         let rest = &text[start + key..end];
         let tag_at = start + key + (rest.len() - rest.trim_start().len());
         let tag = text[tag_at..end].split_whitespace().next()?;
@@ -151,5 +169,13 @@ fetchcontent_declare(
   GIT_SHALLOW", 1));
         assert_eq!(pinned_tag(&dir).as_deref(), Some("v0.9.0"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn spaces_before_the_parenthesis_and_comments_are_cmake_syntax() {
+        let text = "FetchContent_Declare (bui # the \u{e9}tag below\n  GIT_REPOSITORY https://github.com/ppmpreetham/BUI.git\n  # GIT_TAG v0.4.0\n  GIT_TAG v0.5.1)\n";
+        let (head, tag) = bui_pin(text).unwrap();
+        assert_eq!(tag, "v0.5.1");
+        assert!(head.ends_with("# GIT_TAG v0.4.0\n  GIT_TAG "));
     }
 }
