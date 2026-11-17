@@ -10,6 +10,9 @@
 #   $env:BUI_INSTALL_DIR = 'DIR'    install into DIR
 #   $env:BUI_NO_MODIFY_PATH = '1'   do not change PATH
 #
+# For testing: BUI_LATEST_URL replaces the page whose redirect names the newest release, and
+# BUI_INSTALLER_BASE_URL a folder that holds the archive and its .sha256.
+#
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 & {
@@ -20,6 +23,7 @@
     $repo = 'ppmpreetham/BUI'
     $installDir = if ($env:BUI_INSTALL_DIR) { $env:BUI_INSTALL_DIR } else { Join-Path $env:USERPROFILE '.bui\bin' }
     $baseUrl = $env:BUI_INSTALLER_BASE_URL # for testing: a folder that holds the archive and its .sha256
+    $latestUrl = if ($env:BUI_LATEST_URL) { $env:BUI_LATEST_URL } else { "https://github.com/$repo/releases/latest" }
 
     $esc = [char]27
     $color = [Environment]::UserInteractive -and -not $env:NO_COLOR -and ($Host.UI.SupportsVirtualTerminal -or $env:WT_SESSION)
@@ -29,6 +33,22 @@
     $dot = [char]0x25CF; $tick = [char]0x2714; $cross = [char]0x2718
     function Glyphs($art) { # @ = full block, 1 2 3 4 5 6 = the box corners and lines of the logo
         $art.Replace('@', [string][char]0x2588).Replace('1', [string][char]0x2557).Replace('2', [string][char]0x2554).Replace('3', [string][char]0x255D).Replace('4', [string][char]0x255A).Replace('5', [string][char]0x2551).Replace('6', [string][char]0x2550)
+    }
+    # the Location of the page's redirect. Invoke-WebRequest cannot be asked for it the same way on both
+    # PowerShells (5.1 fails without a response, 7 hands over HttpResponseHeaders, which has no string
+    # indexer), so this asks HttpWebRequest, whose headers are a WebHeaderCollection on both.
+    function LocationOf($url) {
+        $request = [Net.HttpWebRequest]::Create($url)
+        $request.AllowAutoRedirect = $false
+        $request.UserAgent = 'bui-installer'
+        $request.Timeout = 15000
+        try {
+            $response = $request.GetResponse()
+        } catch [Net.WebException] {
+            $response = $_.Exception.Response # a redirect is not an error everywhere
+            if (-not $response) { return '' }
+        }
+        try { return [string]$response.Headers['Location'] } finally { $response.Close() }
     }
     function Step($text) { Write-Host "$(C '38;5;208' $dot) $text" }
     function Ok($text) { Write-Host "$(C '32' $tick) $text" }
@@ -54,13 +74,7 @@
     if (-not $tag) {
         Step 'Looking for the newest release'
         # the tag comes from the page's redirect (the API would rate-limit)
-        $location = $null
-        try {
-            $r = Invoke-WebRequest -Uri "https://github.com/$repo/releases/latest" -MaximumRedirection 0 -UseBasicParsing -ErrorAction Stop
-            $location = $r.Headers['Location']
-        } catch {
-            if ($_.Exception.Response -and $_.Exception.Response.Headers) { $location = [string]$_.Exception.Response.Headers['Location'] }
-        }
+        $location = LocationOf $latestUrl
         if ($location -notmatch '/tag/(v\d[^/]*)$') { Fail "could not find the newest release of $repo (offline, or no release yet)" }
         $tag = $Matches[1]
     }
@@ -82,11 +96,23 @@
         Expand-Archive -Path (Join-Path $tmp $asset) -DestinationPath $tmp -Force
         if (-not (Test-Path (Join-Path $tmp 'bui.exe'))) { Fail 'the download has no bui.exe in it' }
         New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-        # a running bui cannot be overwritten, but it can be renamed
+        # the new file goes in beside the old one first; a running bui cannot be overwritten, but it can be
+        # renamed, and the old one comes back if anything fails before the new one is in place
         $target = Join-Path $installDir 'bui.exe'
-        if (Test-Path $target) { Move-Item $target "$target.old" -Force }
-        Copy-Item (Join-Path $tmp 'bui.exe') $target -Force
-        Remove-Item "$target.old" -Force -ErrorAction SilentlyContinue
+        $staged = "$target.new"
+        $backup = "$target.old"
+        Copy-Item (Join-Path $tmp 'bui.exe') $staged -Force
+        $hadOld = Test-Path $target
+        try {
+            if ($hadOld) { Move-Item $target $backup -Force }
+            Move-Item $staged $target -Force
+        } catch {
+            $reason = $_.Exception.Message
+            if ($hadOld -and -not (Test-Path $target) -and (Test-Path $backup)) { Move-Item $backup $target -Force }
+            Remove-Item $staged -Force -ErrorAction SilentlyContinue
+            Fail "could not replace $target ($reason): the old bui is as it was"
+        }
+        Remove-Item $backup -Force -ErrorAction SilentlyContinue
         Ok "Installed $target"
     } finally {
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue

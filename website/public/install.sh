@@ -131,8 +131,11 @@ main() {
   tar -xzf "$tmp/$asset" -C "$tmp" || die "could not unpack the download"
   [ -f "$tmp/bui" ] || die "the download has no bui in it"
   mkdir -p "$INSTALL_DIR"
-  mv -f "$tmp/bui" "$INSTALL_DIR/bui"
-  chmod +x "$INSTALL_DIR/bui"
+  # the new file is written beside the old one (the same disk), then renamed over it in one step: the old
+  # bui stays whole until the new one is complete, and a running one is replaced, not overwritten
+  staged="$(mktemp "$INSTALL_DIR/.bui-install.XXXXXX")" || die "could not write in $INSTALL_DIR"
+  trap 'rm -rf "$tmp" "$staged"' EXIT INT TERM
+  cp "$tmp/bui" "$staged" && chmod 755 "$staged" && mv -f "$staged" "$INSTALL_DIR/bui"     || die "could not install into $INSTALL_DIR: the old bui (if any) is as it was"
   ok "Installed $INSTALL_DIR/bui"
 
   add_to_path
