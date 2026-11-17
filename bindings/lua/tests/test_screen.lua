@@ -28,12 +28,13 @@ local right = first:split("v", 0.75)
 check(right ~= nil and made == 1, "split makes an area")
 check(right:get("editor") == "3D Viewport", "the new area shows the same editor")
 right:set("editor", "Properties")
-local freed_in_notice
+local freed_in_notice, detached_in_notice
 right:on(bui.EV_AREA, function(self, index, what)
   if what == bui.AREA_CLOSE then
     closed = closed + 1
     -- the screen frees the area after this notice: a free from here is refused, not a dangling node
     freed_in_notice = pcall(self.free, self)
+    detached_in_notice = pcall(screen.remove, screen, self)
   end
 end)
 ctx:render(800, 600, 0)
@@ -57,6 +58,7 @@ local saved = screen:get("layout")
 check(type(saved) == "string" and saved:find('"bui_screen": 1', 1, true), "layout text")
 check(first:join(right), "join")
 check(closed == 1 and screen:child_count() == 1, "the joined area closed")
+check(detached_in_notice == false, "a close handler cannot detach the area the screen is closing")
 check(freed_in_notice == false, "a close handler cannot free the area the screen is closing")
 check(right:type() == "(freed)", "a closed area's wrapper is stale, not dangling")
 screen:set("layout", saved)

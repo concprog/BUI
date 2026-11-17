@@ -80,6 +80,8 @@ static int l_node_remove(lua_State *L) {
   luabui_Node *child  = CHECK_NODE(L, 2);
   if (!parent->node || !child->node)
     return luaL_error(L, "attempt to use freed node");
+  if (luabui_in_close_notice(child->node))
+    return luaL_error(L, "cannot detach a node while its area is closing (the screen removes it)");
   BK_node_remove(parent->node, child->node);
   /* Detach only: the C tree owns nodes, remove never frees (BK_node_remove
    * just unlinks; cf. buipy_kit.c kitnode_remove). The child wrapper stays

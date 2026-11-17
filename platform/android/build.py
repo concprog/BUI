@@ -19,6 +19,7 @@ import argparse
 import glob
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -103,7 +104,7 @@ def build_rust(crate, ndk, abi, make):
     sysroot = os.path.join(llvm, "..", "sysroot")
     # libclang is in bin/ on Windows and lib/ elsewhere; a LIBCLANG_PATH the user set wins
     env.setdefault("LIBCLANG_PATH", llvm if os.name == "nt" else os.path.normpath(os.path.join(llvm, "..", "lib")))
-    env.update(**{"BINDGEN_EXTRA_CLANG_ARGS_" + var: "--sysroot=" + sysroot.replace("\\", "/")})
+    env.update(**{"BINDGEN_EXTRA_CLANG_ARGS_" + var: shlex.quote("--sysroot=" + sysroot.replace("\\", "/"))})
     manifest = os.path.abspath(os.path.join(crate, "Cargo.toml"))
     cmd = ["cargo", "build", "--release", "--target", triple, "--manifest-path", manifest,
            "--message-format=json-render-diagnostics"]

@@ -81,13 +81,15 @@ const sameRect = (a, b) => a.every((v, i) => v === b[i])
 function areaIdentities (doc, previous) {
   const rects = doc.areas.map((a) => areaRect(doc.verts, a))
   const taken = new Set()
-  let fresh = previous.reduce((m, a) => Math.max(m, a.id), 0)
   const ids = doc.areas.map((a) => (a.id === undefined ? null : a.id))
+  // explicit ids are reserved: neither a fallback match nor a fresh id may reuse one
+  const explicit = new Set(ids.filter((id) => id !== null))
+  let fresh = Math.max(previous.reduce((m, a) => Math.max(m, a.id), 0), ...explicit)
   const claim = (i, score) => {
     let best = -1
     let bestScore = 0
     previous.forEach((p, j) => {
-      if (taken.has(j) || p.editor !== doc.areas[i].editor) return
+      if (taken.has(j) || explicit.has(p.id) || p.editor !== doc.areas[i].editor) return
       const s = score(p)
       if (s > bestScore) { best = j; bestScore = s }
     })

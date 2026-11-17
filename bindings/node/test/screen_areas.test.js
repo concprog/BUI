@@ -106,3 +106,17 @@ test('createScreen keeps editors across geometry changes and frees discarded one
   assert.deepStrictEqual(screen.kids, [made[1]])
   assert.ok(made[0].destroyed && !made[1].destroyed, 'the closed area is released, the survivor kept')
 })
+
+test('an area without an id never takes one a neighbor has', () => {
+  const d = JSON.parse(doc(['A', [0, 0, 50, 100]], ['A', [50, 0, 100, 100]]))
+  d.areas[0].id = 1
+  const areas = screenChange(JSON.stringify(d), []).areas
+  assert.strictEqual(new Set(areas.map((a) => a.id)).size, 2, 'two distinct ids')
+  assert.strictEqual(areas[0].id, 1)
+  // a previous area whose id is explicit in the new document is not matched to another area
+  const next = JSON.parse(doc(['A', [0, 0, 50, 100]], ['A', [50, 0, 100, 100]]))
+  next.areas[1].id = areas[0].id
+  const again = screenChange(JSON.stringify(next), areas).areas
+  assert.strictEqual(new Set(again.map((a) => a.id)).size, 2)
+  assert.strictEqual(again[1].id, areas[0].id)
+})
