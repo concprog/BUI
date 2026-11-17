@@ -45,6 +45,10 @@ jobs:
         working-directory: tools/bui
     steps:
       - uses: actions/checkout@v4
+        with:
+          # a manual run builds the tag it was given, not the branch it was started from
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -59,6 +63,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: install.sh is POSIX sh and passes shellcheck
         run: |
           sudo apt-get install -y shellcheck dash
@@ -89,6 +95,10 @@ jobs:
           - { target: aarch64-pc-windows-msvc, os: windows-11-arm }
     steps:
       - uses: actions/checkout@v4
+        with:
+          # a manual run builds the tag it was given, not the branch it was started from
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -134,6 +144,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           path: dist
