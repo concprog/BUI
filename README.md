@@ -1117,7 +1117,7 @@ Blender-widgets build, and every C kit widget.
   to resize them (Shift: every aligned edge, Ctrl: snap, Esc or right-click:
   cancel); drag an area's corner inward to split it, into a neighbor to join,
   into any other area to dock beside it or replace it, out of the window to
-  open it there; Ctrl-drag swaps two areas; Ctrl+Space maximizes and
+  ask the host to open it in a window of its own; Ctrl-drag swaps two areas; Ctrl+Space maximizes and
   Ctrl+Alt+Space is focus mode; right-click an edge or a header for the same
   as menus. Regions resize from their inner edge, hide when dragged closed,
   come back from their tab or hotkey, and flip sides.

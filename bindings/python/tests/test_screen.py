@@ -156,17 +156,6 @@ def test_html_radius():
     assert t.get("radius") == 12
 
 
-def main():
-    for name, fn in list(globals().items()):
-        if name.startswith("test_"):
-            fn()
-    print("ok")
-
-
-if __name__ == "__main__":
-    main()
-
-
 def test_panes_in_a_tiny_screen():
     """Two panes in a 2 px wide screen: the generated layout keeps both areas nonzero."""
     import json
@@ -184,3 +173,14 @@ def test_panes_in_a_tiny_screen():
     for area in doc["areas"]:
         xs = [doc["verts"][i][0] for i in area["v"]]
         assert max(xs) > min(xs), doc
+
+
+def main():
+    for name, fn in list(globals().items()):
+        if name.startswith("test_"):
+            fn()
+    print("ok")
+
+
+if __name__ == "__main__":
+    main()

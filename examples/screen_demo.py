@@ -35,7 +35,6 @@ SPDX-License-Identifier: GPL-2.0-or-later
 
 import os
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bindings", "python"))
 
@@ -44,7 +43,21 @@ from bui.components import (App, AreaSplit, Button, Checkbox, Column, Editor, En
                             NumberSlider, Panel, ProgressBar, Region, Row, Screen, Sidebar,
                             Spacer, TextArea, TreeItem, TreeView, VectorField)
 
-LAYOUT_FILE = os.path.join(tempfile.gettempdir(), "bui_screen_demo.json")
+
+
+def _config_dir() -> str:
+    """The user's own configuration folder: a layout kept in a shared temp folder could belong to
+    (and be unwritable for) another user."""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "blenderui")
+
+
+LAYOUT_FILE = os.path.join(_config_dir(), "screen_demo.json")
 
 
 def page(*children):
@@ -165,6 +178,7 @@ def build(reset: bool = False) -> App:
             saved = f.read()
 
     def on_change(layout):
+        os.makedirs(os.path.dirname(LAYOUT_FILE), exist_ok=True)
         with open(LAYOUT_FILE, "w", encoding="utf-8") as f:
             f.write(layout)
         names = ", ".join(a.editor for a in screen.areas)
