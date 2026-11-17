@@ -40,6 +40,11 @@ blenderui_web::export!(|cx, options| {
 ```
 
 ```toml title="Cargo.toml"
+[package]
+name = "counter"
+version = "0.1.0"
+edition = "2024"
+
 [lib]
 crate-type = ["cdylib"]
 
@@ -57,7 +62,7 @@ Give the root `height: 100vh`, because the window is not a scrolling document, a
 You need:
 
 - Rust with the target: `rustup target add wasm32-wasip1` (the script adds it).
-- LLVM's clang 17 or newer with the `wasm32` backend, and CMake. Apple's clang has no `wasm32` backend: install LLVM and set `WASI_CLANG` to its `bin` folder.
+- LLVM's clang 19 or newer (the script refuses an older one) with the `wasm32` backend, and CMake. Apple's clang has no `wasm32` backend: install LLVM (on Ubuntu, `clang-19 llvm-19 lld-19` from apt.llvm.org) and set `WASI_CLANG` to its `bin` folder.
 - `make` or Ninja.
 - The WASI sysroot (wasi-libc and libc++). `python platform/wasm/build.py --fetch-sysroot` downloads wasi-sdk's once into `~/.bui/wasi-sysroot` (a 0.2 GB download, 94 MB kept), or set `WASI_SYSROOT` to one you have.
 
@@ -73,7 +78,7 @@ const app = await mount(document.querySelector('canvas'), './app.wasm')
 
 The module is a library, not a program: it has no `_start`. `export!` defines `bui_start`, `bui_frame`, the pointer, wheel and key functions, and `bui_pixels`, `bui_width` and `bui_height` for the frame. `Application::start` keeps a headless application alive between calls, where `Application::run` would run a loop of its own, and `App::frame_if_needed` draws a frame only when something changed or is animating. The page calls in on every animation frame; when there is a new frame it is RGBA bytes in the module's memory, which `putImageData` puts on the canvas.
 
-`bui-web.js` is the whole page side: a small WASI shim (a clock, random bytes, and stdout and stderr as the console), the frame loop, and the events. It follows `devicePixelRatio`, so a retina canvas draws twice the pixels, and the canvas's CSS size.
+`bui-web.js` is the whole page side: a small WASI shim (a clock, random bytes, and stdout and stderr as the console), the frame loop, and the events. The canvas's CSS size is its logical size and the backing store is that times `devicePixelRatio`, so a retina canvas draws twice the pixels and moving to another screen lays the page out again. Only the primary pointer's primary button is passed on. If the module traps, the app is stopped and the error goes to `onerror` (default `console.error`); `stop()` frees it.
 
 <Callout type="note" title="Size and speed">
 The counter is a 4.2 MB module, 1.6 MB gzipped (release, `opt-level = "s"`, fat LTO). Under Node.js it instantiated in about 55 ms, started in about 50 ms and drew its first frame in about 11 ms; a changed frame took 3 ms.
@@ -81,14 +86,15 @@ The counter is a 4.2 MB module, 1.6 MB gzipped (release, `opt-level = "s"`, fat 
 
 ## Limits
 
-- **One thread.** The kit's worker threads and the audio code do not exist. Loading images was not tried.
+- **One thread.** The kit's worker threads and the audio code do not exist.
+- **Images** load from files and a page has none, so an `<img>` shows nothing.
 - **Software raster only.** There are no GPU renderers.
 - **Input** is the primary pointer button, the wheel and the keyboard. There is no right or middle button, touch gesture, IME composition, clipboard or mouse cursor shape yet.
 - **Fonts** are the embedded Inter only.
 - **No files**, so no file browser.
-- **Number fields:** WebAssembly has no floating-point exception flags, so `1/0` in a number field is infinity where a desktop reports an error.
-- **A malformed font traps** instead of being rejected. The embedded font is fine.
+- **Number fields:** WebAssembly has no floating-point exception flags, so the evaluator works them out from the numbers: `1/0` and `sqrt(-1)` are errors as on a desktop (an overflow such as `exp(1000)` is one too, where a desktop gives infinity).
+- **A malformed font traps** instead of being rejected (wasi-sdk has no `setjmp`); the app stops and `bui-web.js` reports it. The embedded font is fine, and large glyphs are not a problem. JPEG is not built: leave the `jpeg` feature off.
 
 ## Tested
 
-The counter was run under Node.js (`examples/wasm/smoke.mjs`: the first frame, no frame when nothing changed, a click, a resize, a retina resize) and in Microsoft Edge 157 driven by Playwright on Windows: it renders, three real mouse clicks counted, typing and Backspace worked in a text field, the console stayed empty and the canvas was sharp at a device pixel ratio of 2. Firefox and Safari have not been tried. The build ran on Windows with LLVM 22; the script is written for Linux and macOS too, but has not been run there.
+The counter was run under Node.js (`examples/wasm/smoke.mjs`: the first frame, no frame when nothing changed, a click, a resize, a retina resize that lays out as a page started at that ratio does) and in Microsoft Edge 157 driven by Playwright on Windows: it renders, three real mouse clicks counted, typing and Backspace worked in a text field, the console stayed empty and the canvas was sharp at a device pixel ratio of 2. Firefox and Safari have not been tried. The build ran on Windows with LLVM 22; the script is written for Linux and macOS too, but has not been run there.

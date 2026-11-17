@@ -36,6 +36,11 @@ blenderui_web::export!(|cx, options| {
 ```
 
 ```toml
+[package]
+name = "counter"
+version = "0.1.0"
+edition = "2024"
+
 [lib]
 crate-type = ["cdylib"]
 
@@ -55,8 +60,9 @@ root `height: 100vh` (the window is not a scrolling document), and `m_0()` to dr
 It needs:
 
 * Rust with the target: `rustup target add wasm32-wasip1` (the script adds it),
-* LLVM's clang 17 or newer with the `wasm32` backend, and CMake. Apple's clang has no `wasm32` backend:
-  install LLVM and set `WASI_CLANG` to its `bin` folder,
+* LLVM's clang 19 or newer (wasi-sdk 34's libc++ needs it; the script refuses an older one) with the `wasm32`
+  backend, and CMake. Apple's clang has no `wasm32` backend: install LLVM (on Ubuntu, `apt.llvm.org`'s
+  `clang-19 llvm-19 lld-19`) and set `WASI_CLANG` to its `bin` folder (`/usr/lib/llvm-19/bin`),
 * `make` or Ninja,
 * the WASI sysroot (wasi-libc and libc++): `python platform/wasm/build.py --fetch-sysroot` downloads
   wasi-sdk's once into `~/.bui/wasi-sysroot` (0.2 GB download, 94 MB kept), or point `WASI_SYSROOT` at one.
@@ -78,8 +84,12 @@ The C kit is built for WebAssembly by CMake through `platform/wasm/wasi.cmake`, 
   the page does nothing. The frame is RGBA bytes in the module's memory, which the page puts on the canvas
   with `putImageData`.
 * `bui-web.js` is the whole page side: a small WASI (preview 1) shim (a clock, random bytes, stdout and
-  stderr as `console`), the canvas, the frame loop and the events. It follows `devicePixelRatio` (a retina
-  canvas draws twice the pixels) and the canvas's CSS size.
+  stderr as `console`), the canvas, the frame loop and the events. The canvas's CSS size is its logical size
+  (`mount` sets it from `width` and `height` unless `fit`); the backing store is that times
+  `devicePixelRatio`, so a retina canvas draws twice the pixels and a change of ratio (another screen) is
+  laid out again. Only the primary pointer's primary button is passed on. If the module traps, the app is
+  stopped (no more frames, no listeners) and the error goes to `onerror` (default `console.error`);
+  `stop()` frees the app (`bui_stop`, `App::shutdown`).
 
 ```js
 import { mount } from './bui-web.js'
@@ -95,16 +105,24 @@ draws its first frame in about 11 ms; a changed frame took 3 ms.
 
 ## What it does not do
 
-* **One thread.** The kit's worker threads and the audio code do not exist. Loading images was not tried.
+* **One thread.** The kit's worker threads and the audio code do not exist.
+* **Images** load from files, and a page has none (there is no file system): an `<img>` shows nothing. The
+  kit decodes on the calling thread here (no workers to wait for, no sleeping, which the page cannot do), so
+  decoding is ready for in-memory sources when there are some.
 * **Software raster only.** No GPU renderers.
 * **Input:** the primary pointer button, the wheel and the keyboard. No right or middle button, touch
   gestures, IME composition, clipboard, or mouse cursor shapes yet.
 * **Fonts:** only the embedded Inter; there are no system fonts.
 * **No files:** there is no file system, so no file browser and no file-backed lists.
-* **Expressions:** WebAssembly has no floating-point exception flags, so a number field's `1/0` is infinity
-  (a desktop reports an error).
-* **A malformed font traps** instead of being rejected (FreeType's `setjmp` recovery is not available; the
-  embedded font is fine).
+* **Expressions:** WebAssembly has no floating-point exception flags, so the evaluator works them out from
+  the numbers (a NaN from numbers, an infinity from finite numbers): `1/0` and `sqrt(-1)` are errors as on a
+  desktop, also where folded at parse time (`1/0 > 0`). An overflow such as `exp(1000)` is an error too,
+  where a desktop gives infinity.
+* **A malformed font traps** instead of being rejected: wasi-sdk has no `setjmp`, which FreeType's `cmap`
+  validator uses for it (`platform/wasm/include/setjmp.h`). The trap stops the app and `bui-web.js` reports
+  it. The embedded font is fine. A big glyph at a large size is not a problem: FreeType's rasterizer
+  recovers from a full cell pool without a jump on WebAssembly (`ftgrays.c`) and splits the band as always.
+* **JPEG** is not built (libjpeg's error exit needs `longjmp`); leave the `jpeg` feature off.
 
 ## Speed
 
@@ -116,7 +134,7 @@ draws its first frame in about 11 ms; a changed frame took 3 ms.
 ## Tested
 
 Node.js 26 (`examples/wasm/smoke.mjs`: the first frame, no frame when idle, a click, a resize, a retina
-resize) and Microsoft Edge 157 (Chromium) driven by Playwright on Windows: the page renders, three real
+resize that lays out as a page started at that ratio does) and Microsoft Edge 157 (Chromium) driven by Playwright on Windows: the page renders, three real
 mouse clicks counted, typing and Backspace in a text field, no console output, sharp at a device pixel
 ratio of 2. Firefox and Safari have not been tried. The build was run on Windows with LLVM 22; the script is
 written for Linux and macOS too but was not run there.
