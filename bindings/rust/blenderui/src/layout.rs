@@ -19,7 +19,7 @@ use taffy::prelude::*;
 use taffy::style::Overflow;
 
 use crate::css::{Decl, Prop, Rule, Stylesheet, Subject};
-use crate::element::{AnyElement, Div, Listeners, PaintFn, ParentElement, ReplacedSource, SharedString};
+use crate::element::{recycle_children, recycle_decls, AnyElement, Div, Listeners, PaintFn, ParentElement, ReplacedSource, SharedString};
 use crate::geometry::{rect, Bounds, Units};
 use crate::html::{tag_kind, ua_styled_stylesheet, ua_stylesheet, TagKind};
 use crate::paint::{Image, ImageCache, ImageFile};
@@ -1257,6 +1257,7 @@ impl<'a> Builder<'a> {
         let style = self.cascade(i, &div, parent_style, fixup);
         if self.styles[style].display == DisplayKind::None || kind == TagKind::Metadata {
             self.pop();
+            recycle_decls(std::mem::take(&mut div.decls));
             return None;
         }
         let style = self.animate(i, &div, parent_style, style);
@@ -1355,6 +1356,7 @@ impl<'a> Builder<'a> {
         while self.counters.last().is_some_and(|c| c.2 == i) {
             self.counters.pop();
         }
+        recycle_decls(std::mem::take(&mut div.decls));
         Some(i)
     }
 
@@ -1506,7 +1508,7 @@ impl<'a> Builder<'a> {
         }
         let (mut k, mut n) = (0, 0);
         let parent_key = self.nodes[i].key;
-        for child in children {
+        for child in children.drain(..) {
             n += 1;
             match child {
                 AnyElement::Element(d) => {
@@ -1530,6 +1532,7 @@ impl<'a> Builder<'a> {
                 }
             }
         }
+        recycle_children(children);
     }
 
     // -- taffy ------------------------------------------------------------------------------

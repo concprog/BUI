@@ -90,6 +90,11 @@ All notable changes to **blenderui** (BUI). The format follows
   instead of eight, so the nine of a typical cell are one allocation, not two. A grid of 3,000 cells runs 2.0%
   fewer instructions per frame and touches 130 fewer pages. Nothing changes in the API or in what is drawn;
   `compacting_the_style_table_keeps_frames_equal` checks frames while the table is compacted.
+- **Rust: declaration and child buffers are reused between frames.** An element's style calls and child list
+  each took a heap allocation that the next frame's build freed; the built elements now give the buffers back
+  (up to 8,192 of each, a few bytes per element) and the next render takes them. A grid of 3,000 cells that
+  changes every frame runs 2.1% fewer instructions and uses 8% less CPU per frame. Nothing changes in the API or
+  in what is drawn. A pointer shortcut for equal CSS strings saved 0.35% of the instructions and was not kept.
 - **Rust: boxes outside the view are not painted.** A box whose bounds, with its shadows, outline and (for text) a
   margin of one em per byte, lie outside the window and its clip makes no paint items. Frames with effect layers,
   an active text selection, list markers and widgets are painted as before. A page of 3,000 cells in a clipped
