@@ -1,9 +1,15 @@
 /* <setjmp.h> for BUI's WebAssembly build (platform/wasm/wasi.cmake puts this folder before the sysroot).
  *
  * wasi-libc's own header refuses to compile without WebAssembly exception handling, which BUI does not
- * use. FreeType includes it to recover from a malformed font in the middle of a parse (`ft_setjmp`); the
- * fonts a BUI page uses are its own, so there recovery is not needed. `setjmp` returns 0 (the normal
- * path) and `longjmp` traps: a font that would have been rejected stops the program instead.
+ * use. What is left that jumps:
+ *
+ *   - FreeType's smooth rasterizer (a full cell pool: ordinary, a big glyph at a large size) does not
+ *     need it: gpu/extern/freetype/src/smooth/ftgrays.c notes the overflow in a flag on WASI and splits
+ *     the band exactly as the jump did.
+ *   - FreeType's cmap validator (a malformed `cmap` table in a font) and libjpeg's error exit (a corrupt
+ *     JPEG; JPEG is not built for the web) jump out of deep calls. `setjmp` returns 0 (the normal path)
+ *     and `longjmp` traps: such a font or file stops the module (the page's script reports it and
+ *     stops the app) instead of being refused. Fonts and images a page ships itself are not affected.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef BUI_WASM_SETJMP_H

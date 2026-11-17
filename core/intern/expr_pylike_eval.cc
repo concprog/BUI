@@ -55,18 +55,40 @@ namespace blender {
 #endif
 
 #ifndef FE_DIVBYZERO
-/* wasi-libc (WebAssembly) has no floating-point exception flags: nothing is raised or tested, so there
- * `1 / 0` is infinity and `sqrt(-1)` is NaN instead of an expression error. */
-#  define FE_DIVBYZERO 0
-#  define FE_INVALID 0
-#  define FE_ALL_EXCEPT 0
+/* wasi-libc (WebAssembly) has no floating-point exception flags, so they are worked out from what each
+ * operation was given and returned instead: a NaN from numbers is FE_INVALID (`sqrt(-1)`, `0 / 0`), an
+ * infinity from finite numbers is FE_DIVBYZERO (`1 / 0`, `log(0)`; an overflow such as `exp(1000)` counts
+ * too, where hardware flags would not: stricter, and Python raises for it as well). */
+#  define BUI_EMULATED_FENV
+#  define FE_DIVBYZERO 1
+#  define FE_INVALID 2
+#  define FE_ALL_EXCEPT 3
+static thread_local int emulated_fe_flags = 0;
 static inline int feclearexcept(int /*flags*/)
 {
+  emulated_fe_flags = 0;
   return 0;
 }
-static inline int fetestexcept(int /*flags*/)
+static inline int fetestexcept(int flags)
 {
-  return 0;
+  return emulated_fe_flags & flags;
+}
+/* Called with the result of each function call and its arguments. */
+template<typename... Args> static inline void fe_note(const double result, const Args... args)
+{
+  if (std::isnan(result)) {
+    if (!(std::isnan(args) || ...)) {
+      emulated_fe_flags |= FE_INVALID;
+    }
+  }
+  else if (std::isinf(result) && (std::isfinite(args) && ...)) {
+    emulated_fe_flags |= FE_DIVBYZERO;
+  }
+}
+#else
+/* The hardware flags are tested instead. */
+template<typename... Args> static inline void fe_note(const double /*result*/, const Args... /*args*/)
+{
 }
 #endif
 
@@ -208,20 +230,29 @@ eExprPyLike_EvalStatus BLI_expr_pylike_eval(ExprPyLike_Parsed *expr,
         FAIL_IF(sp >= expr->max_stack || ops[pc].arg.ival >= param_values_len);
         stack[sp++] = param_values[ops[pc].arg.ival];
         break;
-      case OPCODE_FUNC1:
+      case OPCODE_FUNC1: {
         FAIL_IF(sp < 1);
-        stack[sp - 1] = ops[pc].arg.func1(stack[sp - 1]);
+        const double result = ops[pc].arg.func1(stack[sp - 1]);
+        fe_note(result, stack[sp - 1]);
+        stack[sp - 1] = result;
         break;
-      case OPCODE_FUNC2:
+      }
+      case OPCODE_FUNC2: {
         FAIL_IF(sp < 2);
-        stack[sp - 2] = ops[pc].arg.func2(stack[sp - 2], stack[sp - 1]);
+        const double result = ops[pc].arg.func2(stack[sp - 2], stack[sp - 1]);
+        fe_note(result, stack[sp - 2], stack[sp - 1]);
+        stack[sp - 2] = result;
         sp--;
         break;
-      case OPCODE_FUNC3:
+      }
+      case OPCODE_FUNC3: {
         FAIL_IF(sp < 3);
-        stack[sp - 3] = ops[pc].arg.func3(stack[sp - 3], stack[sp - 2], stack[sp - 1]);
+        const double result = ops[pc].arg.func3(stack[sp - 3], stack[sp - 2], stack[sp - 1]);
+        fe_note(result, stack[sp - 3], stack[sp - 2], stack[sp - 1]);
+        stack[sp - 3] = result;
         sp -= 2;
         break;
+      }
       case OPCODE_MIN:
         FAIL_IF(sp < ops[pc].arg.ival);
         for (int j = 1; j < ops[pc].arg.ival; j++, sp--) {
@@ -604,6 +635,7 @@ static bool parse_add_func(ExprParseState *state,
       /* volatile because some compilers overly aggressive optimize this call out.
        * see D6012 for details. */
       volatile double result = func(prev_ops[-1].arg.dval);
+      fe_note(result, prev_ops[-1].arg.dval);
 
       if (fetestexcept(FE_DIVBYZERO | FE_INVALID) == 0) {
         prev_ops[-1].arg.dval = result;
@@ -621,6 +653,7 @@ static bool parse_add_func(ExprParseState *state,
       /* volatile because some compilers overly aggressive optimize this call out.
        * see D6012 for details. */
       volatile double result = func(prev_ops[-2].arg.dval, prev_ops[-1].arg.dval);
+      fe_note(result, prev_ops[-2].arg.dval, prev_ops[-1].arg.dval);
 
       if (fetestexcept(FE_DIVBYZERO | FE_INVALID) == 0) {
         prev_ops[-2].arg.dval = result;
@@ -642,6 +675,7 @@ static bool parse_add_func(ExprParseState *state,
        * see D6012 for details. */
       volatile double result = func(
           prev_ops[-3].arg.dval, prev_ops[-2].arg.dval, prev_ops[-1].arg.dval);
+      fe_note(result, prev_ops[-3].arg.dval, prev_ops[-2].arg.dval, prev_ops[-1].arg.dval);
 
       if (fetestexcept(FE_DIVBYZERO | FE_INVALID) == 0) {
         prev_ops[-3].arg.dval = result;
