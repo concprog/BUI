@@ -26,6 +26,13 @@ import bui.node : Node, NodeEvent;
 import bui.theme : scale, themeColor;
 import bui.video : Video;
 
+/// A state hook installed by a document, with the hook it replaced. A failed
+/// mount restores these so the previous document keeps owning the elements.
+private struct HookBinding {
+    Element element;
+    void delegate() previous;
+}
+
 /// One realised document: a CSS cascade over an `Element` tree, mounted as a
 /// kit node tree.
 final class Document {
@@ -36,6 +43,7 @@ final class Document {
         Style base_;
         float viewportW_ = 800.0f;
         float viewportH_ = 600.0f;
+        void delegate() stateHook_;
     }
 
     /// Build `root` with the user-agent sheet plus `css`.
@@ -63,27 +71,73 @@ final class Document {
             base_.color = Color(0.9f, 0.9f, 0.9f, 1.0f);
         }
 
+        stateHook_ = () {
+            restyle();
+        };
         computeStyles(root_, base_);
-        rootNode_ = realizeElement(root_);
-        if (rootNode_ is null) {
-            throw new BuiException("Document", "the root element is not rendered");
+        HookBinding[] bindings;
+        bindStateCallbacks(root_, bindings);
+        try {
+            rootNode_ = realizeElement(root_);
+            if (rootNode_ is null) {
+                throw new BuiException("Document", "the root element is not rendered");
+            }
+            // A root has no parent packer, so its CSS margin becomes an outer
+            // frame's insets (the user-agent `body { margin: 8px; }` included).
+            const Style rootStyle = root_.computed;
+            if (hasMargin(rootStyle)) {
+                auto outer = new Node("frame");
+                setPads(rootNode_, px(rootStyle.margin[3]), px(rootStyle.margin[0]),
+                         px(rootStyle.margin[1]), px(rootStyle.margin[2]));
+                rootNode_.pack("side", 0).pack("fill", 3).pack("expand", 1);
+                outer.add(rootNode_);
+                rootNode_ = outer;
+            }
         }
-        // A root has no parent packer, so its CSS margin becomes an outer
-        // frame's insets (the user-agent `body { margin: 8px; }` included).
-        const Style rootStyle = root_.computed;
-        if (hasMargin(rootStyle)) {
-            auto outer = new Node("frame");
-            setPads(rootNode_, px(rootStyle.margin[3]), px(rootStyle.margin[0]),
-                     px(rootStyle.margin[1]), px(rootStyle.margin[2]));
-            rootNode_.pack("side", 0).pack("fill", 3).pack("expand", 1);
-            outer.add(rootNode_);
-            rootNode_ = outer;
+        catch (Throwable error) {
+            foreach (ref binding; bindings) {
+                if (binding.element.onStateChange == stateHook_) {
+                    binding.element.onStateChange = binding.previous;
+                }
+            }
+            throw error;
         }
     }
 
     /// The kit root, ready for `new Context(root)`.
     Node node() {
         return rootNode_;
+    }
+
+    /// Release the kit tree and detach this document's state hooks. The
+    /// element tree stays usable: build a new `Document` to mount it again.
+    /// Disposing an already disposed document does nothing, and a document
+    /// only clears the wrappers it still owns, so it cannot disturb a newer
+    /// mount of the same element tree.
+    void dispose() {
+        if (rootNode_ is null) {
+            return;
+        }
+        const bool owner = root_.onStateChange == stateHook_;
+        unbindStateCallbacks(root_);
+        if (owner) {
+            clearNodeFields(root_);
+        }
+        rootNode_.free();
+        rootNode_ = null;
+    }
+
+    /// Drop every wrapper reference before the kit tree goes away. A hidden
+    /// element is not realised again on the next mount, so it must not keep
+    /// pointing at nodes the old document freed.
+    private static void clearNodeFields(Element element) {
+        element.kitNode_ = null;
+        element.outerNode_ = null;
+        element.flowNode_ = null;
+        element.backgroundNode_ = null;
+        foreach (child; element.children()) {
+            clearNodeFields(child);
+        }
     }
 
     /// The element tree.
@@ -130,14 +184,30 @@ final class Document {
         return root_.query(selector);
     }
 
+    /// A document owns the state hook of every element it realises. Rebind
+    /// them when a new document takes over an element tree, recording the
+    /// replaced hook so a failed mount can hand ownership back.
+    private void bindStateCallbacks(Element element, ref HookBinding[] bindings) {
+        bindings ~= HookBinding(element, element.onStateChange);
+        element.onStateChange = stateHook_;
+        foreach (child; element.children()) {
+            bindStateCallbacks(child, bindings);
+        }
+    }
+
+    /// Clear only this document's hooks; a newer document may own them now.
+    private void unbindStateCallbacks(Element element) {
+        if (element.onStateChange == stateHook_) {
+            element.onStateChange = null;
+        }
+        foreach (child; element.children()) {
+            unbindStateCallbacks(child);
+        }
+    }
+
     private void computeStyles(Element element, Style parent) {
         element.computed = sheet_.compute(element, parent, element.inlineStyle,
                                            11.0f, viewportW_, viewportH_);
-        if (element.onStateChange is null) {
-            element.onStateChange = () {
-                restyle();
-            };
-        }
         foreach (child; element.children()) {
             computeStyles(child, element.computed);
         }
@@ -823,14 +893,7 @@ private Node realizeLeafWidget(Element element) {
 }
 
 private Node finishWidget(Element element, Node widget) {
-    const Style style = element.computed;
-    auto box = hasDecoration(style)
-        ? makeBox(element)
-        : Box(widget, widget, null);
-    if (box.flow !is widget) {
-        box.flow.add(widget);
-        widget.pack("side", 0).pack("fill", 3);
-    }
+    auto box = decorateLeaf(element, widget);
     finish(element, widget, box.outer, box.background);
     return box.outer;
 }

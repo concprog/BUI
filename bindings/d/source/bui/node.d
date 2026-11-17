@@ -5,6 +5,14 @@
  * reference hooks, exactly like Python wrappers: dropping the D reference is
  * safe while the parent holds the node.
  *
+ * A node the kit owns (a panel body, a popup, a picker part) gets one cached
+ * borrowed wrapper, retained by the kit for the node's lifetime, so handlers
+ * added through `parent().child(i)` see the node's events too. Those handlers
+ * are stored on the topmost D-owned wrapper, not on the rooted borrowed
+ * wrapper, so a handler closure cannot keep the owning tree alive. When that
+ * wrapper is freed, each detached D-owned child takes its own subtree's
+ * handlers into its own store.
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 module bui.node;
@@ -57,15 +65,176 @@ struct Strs {
     }
 }
 
-/// Wrap a C node: the existing wrapper when the kit has one, else a borrowed one.
-package Node wrapNode(BKNode* h) {
+/// Handlers for one node plus the wrapper epoch they were registered under.
+/// `Node.free()` bumps a borrowed wrapper's epoch, which invalidates those
+/// handlers even though the kit still owns the native node.
+private struct HandlerSet {
+    NodeHandler[] handlers;
+    size_t epoch;
+}
+
+private __gshared size_t g_handlerEpoch;
+
+private size_t nextHandlerEpoch() {
+    return ++g_handlerEpoch;
+}
+
+private struct HandlerEntry {
+    BKNode* node;
+    HandlerSet set;
+    HandlerEntry* next;
+}
+
+/// Event handlers registered on kit-owned nodes, keyed by the node they
+/// belong to. The store lives on the topmost D-owned wrapper, so a borrowed
+/// wrapper rooted by the kit stays free of handler closures and an attached
+/// child never roots its owning ancestor through one.
+///
+/// Entries are allocated one at a time and linked, so handing a detached
+/// survivor its entries is a pointer move: `Node.free()` also runs from the GC
+/// finalizer, where allocating is not allowed. A block per handled node also
+/// keeps one store from pinning another store's handler closures.
+///
+/// A key can outlive its native node: the kit destroys a popup without a word
+/// to D, so the entry stays behind. Lookups only compare the pointer, and the
+/// subtree moves below walk the live native tree instead of the entries, so a
+/// dead key is never dereferenced.
+private struct HandlerStore {
+    private HandlerEntry* first;
+
+    /// True when nothing is registered here, so a subtree walk has nothing to
+    /// look up.
+    bool empty() const {
+        return first is null;
+    }
+
+    private HandlerEntry* find(BKNode* node) {
+        for (auto entry = first; entry !is null; entry = entry.next) {
+            if (entry.node is node) {
+                return entry;
+            }
+        }
+        return null;
+    }
+
+    void add(BKNode* node, NodeHandler handler, size_t epoch) {
+        auto entry = find(node);
+        if (entry is null) {
+            first = new HandlerEntry(node, HandlerSet([handler], epoch), first);
+        }
+        else if (entry.set.epoch != epoch) {
+            entry.set = HandlerSet([handler], epoch);
+        }
+        else {
+            entry.set.handlers ~= handler;
+        }
+    }
+
+    void addAll(BKNode* node, HandlerSet set) {
+        auto entry = find(node);
+        if (entry is null) {
+            first = new HandlerEntry(node, set, first);
+        }
+        else if (entry.set.epoch != set.epoch) {
+            entry.set = set;
+        }
+        else {
+            entry.set.handlers ~= set.handlers;
+        }
+    }
+
+    HandlerSet take(BKNode* node) {
+        for (auto p = &first; *p !is null; p = &(*p).next) {
+            if ((*p).node is node) {
+                auto entry = *p;
+                *p = entry.next;
+                return entry.set;
+            }
+        }
+        return HandlerSet.init;
+    }
+
+    HandlerSet get(BKNode* node) {
+        auto entry = find(node);
+        return entry is null ? HandlerSet.init : entry.set;
+    }
+
+    /// Move the entry for `node`, if there is one, into `target`.
+    private void moveEntry(BKNode* node, HandlerStore* target) {
+        for (auto p = &first; *p !is null; p = &(*p).next) {
+            if ((*p).node is node) {
+                auto entry = *p;
+                *p = entry.next;
+                entry.next = target.first;
+                target.first = entry;
+                return;
+            }
+        }
+    }
+
+    /// Move every entry for `root`'s subtree into `target`, walking the native
+    /// tree so only live nodes are looked up: a key left by a node the kit
+    /// destroyed is never read.
+    void takeSubtree(BKNode* root, HandlerStore* target) {
+        if (empty) {
+            return;
+        }
+        moveEntry(root, target);
+        for (int i = 0, n = BK_node_child_count(root); i < n; ++i) {
+            takeSubtree(BK_node_child(root, i), target);
+        }
+    }
+
+    /// Drop every entry for `root`'s subtree, over the native tree for the same
+    /// reason.
+    void dropSubtree(BKNode* root) {
+        if (empty) {
+            return;
+        }
+        take(root);
+        for (int i = 0, n = BK_node_child_count(root); i < n; ++i) {
+            dropSubtree(BK_node_child(root, i));
+        }
+    }
+
+    void drop() {
+        first = null;
+    }
+}
+
+/// The existing wrapper for a C node, owned or borrowed, if any.
+private Node wrapperAt(BKNode* h) {
     if (h is null) {
         return null;
     }
     if (auto ref_ = BK_node_ref(h)) {
         return cast(Node) ref_;
     }
-    return new Node(h, false);
+    if (auto ref_ = BK_node_borrowed_ref(h)) {
+        return cast(Node) ref_;
+    }
+    return null;
+}
+
+/// Wrap a C node: the existing wrapper when the kit has one, else a borrowed one.
+package Node wrapNode(BKNode* h) {
+    if (h is null) {
+        return null;
+    }
+    if (auto wrapper = wrapperAt(h)) {
+        return wrapper;
+    }
+    auto wrapper = new Node(h, false);
+    BK_node_set_borrowed_ref(h, cast(void*) wrapper);
+    return wrapper;
+}
+
+/// A wrapper's C handle; throws when the wrapper has no node.
+package BKNode* requireHandle(Node node, string context, string message) {
+    if (node is null || node.handle is null) {
+        throw new BuiException(context, message);
+    }
+    return node.handle;
 }
 
 /// A node in the kit's tree.
@@ -76,7 +245,9 @@ final class Node {
     private {
         bool owned;
         bool freeing;
-        NodeHandler[] handlers;
+        size_t handlerEpoch_;
+        bool hasHandlers_;
+        HandlerStore store_;
         Image keepImage;
         Video keepVideo;
         Object[] keepAlive_;
@@ -91,6 +262,7 @@ final class Node {
             throw new BuiException("Node", "unknown node type '" ~ type ~ "'");
         }
         owned = true;
+        handlerEpoch_ = nextHandlerEpoch();
         BK_node_set_ref(handle, cast(void*) this);
     }
 
@@ -99,6 +271,7 @@ final class Node {
         ensureRefHooks();
         this.handle = existing;
         this.owned = owned;
+        handlerEpoch_ = nextHandlerEpoch();
         if (owned) {
             BK_node_set_ref(handle, cast(void*) this);
         }
@@ -110,24 +283,232 @@ final class Node {
 
     /// Free the C node. A rooted tree's C-owned children are freed by the kit;
     /// wrapper-owned children are detached and live on until their wrappers go.
+    /// A borrowed wrapper only drops its handlers here; the kit owns its node.
     void free() {
         auto h = handle;
         if (h is null || freeing) {
             return;
         }
         freeing = true;
-        if (owned) {
-            if (auto parent = BK_node_parent(h)) {
-                BK_node_remove(parent, h);
-            }
-            BK_node_free(h);
+        if (!owned) {
+            // The kit may have freed the native node before this wrapper's
+            // destructor runs; never dereference `h` here. A new epoch makes
+            // the owning wrapper ignore handlers registered through this
+            // borrowed wrapper, and a later `on()` replaces them.
+            handlerEpoch_ = nextHandlerEpoch();
+            store_.drop();
+            hasHandlers_ = false;
+            freeing = false;
+            return;
         }
+        dropHandlers(h);
+        if (auto parent = BK_node_parent(h)) {
+            BK_node_remove(parent, h);
+        }
+        else if (auto ctx = BK_node_context(h)) {
+            // A root skips `node_detach`, so the kit cannot drop popups
+            // whose parent lives in this tree. Close them before the
+            // parent pointer dangles.
+            if (BK_popup_count(ctx) > 0) {
+                BK_close_popups(ctx);
+            }
+        }
+        BK_node_free(h);
         handle = null;
         keepImage = null;
         keepVideo = null;
         keepAlive_ = null;
         keepStrings_ = null;
         freeing = false;
+    }
+
+    /// The topmost D-owned wrapper above this node. Handlers live there so an
+    /// attached (kit-rooted) child never roots its owning ancestor through a
+    /// handler closure, and a borrowed wrapper stays free of closures.
+    private Node handlerOwner() {
+        Node owner;
+        for (auto h = handle; h !is null; h = BK_node_parent(h)) {
+            if (auto ref_ = BK_node_ref(h)) {
+                owner = cast(Node) ref_;
+            }
+        }
+        return owner;
+    }
+
+    /// Move handlers registered before the node gained an owner into the
+    /// owner's store, so one list holds them and registration order survives.
+    private void moveHandlersTo(Node owner) {
+        bool moved;
+        for (auto h = handle; h !is null; h = BK_node_parent(h)) {
+            auto wrapper = wrapperAt(h);
+            if (wrapper is owner) {
+                break;
+            }
+            if (wrapper is null) {
+                continue;
+            }
+            auto set = wrapper.store_.take(handle);
+            if (set.handlers.length && set.epoch == handlerEpoch_) {
+                owner.store_.addAll(handle, set);
+                moved = true;
+            }
+        }
+        if (moved) {
+            // The wrappers between this node and its owner now guard a subtree
+            // with handlers too, so a later move of any of them keeps them.
+            markHandlerAncestors();
+        }
+    }
+
+    /// Remember that this node's subtree holds handlers, so moving it knows
+    /// to migrate them. Stale `true` values only cost a walk on the next move.
+    private void markHandlerAncestors() {
+        for (auto h = handle; h !is null; h = BK_node_parent(h)) {
+            if (auto wrapper = wrapperAt(h)) {
+                wrapper.hasHandlers_ = true;
+            }
+        }
+    }
+
+    /// Take this node's handlers out of their stores and keep them locally,
+    /// so a move cannot leave them in the old owner.
+    private void stashHandlers() {
+        if (handle is null) {
+            return;
+        }
+        HandlerSet collected;
+        for (auto h = handle; h !is null; h = BK_node_parent(h)) {
+            auto wrapper = wrapperAt(h);
+            if (wrapper is null) {
+                continue;
+            }
+            auto set = wrapper.store_.take(handle);
+            if (set.handlers.length && set.epoch == handlerEpoch_) {
+                collected.handlers ~= set.handlers;
+                collected.epoch = set.epoch;
+            }
+        }
+        if (collected.handlers.length) {
+            store_.addAll(handle, collected);
+        }
+    }
+
+    /// Put this node's local handlers on its current owner, if it has one.
+    private void rehomeHandlers() {
+        auto owner = handlerOwner();
+        if (owner !is null && owner !is this) {
+            moveHandlersTo(owner);
+        }
+    }
+
+    /// Snapshot the handlers of a subtree before it leaves its owner.
+    private void stashSubtreeHandlers() {
+        if (hasHandlers_ && handle !is null) {
+            stashSubtree(handle);
+        }
+    }
+
+    private static void stashSubtree(BKNode* h) {
+        if (auto wrapper = wrapperAt(h)) {
+            wrapper.stashHandlers();
+        }
+        for (int i = 0, n = BK_node_child_count(h); i < n; ++i) {
+            stashSubtree(BK_node_child(h, i));
+        }
+    }
+
+    /// Give a subtree's handlers to its new owner after a move.
+    private void rehomeSubtreeHandlers() {
+        if (hasHandlers_ && handle !is null) {
+            rehomeSubtree(handle);
+        }
+    }
+
+    private static void rehomeSubtree(BKNode* h) {
+        if (auto wrapper = wrapperAt(h)) {
+            wrapper.rehomeHandlers();
+        }
+        for (int i = 0, n = BK_node_child_count(h); i < n; ++i) {
+            rehomeSubtree(BK_node_child(h, i));
+        }
+    }
+
+    /// This node's handlers: the topmost owner's store, or this node's own
+    /// store while it is detached or has no D-owned ancestor.
+    private NodeHandler[] handlersOf() {
+        auto owner = handlerOwner();
+        if (owner !is null) {
+            auto found = owner.store_.get(handle);
+            if (found.handlers.length && found.epoch == handlerEpoch_) {
+                return found.handlers;
+            }
+        }
+        auto found = store_.get(handle);
+        return found.epoch == handlerEpoch_ ? found.handlers : null;
+    }
+
+    /// Drop this node's and its subtree's handlers before the native node goes
+    /// away. Only an owned node reaches here; a borrowed wrapper has no say
+    /// over the kit's native node. A detached D-owned child survives the free,
+    /// so it takes its own subtree's entries into its own store while entries
+    /// for the freed tree go away. No allocation: this also runs from the GC
+    /// finalizer.
+    private void dropHandlers(BKNode* h) {
+        auto owner = handlerOwner();
+        auto store = owner is null ? &store_ : &owner.store_;
+        // A tree nobody registered on has nothing to look up, so skip both
+        // walks. A stale `hasHandlers_` only costs one.
+        if (hasHandlers_ || !store.empty) {
+            partitionHandlers(h, store);
+            dropSubtreeStores(h);
+        }
+        if (owner is null || owner is this) {
+            // This wrapper held the store, so nothing below is reachable any
+            // more: whatever is left keys a node the tree no longer owns (a
+            // popup the kit destroyed) or one it never did.
+            store.drop();
+        }
+    }
+
+    /// Hand each detached D-owned child of `h` the entries for its own subtree,
+    /// then drop the rest of `h`'s entries. Relinking is allocation-free, and
+    /// each entry is its own block, so a survivor never keeps a sibling's
+    /// handler closures alive.
+    private static void partitionHandlers(BKNode* h, HandlerStore* store) {
+        handOffSurvivors(h, store);
+        store.dropSubtree(h);
+    }
+
+    private static void handOffSurvivors(BKNode* h, HandlerStore* store) {
+        for (int i = 0, n = BK_node_child_count(h); i < n; ++i) {
+            auto child = BK_node_child(h, i);
+            if (BK_node_ref(child) is null) {
+                // A C-owned child is freed with `h`; its D-owned descendants
+                // are the survivors.
+                handOffSurvivors(child, store);
+                continue;
+            }
+            auto wrapper = wrapperAt(child);
+            if (wrapper is null) {
+                continue;
+            }
+            wrapper.store_.drop();
+            store.takeSubtree(child, &wrapper.store_);
+        }
+    }
+
+    private static void dropSubtreeStores(BKNode* h) {
+        if (auto wrapper = wrapperAt(h)) {
+            wrapper.store_.drop();
+            wrapper.hasHandlers_ = false;
+        }
+        for (int i = 0, n = BK_node_child_count(h); i < n; ++i) {
+            auto child = BK_node_child(h, i);
+            // The kit detaches wrapper-owned children and leaves them alive.
+            if (BK_node_ref(child) is null) {
+                dropSubtreeStores(child);
+            }
+        }
     }
 
     /// Keep `object` alive for as long as this node holds it (custom nodes).
@@ -166,24 +547,30 @@ final class Node {
         if (child is null || child.handle is null) {
             throw new BuiException("Node.add", "no child");
         }
+        child.stashSubtreeHandlers();
         if (BK_node_add(handle, child.handle, index) == 0) {
+            child.rehomeSubtreeHandlers();
             throw new BuiException("Node.add", "the kit refused the child");
         }
+        child.rehomeSubtreeHandlers();
         return this;
     }
 
     /// Remove `child`; the child wrapper stays valid as a detached node.
     void remove(Node child) {
-        if (child !is null && child.handle !is null) {
-            BK_node_remove(handle, child.handle);
+        if (child is null || child.handle is null) {
+            return;
         }
+        child.stashSubtreeHandlers();
+        BK_node_remove(handle, child.handle);
+        child.rehomeSubtreeHandlers();
     }
 
     int childCount() const {
         return BK_node_child_count(handle);
     }
 
-    /// The child at `i`; a C-owned child comes back as a borrowed wrapper.
+    /// The child at `i`; a C-owned child comes back as a cached borrowed wrapper.
     Node child(int i) const {
         return wrapNode(BK_node_child(handle, i));
     }
@@ -354,7 +741,15 @@ final class Node {
     /// Add an event handler; all handlers see every event.
     Node on(NodeHandler handler) {
         if (handler !is null) {
-            handlers ~= handler;
+            auto owner = handlerOwner();
+            if (owner is null) {
+                owner = this;
+            }
+            else if (owner !is this) {
+                moveHandlersTo(owner);
+            }
+            owner.store_.add(handle, handler, handlerEpoch_);
+            markHandlerAncestors();
         }
         return this;
     }
@@ -410,6 +805,7 @@ final class Node {
 
     /// The kit's `BKHost.emit` path: dispatch one event to this node's handlers.
     void dispatch(int kind, void* ref_, double a, double b) {
+        NodeHandler[] handlers = handlersOf();
         if (handlers.length == 0) {
             return;
         }
