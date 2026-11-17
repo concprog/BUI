@@ -1182,6 +1182,11 @@ impl Window {
         self.dirty = true;
     }
 
+    /// Paint the last frame again (no render, no layout): for state a painted element reads, like a hover highlight.
+    pub fn repaint(&mut self) {
+        self.sel_repaint = true;
+    }
+
     /// Content size in logical pixels.
     pub fn viewport_size(&self) -> Size<Pixels> {
         size(px(self.phys.0 as f32 / self.scale), px(self.phys.1 as f32 / self.scale))
@@ -1426,6 +1431,7 @@ impl Window {
                                crate::widgets::WidgetAsk::Ensure(spec) => widgets.ensure(canvas, key, spec, scale),
                                crate::widgets::WidgetAsk::Height(w) => (0.0, widgets.height_for(key, w, scale)),
                            });
+        crate::vlist::run_after_layout(&frame, self, app);
         // CSS animations / transitions still moving: render again next frame;
         // Motion's values alone: redraw (nothing running: no frames, so an
         // idle window costs no CPU)
