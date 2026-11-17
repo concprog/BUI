@@ -448,3 +448,42 @@ fn compacting_the_style_table_keeps_frames_equal() {
         }
     });
 }
+
+/// Boxes at fixed places, some just outside the view: with shadows, outlines and text that spills in.
+/// `off` moves the page, so a bigger window can show all of it.
+struct Spill {
+    off: i32,
+}
+
+impl Render for Spill {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let off = self.off;
+        let at = move |x: i32, y: i32, css: &str| {
+            div().style(format!("position: absolute; left: {}px; top: {}px; {css}", x + off, y + off))
+        };
+        body().m_0().style(format!("position: relative; width: {}px; height: {}px", 400 + off, 300 + off)).children([
+            at(-60, 10, "width: 50px; height: 20px; background: #c03030; box-shadow: 30px 0 8px #3030c0"),
+            at(210, 40, "width: 40px; height: 20px; background: #30c030; outline: 12px solid #c0c030"),
+            at(10, -30, "width: 30px; height: 20px; background: #3030c0; box-shadow: 0 25px 6px #c03030"),
+            at(-200, 70, "white-space: nowrap; font-size: 14px; color: #202020").child("a long line that runs far to the right"),
+            at(30, 120, "width: 60px; height: 10px; background: #808080"),
+            at(150, 90, "width: 30px; height: 30px; overflow: hidden").child(
+                div().style("position: absolute; left: -40px; top: 5px; width: 80px; height: 8px; background: #309090")),
+        ])
+    }
+}
+
+/// A box outside the view is not painted: the view shows what the same page shows when all of it is in view.
+#[test]
+fn boxes_outside_the_view_leave_the_view_unchanged() {
+    Application::headless().run(|cx| {
+        let small = open(cx, 200.0, 100.0, Spill { off: 0 });
+        let big = open(cx, 700.0, 600.0, Spill { off: 250 });
+        let (s, b) = (cx.draw(small.id), cx.draw(big.id));
+        for y in 0..s.1 {
+            for x in 0..s.0 {
+                assert_eq!(pixel(&s, x, y), pixel(&b, x + 250, y + 250), "pixel ({x}, {y})");
+            }
+        }
+    });
+}
