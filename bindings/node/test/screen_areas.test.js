@@ -49,6 +49,19 @@ test('area identities survive a join, even between areas of one editor', () => {
   assert.strictEqual(screenChange(JSON.stringify(kit), split).areas[0].id, 9)
 })
 
+test('the kit area ids are used as they are', () => {
+  const withIds = (ids, text) => {
+    const d = JSON.parse(text)
+    d.areas.forEach((a, i) => { a.id = ids[i] })
+    return JSON.stringify(d)
+  }
+  const first = screenChange(withIds([7, 9], doc(['A', [0, 0, 50, 100]], ['A', [50, 0, 100, 100]]))).areas
+  assert.deepStrictEqual(first.map((a) => a.id), [7, 9])
+  // the first area went (a join): the survivor keeps the kit's id whatever its rectangle does
+  const joined = screenChange(withIds([9], doc(['A', [0, 0, 100, 100]])), first).areas
+  assert.deepStrictEqual(joined.map((a) => a.id), [9])
+})
+
 test('screenChange: window and foreign values', () => {
   assert.deepStrictEqual(screenChange('window\tView'), { window: 'View' })
   assert.strictEqual(screenChange('x'), null)
