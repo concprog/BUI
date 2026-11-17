@@ -69,11 +69,11 @@ pub fn start(width: u32, height: u32, scale: f32, build: impl FnOnce(&mut App, W
     true
 }
 
-/// The canvas changed size.
+/// The canvas changed size (CSS pixels) or pixel ratio.
 pub fn resize(width: u32, height: u32, scale: f32) {
     with_host(|h| {
         let device = ((width as f32 * scale).round() as usize, (height as f32 * scale).round() as usize);
-        h.app.resize_window(h.window, device.0, device.1);
+        h.app.resize_window(h.window, device.0, device.1, scale);
         h.size = device;
     });
 }
@@ -131,7 +131,8 @@ pub fn pointer_up(x: f32, y: f32) {
     with_host(|h| h.app.simulate_release(h.window, x, y));
 }
 
-/// The wheel turned: positive `lines` scroll the content up.
+/// The wheel turned: positive `lines` are wheel-up (the content scrolls toward its start), negative
+/// are wheel-down, as on a desktop.
 pub fn wheel(x: f32, y: f32, lines: i32) {
     with_host(|h| h.app.simulate_scroll(h.window, x, y, lines));
 }
@@ -140,6 +141,13 @@ pub fn wheel(x: f32, y: f32, lines: i32) {
 /// `Left`, `a`), with the modifiers held.
 pub fn key(text: &str, keysym: &str, ctrl: bool, shift: bool) {
     with_host(|h| h.app.simulate_key_with(h.window, text, keysym, ctrl, shift));
+}
+
+/// The page is done with the app (its script stopped or trapped): frees the window and everything the
+/// kit holds for it. Calls after this do nothing, and a new [`start`] is allowed.
+pub fn stop() {
+    // dropping the host drops the app, which frees its windows
+    drop(HOST.take());
 }
 
 /// Gives JavaScript a buffer to write a string into (a key's text): its address, `len` bytes long.
@@ -246,6 +254,12 @@ macro_rules! export {
         #[unsafe(no_mangle)]
         pub extern "C" fn bui_wheel(x: f32, y: f32, lines: i32) {
             $crate::wheel(x, y, lines);
+        }
+
+        /// The page stopped: frees the app.
+        #[unsafe(no_mangle)]
+        pub extern "C" fn bui_stop() {
+            $crate::stop();
         }
 
         #[unsafe(no_mangle)]

@@ -49,4 +49,32 @@ assert.deepEqual([resized.w, resized.h], [300, 200])
 x.bui_resize(300, 200, 2)
 const retina = frame()
 assert.deepEqual([retina.w, retina.h], [600, 400])
+
+// ... and the same layout: a page that moves to a retina screen (the pixel ratio changes, the CSS size
+// does not) draws what a page that started there draws. A fresh module for each, with no click made.
+const bytes = fs.readFileSync(file)
+const firstFrame = (m) => {
+  assert.ok(m.bui_frame(), 'a frame')
+  const [w, h] = [m.bui_width(), m.bui_height()]
+  return { w, h, pixels: new Uint8Array(m.memory.buffer.slice(m.bui_pixels(), m.bui_pixels() + w * h * 4)) }
+}
+const moved = await load(bytes)
+moved.bui_start(420, 300, 1)
+firstFrame(moved)
+moved.bui_resize(420, 300, 2)
+const after = firstFrame(moved)
+const started = await load(bytes)
+started.bui_start(420, 300, 2)
+const direct = firstFrame(started)
+assert.deepEqual([after.w, after.h], [direct.w, direct.h])
+assert.deepEqual(after.pixels, direct.pixels, 'a pixel ratio change lays the page out as one that started there')
+
+// a click at a logical position lands on the button after the change (not at the device position, 380)
+moved.bui_pointer_move(60, 190)
+moved.bui_pointer_down(60, 190)
+moved.bui_pointer_up(60, 190)
+assert.notDeepEqual(firstFrame(moved).pixels, after.pixels, 'the button is where the CSS size says after a pixel ratio change')
+
+x.bui_stop()
+assert.equal(x.bui_frame(), 0, 'stopped: no more frames')
 console.log(`ok: ${(fs.statSync(file).size / 1048576).toFixed(1)} MB module, ${first.w}x${first.h} first frame`)

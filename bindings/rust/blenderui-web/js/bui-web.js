@@ -4,6 +4,10 @@
 //   const app = await mount(document.querySelector('canvas'), 'counter.wasm')
 //   app.stop()
 //
+// The canvas's CSS size is its logical size: its backing store is that times devicePixelRatio, so the
+// page keeps its layout on a retina screen. With `fit` (the default) the page's CSS sizes the canvas;
+// without it `mount` sets the CSS size from `width` and `height`.
+//
 // The module draws off-screen: this calls into it on every animation frame, puts the frame it returns
 // on the canvas, and passes it the page's pointer, wheel and key events. `load` is the same without
 // a canvas (Node.js, tests).
@@ -101,13 +105,20 @@ function putString (exports, s) {
 
 /**
  * Starts the app in `canvas`. `source` is the .wasm (a URL or bytes). Options: `fit` (default true) makes
- * the canvas follow its CSS size; otherwise it keeps `width` x `height`. Returns `{ exports, stop }`.
+ * the canvas follow its CSS size; otherwise it keeps `width` x `height` CSS pixels. `onerror` gets what
+ * the module throws (a trap), after which the app is stopped (default: console.error). Returns
+ * `{ exports, resize, stop }`.
  */
-export async function mount (canvas, source, { fit = true, width = 640, height = 480 } = {}) {
+export async function mount (canvas, source, { fit = true, width = 640, height = 480, onerror = console.error } = {}) {
   const exports = await load(source)
   const ctx = canvas.getContext('2d')
   canvas.tabIndex = canvas.tabIndex >= 0 ? canvas.tabIndex : 0 // it can take the keyboard
   canvas.style.touchAction = 'none'
+  if (!fit) {
+    // the logical size, whatever the pixel ratio (the backing store below is that times the ratio)
+    canvas.style.width = `${width}px`
+    canvas.style.height = `${height}px`
+  }
   const css = () => (fit ? [Math.max(1, canvas.clientWidth || width), Math.max(1, canvas.clientHeight || height)] : [width, height])
   const scale = () => window.devicePixelRatio || 1
 
@@ -118,8 +129,31 @@ export async function mount (canvas, source, { fit = true, width = 640, height =
 
   let running = true
   let frameId = 0
-  const draw = () => {
+  let off = []
+  let observer = null
+  let ratio = null
+  const stop = () => {
     if (!running) return
+    running = false
+    cancelAnimationFrame(frameId)
+    observer?.disconnect()
+    ratio?.()
+    for (const f of off) f()
+    try {
+      exports.bui_stop?.() // the module frees what it holds
+    } catch { /* it already trapped: nothing is left to free */ }
+  }
+  // a trap in the module stops the app (no more frames, no listeners) and is reported once
+  const guard = (fn) => (...args) => {
+    if (!running) return
+    try {
+      fn(...args)
+    } catch (e) {
+      stop()
+      onerror(e)
+    }
+  }
+  const draw = guard(() => {
     if (exports.bui_frame()) {
       const [w, h] = [exports.bui_width(), exports.bui_height()]
       if (canvas.width !== w || canvas.height !== h) {
@@ -129,7 +163,7 @@ export async function mount (canvas, source, { fit = true, width = 640, height =
       ctx.putImageData(new ImageData(new Uint8ClampedArray(exports.memory.buffer, exports.bui_pixels(), w * h * 4), w, h), 0, 0)
     }
     frameId = requestAnimationFrame(draw)
-  }
+  })
   frameId = requestAnimationFrame(draw)
 
   const at = (e) => [e.offsetX, e.offsetY]
@@ -137,21 +171,25 @@ export async function mount (canvas, source, { fit = true, width = 640, height =
     canvas.addEventListener(type, fn, options)
     return () => canvas.removeEventListener(type, fn, options)
   }
-  const off = [
-    on('pointermove', (e) => exports.bui_pointer_move(...at(e))),
-    on('pointerdown', (e) => {
+  // only the primary pointer's primary button: the module has one pointer and one button
+  const primary = (e) => e.isPrimary && e.button === 0
+  off = [
+    on('pointermove', guard((e) => { if (e.isPrimary) exports.bui_pointer_move(...at(e)) })),
+    on('pointerdown', guard((e) => {
+      if (!primary(e)) return
       canvas.focus()
       canvas.setPointerCapture(e.pointerId)
       exports.bui_pointer_move(...at(e))
       exports.bui_pointer_down(...at(e))
-    }),
-    on('pointerup', (e) => exports.bui_pointer_up(...at(e))),
-    on('wheel', (e) => {
+    })),
+    on('pointerup', guard((e) => { if (primary(e)) exports.bui_pointer_up(...at(e)) })),
+    on('wheel', guard((e) => {
       e.preventDefault()
-      const lines = Math.sign(e.deltaY) * Math.max(1, Math.round(Math.abs(e.deltaY) / 40))
+      // the module's positive lines are wheel-up, the DOM's positive deltaY is wheel-down
+      const lines = -Math.sign(e.deltaY) * Math.max(1, Math.round(Math.abs(e.deltaY) / 40))
       exports.bui_wheel(...at(e), lines)
-    }, { passive: false }),
-    on('keydown', (e) => {
+    }), { passive: false }),
+    on('keydown', guard((e) => {
       const text = e.key.length === 1 && !e.ctrlKey && !e.metaKey ? e.key : ''
       const keysym = KEYSYMS[e.key] ?? (e.key.length === 1 ? e.key : null)
       if (keysym === null) return
@@ -159,26 +197,30 @@ export async function mount (canvas, source, { fit = true, width = 640, height =
       const [kp, kl] = putString(exports, keysym)
       exports.bui_key(tp, tl, kp, kl, e.ctrlKey || e.metaKey ? 1 : 0, e.shiftKey ? 1 : 0)
       e.preventDefault()
-    }),
+    })),
   ]
-  const resize = () => {
+  const resize = guard(() => {
     const [w, h] = css()
     exports.bui_resize(w, h, scale())
-  }
-  let observer = null
+  })
   if (fit && typeof ResizeObserver !== 'undefined') {
     observer = new ResizeObserver(resize)
     observer.observe(canvas)
   }
-
-  return {
-    exports,
-    resize,
-    stop () {
-      running = false
-      cancelAnimationFrame(frameId)
-      observer?.disconnect()
-      for (const f of off) f()
-    },
+  // moving the window to another screen changes devicePixelRatio without resizing the canvas
+  if (typeof matchMedia !== 'undefined') {
+    const watch = () => {
+      const query = matchMedia(`(resolution: ${scale()}dppx)`)
+      const changed = () => {
+        ratio()
+        resize()
+        if (running) watch()
+      }
+      query.addEventListener('change', changed, { once: true })
+      ratio = () => query.removeEventListener('change', changed)
+    }
+    watch()
   }
+
+  return { exports, resize, stop }
 }
