@@ -3058,8 +3058,9 @@ static int in_BK_wheel(BKContext *ctx, int x, int y, int delta, float px, int mo
     if (bk_scroll_at_end(ns, ctx->content_h - view_h, px)) {
       ctx->scroll_rem = 0.0f; /* at the end it scrolls toward: the leftover is not carried */
     }
-    /* a sub-pixel step is kept in the remainder: consumed, just not visible yet */
-    return moved || (px != 0.0f && ctx->scroll_rem != 0.0f);
+    /* a pixel step is consumed while the region can still scroll that way (a sub-pixel one is
+     * kept in the remainder: not visible yet, however it nets out) */
+    return moved || (px != 0.0f && !bk_scroll_at_end(ns, ctx->content_h - view_h, px));
   }
   return 0;
 }
