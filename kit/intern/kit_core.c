@@ -317,6 +317,28 @@ int BK_node_add(BKNode *parent, BKNode *child, int index)
   if (parent->cls->accept && child->parent != parent && !parent->cls->accept(parent, child)) {
     return 0;
   }
+  if (child->parent == parent) {
+    /* A reorder inside one parent never detaches: the parent's detach hook (a screen
+     * closing the area) must not run, so the kids array is shuffled in place. */
+    int from = 0;
+    while (from < parent->nkids && parent->kids[from] != child) {
+      from++;
+    }
+    const int last = parent->nkids - 1;
+    const int to = (index < 0 || index > last) ? last : index;
+    if (from < parent->nkids && from != to) {
+      if (from < to) {
+        memmove(parent->kids + from, parent->kids + from + 1,
+                sizeof(BKNode *) * (size_t)(to - from));
+      }
+      else {
+        memmove(parent->kids + to + 1, parent->kids + to, sizeof(BKNode *) * (size_t)(from - to));
+      }
+      parent->kids[to] = child;
+      bk_relayout(parent);
+    }
+    return 1;
+  }
   if (child->parent) {
     void *ref = child->ref;
     bk_retain(ref); /* keep alive across the move */
@@ -527,15 +549,31 @@ bool bk_contains(const BKNode *n, int x, int y)
   return x >= n->x && x < n->x + n->w && y >= n->y && y < n->y + n->h;
 }
 
+int bk_scroll_take(float *rem, float px)
+{
+  *rem += px;
+  const int whole = (int)*rem; /* truncates toward zero */
+  *rem -= (float)whole;
+  return whole;
+}
+
+bool bk_scroll_at_end(int pos, int max, float px)
+{
+  return (px > 0.0f && pos <= 0) || (px < 0.0f && pos >= max);
+}
+
+/* Whether the node's geometry clip (a clipped scroll viewport) rules the point out. */
+static bool clip_excludes(const BKNode *n, int x, int y)
+{
+  const BKGeom *g = n->geom;
+  return g && g->has_clip &&
+         (x < g->clip[0] || y < g->clip[1] || x >= g->clip[0] + g->clip[2] ||
+          y >= g->clip[1] + g->clip[3]);
+}
+
 BKNode *bk_hit(BKNode *n, int x, int y)
 {
-  if (!NODE_VISIBLE(n) || !bk_contains(n, x, y)) {
-    return NULL;
-  }
-  const BKGeom *g = n->geom;
-  if (g && g->has_clip &&
-      (x < g->clip[0] || y < g->clip[1] || x >= g->clip[0] + g->clip[2] || y >= g->clip[1] + g->clip[3]))
-  {
+  if (!NODE_VISIBLE(n) || !bk_contains(n, x, y) || clip_excludes(n, x, y)) {
     return NULL;
   }
   if (n->cls->hit) {
@@ -2969,7 +3007,7 @@ static int in_BK_key(BKContext *ctx, const char *text, const char *keysym, int m
 
 static BKNode *deepest(BKNode *n, int x, int y)
 {
-  if (!NODE_VISIBLE(n) || !bk_contains(n, x, y)) {
+  if (!NODE_VISIBLE(n) || !bk_contains(n, x, y) || clip_excludes(n, x, y)) {
     return NULL;
   }
   for (int i = n->nkids - 1; i >= 0; i--) {
@@ -3009,14 +3047,19 @@ static int in_BK_wheel(BKContext *ctx, int x, int y, int delta, float px, int mo
   /* scroll the region */
   const int view_h = ctx->win_h - ctx->header_h;
   if (ctx->content_h > view_h && !ctx->npopups) {
-    const int step = px != 0.0f ? (int)(px + (px > 0.0f ? 0.5f : -0.5f)) : delta * 2 * bk_unit();
+    const int step = px != 0.0f ? bk_scroll_take(&ctx->scroll_rem, px) : delta * 2 * bk_unit();
     const int ns = BK_CLAMP(ctx->scroll - step, 0, ctx->content_h - view_h);
-    if (ns != ctx->scroll) {
+    const bool moved = ns != ctx->scroll;
+    if (moved) {
       ctx->scroll = ns;
       ctx->layout_dirty = true;
       bk_ctx_request(ctx);
-      return 1;
     }
+    if (bk_scroll_at_end(ns, ctx->content_h - view_h, px)) {
+      ctx->scroll_rem = 0.0f; /* at the end it scrolls toward: the leftover is not carried */
+    }
+    /* a sub-pixel step is kept in the remainder: consumed, just not visible yet */
+    return moved || (px != 0.0f && ctx->scroll_rem != 0.0f);
   }
   return 0;
 }

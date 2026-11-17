@@ -1337,8 +1337,12 @@ static int scroll_wheel(BKNode *n, BKEvent *e)
   }
   const int old = n->scroll;
   const float px = e->wheel_y; /* BK_scroll_px: the exact distance, else a step */
-  scroll_set(n, n->scroll - (px != 0.0f ? (int)(px + (px > 0.0f ? 0.5f : -0.5f)) : e->delta * u() * 2));
-  return n->scroll != old;
+  scroll_set(n, n->scroll - (px != 0.0f ? bk_scroll_take(&n->wheel_rem, px) : e->delta * u() * 2));
+  if (bk_scroll_at_end(n->scroll, scroll_max(n), px)) {
+    n->wheel_rem = 0.0f; /* at the end it scrolls toward: the leftover is not carried */
+  }
+  /* a sub-pixel step is consumed (kept in the remainder); an end hands on to the parent */
+  return n->scroll != old || (px != 0.0f && n->wheel_rem != 0.0f);
 }
 
 static void scroll_draw_tree(BKNode *n)

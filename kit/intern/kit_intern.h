@@ -477,6 +477,7 @@ struct BKNode {
   int dragmode;
   double drag_x0, drag_orig; /* Blender's dragstartx; the value at press */
   float drag_f0;             /* sliders: dragfstart */
+  float wheel_rem;           /* scroll boxes: fractional wheel pixels not yet applied */
   int drag_mods;
 
   struct BKGeom *geom; /* geometry manager info (children of frames) */
@@ -510,6 +511,11 @@ BKNode *bk_hit(BKNode *n, int x, int y);
 /* Window hosts: the window got or lost the keyboard focus. Calls cb->on_focus. */
 void bk_window_focus(BKContext *ctx, BKWindow *win, const BKWindowCallbacks *cb, int active);
 bool bk_contains(const BKNode *n, int x, int y);
+/* Whole pixels out of a fractional scroll distance: the part below one pixel stays in `*rem`
+ * and carries into the next event, so slow smooth scrolling never rounds away to nothing. */
+int bk_scroll_take(float *rem, float px);
+/* Whether scrolling by `px` (positive: toward 0) pushes against an end of 0..`max`. */
+bool bk_scroll_at_end(int pos, int max, float px);
 BKRect bk_node_rect(const BKNode *n);
 bool bk_hovered(const BKNode *n);
 bool bk_pressed(const BKNode *n);
@@ -615,6 +621,7 @@ struct BKContext {
   /* window / region */
   int win_w, win_h, scroll, content_h, header_h;
   int scroll_alpha; /* View2D.alpha_vert of the region scrollbar (0..255) */
+  float scroll_rem; /* fractional root-scroll pixels not yet applied */
   /* damage */
   bool layout_dirty, full_dirty;
   BKRect dirty[BK_MAX_DIRTY];

@@ -1702,6 +1702,10 @@ static void canvas_draw(BKNode *n)
     bk_fill_f(n->x, n->y, n->w, n->h, n->color);
   }
   CanvasData *d = CANVAS(n);
+  /* Passes are scheduled by the invalidation, not by how much of the canvas this draw covers:
+   * once per frame that redraws the whole canvas (the first rectangle takes the flag, so
+   * several damage rectangles in one frame run them once), whatever the clip leaves. */
+  const bool whole = canvas_all_damaged(n);
   d->damaged_px = 0;
   d->all_damaged = false;
   bk_clip_push(n->x, n->y, n->w, n->h);
@@ -1727,7 +1731,7 @@ static void canvas_draw(BKNode *n)
     float b[4];
     if (it->type == BK_ITEM_PASS) { /* drawn into a render target, not here: when the whole canvas
                                      * is redrawn it runs once, in list order */
-      if (!small) {
+      if (whole) {
         canvas_pass(bk_draw.r, &d->items[i]);
       }
       continue;
