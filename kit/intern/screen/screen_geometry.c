@@ -388,6 +388,9 @@ void screen_remove_unused_scredges(BKNode *screen_node)
   BKScreen *screen = SCREEN(screen_node);
   /* sets flags when edge is used in area */
   SCREEN_AREAS_ITER (screen_node, area) {
+    if (area->node == screen->detaching) {
+      continue; /* leaving: the divider it shared with its neighbor is the neighbor's no more */
+    }
     ScrVert *loop[5] = {area->v1, area->v2, area->v3, area->v4, area->v1};
     for (int i = 0; i < 4; i++) {
       ScrEdge *se = screen_find_edge(screen, loop[i], loop[i + 1]);

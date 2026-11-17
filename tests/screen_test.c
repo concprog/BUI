@@ -131,6 +131,18 @@ static int layout_ids(BKNode *s, unsigned *ids, int max)
   return n;
 }
 
+/* How many vertices the screen's layout lists. */
+static int count_verts(BKNode *s)
+{
+  const char *p = strstr(BK_get_str(s, "layout"), "\"verts\": [");
+  const char *end = p ? strstr(p, "\"areas\"") : NULL;
+  int n = 0;
+  for (p = p ? p + 10 : NULL; p && p < end; p++) {
+    n += *p == '[';
+  }
+  return n;
+}
+
 static bool has_id(const unsigned *ids, int n, unsigned id)
 {
   for (int i = 0; i < n; i++) {
@@ -501,6 +513,65 @@ int main(void)
     CHECK(layout_ids(s, id2, 8) == 2 && has_id(id2, 2, before[0]) && has_id(id2, 2, before[1]));
     free(saved);
     free_screen(s);
+  }
+
+  /* -- a removed area leaves no divider behind: the neighbor's outline is all that is left -- */
+  {
+    BKNode *a;
+    BKNode *s = test_screen(&a);
+    BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);
+    CHECK(b != NULL && count_verts(s) == 6);
+    BK_node_remove(s, b);
+    CHECK(BK_node_child_count(s) == 1 && count_verts(s) == 4);
+    free_screen(s);
+  }
+
+  /* -- a region the host makes late, while its area is in focus mode, restores as saved -- */
+  {
+    BKNode *a;
+    BKNode *s = test_screen(&a);
+    BKNode *side_a = BK_node_new("sidebar");
+    CHECK(BK_node_add(a, side_a, -1));
+    CHECK(BK_set_num(side_a, "hidden", 1));
+    CHECK(BK_area_split(a, BK_AXIS_V, 0.5f) != NULL);
+    const char *l = BK_get_str(s, "layout");
+    char *saved = malloc(strlen(l) + 1);
+    strcpy(saved, l);
+    free_screen(s);
+    BKNode *a2;
+    BKNode *s2 = test_screen(&a2);
+    CHECK(BK_set_str(s2, "layout", saved));
+    BKNode *a2x = BK_node_child(s2, 0);
+    CHECK(BK_set_str(a2x, "full", "focus"));
+    BKNode *side_b = BK_node_new("sidebar");
+    CHECK(BK_node_add(a2x, side_b, -1)); /* the host answers late, in focus mode */
+    int rr[4];
+    rect_of(a2x, rr);
+    CHECK(BK_set_str(a2x, "full", ""));
+    CHECK(BK_get_num(side_b, "hidden") == 1); /* leaving focus mode keeps it as saved */
+    free(saved);
+    free_screen(s2);
+  }
+
+  /* -- a pixel scroll that nets out to nothing is still the scroller's, away from its ends -- */
+  {
+    BKNode *col = BK_node_new("column");
+    for (int i = 0; i < 40; i++) {
+      BKNode *row = BK_node_new("label");
+      BK_set_str(row, "text", "row");
+      BK_node_add(col, row, -1);
+    }
+    BKContext *sc = BK_context_new(col);
+    BK_context_set_host(sc, &g_host);
+    BK_render(sc, g_r, 200, 100, 1);
+    CHECK(BK_scroll_px(sc, 10, 50, 0.0f, -30.0f, 0)); /* away from both ends */
+    BK_render(sc, g_r, 200, 100, 0);
+    const float steps[4] = {0.5f, -0.5f, 0.5f, -0.5f};
+    for (int i = 0; i < 4; i++) {
+      CHECK(BK_scroll_px(sc, 10, 50, 0.0f, steps[i], 0)); /* not handed on to an ancestor */
+    }
+    BK_context_free(sc);
+    BK_node_free(col);
   }
 
   /* -- docking at exactly one half picks the requested side -- */

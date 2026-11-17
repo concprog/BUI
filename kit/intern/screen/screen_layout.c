@@ -236,6 +236,16 @@ static void region_record_apply(BKNode *node, const BKRegionRecord *rec)
   bk_region_set_num(node, "hidden", rec->hidden);
 }
 
+/* Applies a pending record; in focus mode the region's saved flag is its fullscreen one too, as
+ * screen_state_toggle would have made it, so leaving focus mode keeps it as saved. */
+static void region_record_apply_in(BKNode *area_node, BKNode *node, const BKRegionRecord *rec)
+{
+  region_record_apply(node, rec);
+  if (AREA(area_node)->full == SCREENFULL) {
+    node->rgn->flagfullscreen = node->rgn->flag;
+  }
+}
+
 void area_free_pending_regions(BKArea *area)
 {
   while (area->pending_regions) {
@@ -253,7 +263,7 @@ void area_restore_regions(BKNode *area_node)
     BKRegionRecord *rec = *link;
     BKNode *node = area_region_find(area_node, rec->type);
     if (node && node->rgn) {
-      region_record_apply(node, rec);
+      region_record_apply_in(area_node, node, rec);
       *link = rec->next;
       free(rec);
     }
@@ -282,7 +292,7 @@ static void region_from_json(BKNode *area_node, const BKJson *r)
   }
   BKNode *node = area_region_find(area_node, t);
   if (node && node->rgn) {
-    region_record_apply(node, &rec);
+    region_record_apply_in(area_node, node, &rec);
     return;
   }
   /* The host hasn't given this area that region yet (a host that answers BK_AREA_NEW later
