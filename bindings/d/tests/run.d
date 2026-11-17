@@ -8,6 +8,7 @@ module run;
 import bui;
 import bui.internal.util : cslice;
 import core.memory : GC;
+import core.thread : Thread;
 import std.file : read;
 import std.path : buildPath, dirName;
 import std.stdio : writeln;
@@ -562,6 +563,98 @@ private void testReviewFixes() {
     check(first.num("value") == 0 && second.num("value") == 1, "radio group exclusive");
 }
 
+private __gshared int collectFlags;
+
+/// A probe object whose destructor records that the GC collected it.
+private final class CollectFlag {
+    int ticks;
+    ~this() {
+        ++collectFlags;
+    }
+}
+
+private NodeHandler captureFlag(CollectFlag flag) {
+    return (NodeEvent e) {
+        ++flag.ticks;
+    };
+}
+
+private NodeHandler captureNode(Node node) {
+    return (NodeEvent e) {
+        node.set("text", "tick");
+    };
+}
+
+private __gshared int probeTicks;
+
+/// A handler whose only state is a module-level counter, so nothing on the
+/// registering frame keeps the delegate alive: its store does.
+private NodeHandler captureTick() {
+    return (NodeEvent e) {
+        ++probeTicks;
+    };
+}
+
+/// Free R in R -> A, B while A's handler is the only reference to its flag.
+/// The caller keeps B, so one store shared by both survivors would keep A's
+/// handler (and the flag) alive; a store per survivor root lets both go.
+/// A thread gives the probe a stack the main collector no longer scans, so
+/// nothing but the handler can reach the flag once `free()` returns.
+private Node siblingRetentionProbe() {
+    Node survivor;
+    auto thread = new Thread({
+        auto root = new Node("frame");
+        auto first = new Node("frame");
+        auto sibling = new Node("frame");
+        root.add(first);
+        root.add(sibling);
+        first.on(BK_EV_CLICK, captureFlag(new CollectFlag()));
+        root.free();
+        survivor = sibling;
+    });
+    thread.start();
+    thread.join();
+    return survivor;
+}
+
+/// Build R -> B where B's handler captures R and R's own handler captures a
+/// flag. B stays attached and kit-rooted; storing B's handler on B would keep
+/// R, its store and the flag alive, so R would never free and release B. A
+/// thread gives the probe a stack the main collector no longer scans.
+private void ancestorRetentionProbe() {
+    auto thread = new Thread({
+        auto root = new Node("frame");
+        auto child = new Node("frame");
+        root.add(child);
+        root.on(BK_EV_CLICK, captureFlag(new CollectFlag()));
+        child.on(BK_EV_CLICK, captureNode(root));
+    });
+    thread.start();
+    thread.join();
+}
+
+/// Free M in R -> M -> S while R stays alive and holds its own handler. S
+/// keeps its own handler; if the owner kept a copy of the survivor's entry,
+/// the flag would live as long as R. A thread gives the probe a stack the main
+/// collector no longer scans.
+private Node intermediateFreeProbe() {
+    Node root;
+    auto thread = new Thread({
+        auto outer = new Node("frame");
+        auto middle = new Node("frame");
+        auto survivor = new Node("frame");
+        outer.add(middle);
+        middle.add(survivor);
+        outer.on(BK_EV_CLICK, captureFlag(new CollectFlag()));
+        survivor.on(BK_EV_CLICK, captureFlag(new CollectFlag()));
+        middle.free();
+        root = outer;
+    });
+    thread.start();
+    thread.join();
+    return root;
+}
+
 private void testReviewRegressions() {
     // `onKey` binds the key event only; the release must not repeat it.
     int keys;
@@ -631,6 +724,51 @@ private void testReviewRegressions() {
     check(before == 2 && after == 2,
           "an owned child keeps its handlers after the parent is freed");
     handlerChild.free();
+
+    // A handler built outside this frame is reachable only through the node's
+    // store, so the store is the only thing keeping the delegate alive and the
+    // observation channel lives outside the delegate.
+    probeTicks = 0;
+    Node probed;
+    auto probeThread = new Thread({
+        auto n = new Node("frame");
+        n.on(BK_EV_CLICK, captureTick());
+        probed = n;
+    });
+    probeThread.start();
+    probeThread.join();
+    GC.collect();
+    probed.dispatch(BK_EV_CLICK, null, 0, 0);
+    check(probeTicks == 1, "a store keeps a handler reachable across a collection");
+    probed.free();
+
+    // A surviving owned root keeps only its own handler store; sharing it
+    // with a sibling would keep an unrelated sibling's handlers, and anything
+    // they capture, alive for as long as the survivor lives.
+    collectFlags = 0;
+    auto surviving = siblingRetentionProbe();
+    GC.collect();
+    check(collectFlags > 0,
+          "a surviving sibling does not pin another survivor's handlers");
+    surviving.free();
+
+    // An attached child is a GC root while its native tree lives, but its
+    // handlers live on the owning ancestor, so they cannot root that ancestor
+    // back and stop it from freeing the tree.
+    collectFlags = 0;
+    ancestorRetentionProbe();
+    GC.collect();
+    check(collectFlags > 0,
+          "an attached child's handler does not pin its owning ancestor");
+
+    // Freeing an intermediate node hands its survivor's entries to that
+    // survivor only; the still-live owner must not keep a copy either.
+    collectFlags = 0;
+    auto keptRoot = intermediateFreeProbe();
+    GC.collect();
+    check(collectFlags > 0,
+          "freeing an intermediate node does not pin its survivor's handlers");
+    keptRoot.free();
 
     // Moving a handled subtree to another parent keeps its handlers.
     int moved;
@@ -741,11 +879,35 @@ private void testReviewRegressions() {
     secondDocument.restyle();
     secondDocument.dispose();
 
+    // A remount that fails (display: none) hands the element hooks back to
+    // the document that still owns the realised tree.
+    auto hookPage = body_(div("x").id("hook"));
+    auto hookOwner = new Document(hookPage);
+    auto hookElement = hookOwner.find("#hook");
+    check(hookElement.node !is null, "ownership test element is realised");
+    bool rejected;
+    try {
+        (new Document(hookPage, "body { display: none; }")).dispose();
+    }
+    catch (BuiException) {
+        rejected = true;
+    }
+    check(rejected, "a display:none root is rejected");
+    hookOwner.dispose();
+    check(hookElement.node is null,
+          "a failed remount restores the previous document's hooks");
+
     // Freeing a root closes the popups it owns before the C node disappears.
     auto popupRoot = new Node("frame");
     auto popupContext = new Context(popupRoot);
     popupContext.openMenu(popupRoot, [new MenuItem("One", {})]);
     check(popupContext.popupCount() == 1, "root popup opened");
+    // The handler's body does not matter here: it parks an entry in the root's
+    // store keyed by the popup's native node, which the kit destroys on close,
+    // so neither the close nor the root's free may read that key as a node.
+    popupContext.popup(0).on(BK_EV_CLICK, captureTick());
+    popupContext.closePopups();
+    check(popupContext.popupCount() == 0, "closePopups drops the popup");
     popupRoot.free();
     check(popupContext.popupCount() == 0, "freeing the root closes its popups");
     popupContext.free();
@@ -847,6 +1009,26 @@ private void testReviewRegressions() {
         kid.free();
     }
 
+    // Removing a tree's roots clears ownership for the whole subtree, so a
+    // later promotion cannot follow a pointer to the freed tree.
+    auto staleTree = new Node("tree");
+    auto staleParent = new TreeItem("parent");
+    auto staleChild = new TreeItem("child");
+    auto staleLeaf = new TreeItem("leaf");
+    staleParent.add(staleChild);
+    staleChild.add(staleLeaf);
+    setRoots(staleTree, [staleParent]);
+    setRoots(staleTree, []);
+    staleParent.free();
+    staleTree.free();
+    auto freshTree = new Node("tree");
+    setRoots(freshTree, [staleLeaf]);
+    check(rowCount(freshTree) == 1, "promotion after a freed tree still works");
+    setRoots(freshTree, []);
+    freshTree.free();
+    staleLeaf.free();
+    staleChild.free();
+
     // Promoting a row out of an idle tree redraws the tree that lost it.
     auto sourceShell = new Node("frame");
     auto invalidated = new Node("tree");
@@ -924,6 +1106,76 @@ private void testReviewRegressions() {
     renameTarget.free();
     renameAfter.free();
     renameHost.free();
+
+    // A rename keeps its retained target when promoting a preceding nested
+    // row shrinks the source below the index the edit started at.
+    auto shiftShell = new Node("frame");
+    auto shiftTree = new Node("tree");
+    shiftTree.pack("fill", 1);
+    int renameEvents;
+    shiftTree.on(BK_EV_RENAME, (NodeEvent) {
+        ++renameEvents;
+    });
+    auto shiftParent = new TreeItem("parent");
+    auto shiftMiddle = new TreeItem("middle");
+    auto shiftTarget = new TreeItem("target");
+    shiftParent.add(shiftMiddle);
+    shiftParent.add(shiftTarget);
+    setRoots(shiftTree, [shiftParent]);
+    shiftShell.add(shiftTree);
+    auto shiftContext = new Context(shiftShell);
+    auto shiftRaster = new Raster(240, 140);
+    shiftContext.render(shiftRaster, true);
+    check(rowCount(shiftTree) == 3, "nested tree rows before rename");
+    const shiftRect = rowRect(shiftTree, 2);
+    const shiftX = shiftRect[0] + shiftRect[2] / 2;
+    const shiftY = shiftRect[1] + shiftRect[3] / 2;
+    shiftContext.press(shiftX, shiftY, 0);
+    shiftContext.press(shiftX, shiftY, 0);
+    shiftContext.release(shiftX, shiftY, 0);
+    auto shiftDestShell = new Node("frame");
+    auto shiftDest = new Node("tree");
+    shiftDestShell.add(shiftDest);
+    auto shiftDestContext = new Context(shiftDestShell);
+    auto shiftDestRaster = new Raster(240, 140);
+    shiftDestContext.render(shiftDestRaster, true);
+    setRoots(shiftDest, [shiftMiddle]);
+    check(rowCount(shiftTree) == 2, "promotion shrinks the rename source");
+    shiftContext.key("shifted");
+    shiftContext.key("", "Return");
+    check(shiftTarget.label == "shifted",
+          "rename keeps the retained target past its old row index");
+    check(shiftMiddle.label == "middle", "rename does not retarget the new row");
+    check(renameEvents == 1, "rename reports its source row");
+
+    // A target promoted out of the source during the edit still gets the new
+    // label, but the source has no row to report, so it emits no event.
+    const awayRect = rowRect(shiftTree, 1);
+    const awayX = awayRect[0] + awayRect[2] / 2;
+    const awayY = awayRect[1] + awayRect[3] / 2;
+    shiftContext.press(awayX, awayY, 0);
+    shiftContext.press(awayX, awayY, 0);
+    shiftContext.release(awayX, awayY, 0);
+    setRoots(shiftDest, [shiftTarget]);
+    check(rowCount(shiftTree) == 1, "promotion removes the rename target");
+    shiftContext.key("away");
+    shiftContext.key("", "Return");
+    check(shiftTarget.label == "away",
+          "rename still updates a target promoted out of the tree");
+    check(renameEvents == 1, "a promoted rename target reports no source row");
+    check(rowCount(shiftTree) == 1, "the source keeps its remaining row");
+
+    setRoots(shiftDest, []);
+    setRoots(shiftTree, []);
+    shiftRaster.free();
+    shiftDestRaster.free();
+    shiftContext.free();
+    shiftDestContext.free();
+    shiftShell.free();
+    shiftDestShell.free();
+    shiftMiddle.free();
+    shiftTarget.free();
+    shiftParent.free();
 
     // Every wrapper surface rejects an empty node the same way.
     Node empty;
