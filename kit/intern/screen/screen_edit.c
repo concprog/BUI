@@ -516,7 +516,7 @@ bool area_docking_apply(BKNode *screen_node, BKNode *sa1, BKNode *sa2,
 }
 
 /* The regions focus mode hides (screen_state_to_nonnormal). */
-static bool region_hidden_in_focus(int type)
+bool region_hidden_in_focus(int type)
 {
   return type == RGN_TYPE_UI || type == RGN_TYPE_HEADER || type == RGN_TYPE_TOOL_HEADER ||
          type == RGN_TYPE_FOOTER || type == RGN_TYPE_TOOLS || type == RGN_TYPE_NAV_BAR ||

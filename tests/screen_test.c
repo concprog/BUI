@@ -553,6 +553,33 @@ int main(void)
     free_screen(s2);
   }
 
+  /* -- a late sidebar saved visible is hidden while its area is in focus mode, shown after -- */
+  {
+    BKNode *a;
+    BKNode *s = test_screen(&a);
+    BKNode *side_a = BK_node_new("sidebar");
+    CHECK(BK_node_add(a, side_a, -1));
+    CHECK(BK_area_split(a, BK_AXIS_V, 0.5f) != NULL);
+    const char *l = BK_get_str(s, "layout");
+    char *saved = malloc(strlen(l) + 1);
+    strcpy(saved, l);
+    free_screen(s);
+    BKNode *a2;
+    BKNode *s2 = test_screen(&a2);
+    CHECK(BK_set_str(s2, "layout", saved));
+    BKNode *first = BK_node_child(s2, 0);
+    CHECK(BK_set_str(first, "full", "focus"));
+    BKNode *side = BK_node_new("sidebar");
+    CHECK(BK_node_add(first, side, -1));
+    int rr[4];
+    rect_of(first, rr);
+    CHECK(BK_get_num(side, "hidden") == 1); /* focus mode hides it */
+    CHECK(BK_set_str(first, "full", ""));
+    CHECK(BK_get_num(side, "hidden") == 0); /* shown again as saved */
+    free(saved);
+    free_screen(s2);
+  }
+
   /* -- a pixel scroll that nets out to nothing is still the scroller's, away from its ends -- */
   {
     BKNode *col = BK_node_new("column");

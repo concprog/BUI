@@ -237,12 +237,16 @@ static void region_record_apply(BKNode *node, const BKRegionRecord *rec)
 }
 
 /* Applies a pending record; in focus mode the region's saved flag is its fullscreen one too, as
- * screen_state_toggle would have made it, so leaving focus mode keeps it as saved. */
+ * screen_state_toggle would have made it, so leaving focus mode keeps it as saved; the regions
+ * focus mode hides are hidden meanwhile. */
 static void region_record_apply_in(BKNode *area_node, BKNode *node, const BKRegionRecord *rec)
 {
   region_record_apply(node, rec);
   if (AREA(area_node)->full == SCREENFULL) {
     node->rgn->flagfullscreen = node->rgn->flag;
+    if (region_hidden_in_focus(node->rgn->type)) {
+      node->rgn->flag |= RGN_FLAG_HIDDEN; /* and hidden meanwhile, as screen_state_toggle does */
+    }
   }
 }
 

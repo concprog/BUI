@@ -350,6 +350,8 @@ void area_swapspace(BKNode *screen_node, BKNode *sa1, BKNode *sa2);
 bool area_docking_apply(BKNode *screen_node, BKNode *sa1, BKNode *sa2, AreaDockTarget target,
                         float factor);
 void screen_state_toggle(BKNode *screen_node, BKNode *area_node, short state);
+/* The regions focus mode hides while an area is in it. */
+bool region_hidden_in_focus(int type);
 /* The area left the screen: tell the host, free it (unless the host owns it). */
 void screen_area_free(BKNode *screen_node, BKNode *area_node);
 /* The layout changed: tell the host (BK_EV_CHANGE on the screen) and lay out again. */
