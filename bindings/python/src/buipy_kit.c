@@ -462,7 +462,8 @@ static PyObject *kitnode_area_swap(KitNodeObject *self, PyObject *other)
   if (!o || !self->node) {
     return NULL;
   }
-  return PyBool_FromLong(BK_area_swap(self->node, o));
+  const int ok = BK_area_swap(self->node, o); /* the change event may raise in a callback */
+  return buipy_restore_error() ? NULL : PyBool_FromLong(ok);
 }
 
 static PyObject *kitnode_area_close(KitNodeObject *self, PyObject *unused)

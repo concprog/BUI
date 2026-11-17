@@ -388,6 +388,7 @@ class Panes:
         if n == 0:
             return
         extent, other = self._extent()
+        extent = max(extent, n + 1)  # logical units (the kit scales them): every pane keeps a nonzero area
         want = list(self._want or [])
         share = max(1, (extent - 2 * self._pad() - (n - 1) * self.handle) // n)
         sizes = [want[i] if i < len(want) else share for i in range(n)]

@@ -165,3 +165,22 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def test_panes_in_a_tiny_screen():
+    """Two panes in a 2 px wide screen: the generated layout keeps both areas nonzero."""
+    import json
+
+    import buipy
+    from bui.components.screen import Panes
+
+    node = buipy.KitNode("screen")
+    panes = Panes(node, "v")
+    panes._extent = lambda: (2, 100)
+    panes.insert(0, buipy.KitNode("column"))
+    panes.insert(1, buipy.KitNode("column"))
+    doc = json.loads(buipy.KitNode.get_str(node, "layout"))
+    assert len(doc["areas"]) == 2, doc
+    for area in doc["areas"]:
+        xs = [doc["verts"][i][0] for i in area["v"]]
+        assert max(xs) > min(xs), doc
