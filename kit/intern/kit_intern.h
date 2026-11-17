@@ -492,6 +492,8 @@ void bk_node_add(BKNode *parent, BKNode *child);
 BKContext *bk_ctx(const BKNode *n);
 void bk_invalidate(BKNode *n);
 void bk_relayout(BKNode *n);
+void bk_stale(BKNode *n);      /* n and its ancestors measure again */
+void bk_measure_reset(void);   /* every node measures again (theme, scale, font) */
 void bk_natural(BKNode *n, int *r_w, int *r_h);
 void bk_arrange(BKNode *n, int x, int y, int w, int h);
 void bk_draw_tree(BKNode *n);

@@ -84,6 +84,7 @@ All notable changes to **blenderui** (BUI). The format follows
   - Examples: `examples/animation/` (a hero intro, a card grid, magnetic buttons, a marquee with drag and an equalizer).
 
 ### Changed
+- **Kit: a changed node measures again, not the whole tree.** The natural-size cache no longer restarts on every layout. A property write, a value change, an animation step or a child change marks the node and its ancestors stale; theme, scale and font changes still reset every node. A frame where one label changes does about 20% less work (3000 rows, measured by instruction count); a frame where every label changes is unchanged, because each label is measured once either way. No extra memory: `nat_gen` is the mark.
 - **Rust: layout styles by index, declarations in one allocation.** The layout tree held its shared taffy styles
   behind reference counts; they are entries of a table the tree owns, and a node holds an index (the table drops
   the styles no node uses once it holds 4,096). An element's style calls reserve room for twelve declarations
@@ -127,6 +128,7 @@ All notable changes to **blenderui** (BUI). The format follows
   audio track plays and each video with sound owns one stream and thread.
 
 ### Fixed
+- **Kit: a menu search placed the popup with the old size.** `menu_filter` placed the popup before it marked the layout, so the popup used the size from before the new filter.
 - **Rust: Tailwind `text-sm` / `text-xs` / `text-lg` line heights.** A unitless `calc()` line height (`calc(1.25 / 0.875)`, what the Tailwind theme sets) was read as pixels (1.4 px), so the text sat about 9 px above its box and a parent with `overflow: hidden` (`truncate`) cut it. It is now a factor of the font size, like a number.
 - **Rust: `text-overflow: ellipsis` on a clipping block.** A `nowrap` text in a block with `overflow: hidden` (`truncate`) was laid out as line-box words, so it was clipped without the `…`. A block holding only text now lays it out as one measured run whatever its `overflow` (except scrolling ones), clips it to the content box and ends it with `…`; `text-overflow` takes effect only when `overflow-x` is not `visible`, as in CSS.
 - **Windows window exposure and resizing:** a window dragged back from outside the screen, restored from minimize or uncovered
