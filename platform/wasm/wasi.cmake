@@ -40,15 +40,15 @@ set(CMAKE_SYSROOT "${WASI_SYSROOT}")
 
 # what wasi-libc is: one thread, no signals, no exceptions, no dlopen, no setjmp
 add_compile_options(
-  "SHELL:-isystem ${CMAKE_CURRENT_LIST_DIR}/include" # <setjmp.h> without exception handling
+  "SHELL:-isystem \"${CMAKE_CURRENT_LIST_DIR}/include\"" # <setjmp.h> without exception handling
   -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN
   -fno-exceptions)
 # libc++ (the no-exceptions build) comes with wasi-sdk's sysroot; try/catch in Blender's containers compile away
 add_compile_options(
   "$<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>"
-  "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include ${CMAKE_CURRENT_LIST_DIR}/no_exceptions.h>"
+  "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include \"${CMAKE_CURRENT_LIST_DIR}/no_exceptions.h\">"
   "$<$<COMPILE_LANGUAGE:CXX>:-nostdinc++>"
-  "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-isystem ${WASI_SYSROOT}/include/wasm32-wasip1/noeh/c++/v1>")
+  "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-isystem \"${WASI_SYSROOT}/include/wasm32-wasip1/noeh/c++/v1\">")
 
 # static libraries only: the Rust linker links them (nothing here can run on the build machine)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)

@@ -43,6 +43,7 @@ fn main() {
     if wasi {
         // WebAssembly: clang with the WASI sysroot (WASI_SYSROOT names it), no threads, no window system
         config.define("CMAKE_TOOLCHAIN_FILE", root.join("platform/wasm/wasi.cmake"));
+        println!("cargo:rerun-if-changed={}", root.join("platform/wasm").display());
     }
     // The optional parts (features.json, the one table): each cargo feature is
     // its CMake option, ON exactly when the feature is.

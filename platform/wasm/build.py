@@ -9,7 +9,7 @@ examples/wasm/counter). It is compiled for wasm32-wasip1, with BUI's C kit built
 clang, so this needs:
 
   * Rust with the target (`rustup target add wasm32-wasip1`; this adds it when it is missing),
-  * clang 17 or newer with the wasm32 backend (LLVM's own; Apple's clang has none) and CMake,
+  * clang 19 or newer with the wasm32 backend (LLVM's own; Apple's clang has none) and CMake,
   * make or Ninja,
   * the WASI sysroot: WASI_SYSROOT=<dir>, or --fetch-sysroot (wasi-sdk's, kept in ~/.bui/wasi-sysroot).
 
@@ -20,16 +20,20 @@ import argparse
 import functools
 import http.server
 import io
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import urllib.request
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 TARGET = "wasm32-wasip1"
 WASI_SDK = "34"
+MIN_CLANG = 19  # wasi-sdk 34's libc++ headers use __builtin_clzg
 WASI_SDK_URL = ("https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-%s/wasi-sdk-%s.0-%s.tar.gz")
 SYSROOT_HOME = os.path.join(os.path.expanduser("~"), ".bui", "wasi-sysroot")
 
@@ -80,47 +84,57 @@ def fetch_sysroot():
     dest = sysroot_dir()
     if os.path.isdir(os.path.join(dest, "lib", TARGET)):
         return dest
+    sdk = os.path.join(SYSROOT_HOME, "wasi-sdk-%s" % WASI_SDK)
     url = WASI_SDK_URL % (WASI_SDK, WASI_SDK, host_tarball())
     print("downloading", url, "(about 0.2 GB, once)")
     wanted = ("share/wasi-sysroot/include/%s/" % TARGET, "share/wasi-sysroot/lib/%s/" % TARGET)
-    with urllib.request.urlopen(url) as response, tarfile.open(fileobj=io.BufferedReader(response), mode="r|gz") as tar:
-        for member in tar:
-            rel = member.name.split("/", 1)[-1]
-            if rel.startswith(wanted) and (member.isfile() or member.isdir()):
-                member.name = rel
-                tar.extract(member, os.path.join(SYSROOT_HOME, "wasi-sdk-%s" % WASI_SDK), filter="data")
-    if not os.path.isdir(os.path.join(dest, "lib", TARGET)):
-        sys.exit("the download did not hold the sysroot for " + TARGET)
+    os.makedirs(SYSROOT_HOME, exist_ok=True)
+    # extracted aside and moved into place when whole: an interrupted download leaves nothing that looks done
+    with tempfile.TemporaryDirectory(dir=SYSROOT_HOME, prefix=".partial-") as part:
+        with urllib.request.urlopen(url) as response, tarfile.open(fileobj=io.BufferedReader(response), mode="r|gz") as tar:
+            for member in tar:
+                rel = member.name.split("/", 1)[-1]
+                if rel.startswith(wanted) and (member.isfile() or member.isdir()):
+                    member.name = rel
+                    tar.extract(member, part, filter="data")
+        if not os.path.isdir(os.path.join(part, "share", "wasi-sysroot", "lib", TARGET)):
+            sys.exit("the download did not hold the sysroot for " + TARGET)
+        shutil.rmtree(sdk, ignore_errors=True)  # what an older, interrupted run left
+        os.replace(part, sdk)
+        os.makedirs(part)  # for the temporary directory's own cleanup
     return dest
 
 
+def clang_major(exe):
+    """The major version of this clang (0 when it does not say)."""
+    out = subprocess.run([exe, "--version"], capture_output=True, text=True).stdout
+    m = re.search(r"clang version (\d+)", out)
+    return int(m.group(1)) if m else 0
+
+
 def find_clang():
-    """The folder of an LLVM clang that has the wasm32 backend."""
+    """The folder of an LLVM clang (MIN_CLANG or newer) that has the wasm32 backend."""
     folder = os.environ.get("WASI_CLANG")
     candidates = [folder] if folder else []
     which = shutil.which("clang")
     if which:
         candidates.append(os.path.dirname(which))
+    candidates += ["/usr/lib/llvm-%d/bin" % v for v in range(25, MIN_CLANG - 1, -1)]
     candidates += ["C:/Program Files/LLVM/bin", "/opt/homebrew/opt/llvm/bin", "/usr/local/opt/llvm/bin", "/usr/lib/llvm/bin"]
+    too_old = []
     for c in candidates:
         exe = os.path.join(c, "clang.exe" if os.name == "nt" else "clang")
-        if os.path.exists(exe):
-            out = subprocess.run([exe, "--print-targets"], capture_output=True, text=True).stdout
-            if "wasm32" in out:
-                return c
-    sys.exit("no clang with the wasm32 backend: install LLVM (https://releases.llvm.org) or set WASI_CLANG to its bin folder"
-             " (Apple's clang has no wasm32 backend)")
-
-
-def crate_name(manifest):
-    """The `.wasm`'s name: the library name, else the package name, as Cargo spells it."""
-    text = open(manifest, encoding="utf-8").read()
-    lib = text.split("[lib]", 1)[1] if "[lib]" in text else ""
-    for section in (lib.split("\n[", 1)[0], text):
-        for line in section.splitlines():
-            if line.strip().startswith("name") and "=" in line:
-                return line.split("=", 1)[1].strip().strip('"').replace("-", "_")
-    sys.exit("no name in " + manifest)
+        if not os.path.exists(exe):
+            continue
+        major = clang_major(exe)
+        if major < MIN_CLANG:
+            too_old.append("%s (clang %d)" % (exe, major))
+            continue
+        if "wasm32" in subprocess.run([exe, "--print-targets"], capture_output=True, text=True).stdout:
+            return c
+    sys.exit("no clang %d or newer with the wasm32 backend: install LLVM (https://releases.llvm.org, or apt.llvm.org) or set"
+             " WASI_CLANG to its bin folder (Apple's clang has no wasm32 backend)%s"
+             % (MIN_CLANG, "; too old: " + ", ".join(too_old) if too_old else ""))
 
 
 def build(crate, out, debug):
@@ -153,12 +167,18 @@ def build(crate, out, debug):
     cmd = ["cargo", "build", "--target", TARGET, "--manifest-path", manifest]
     if not debug:
         cmd.append("--release")
-    run(cmd, env=env)
-    target_dir = os.environ.get("CARGO_TARGET_DIR") or os.path.join(crate, "target")
-    profile = "debug" if debug else "release"
-    wasm = os.path.join(target_dir, TARGET, profile, crate_name(manifest) + ".wasm")
-    if not os.path.exists(wasm):
-        sys.exit("expected " + wasm)
+    # cargo says where the cdylib went (a workspace member builds into the workspace's target folder)
+    print("+", " ".join(cmd))
+    built = subprocess.run(cmd + ["--message-format=json-render-diagnostics"], env=env, check=True, stdout=subprocess.PIPE, text=True)
+    wasm = None
+    for line in built.stdout.splitlines():
+        if not line.startswith("{"):
+            continue
+        msg = json.loads(line)
+        if msg.get("reason") == "compiler-artifact" and "cdylib" in msg["target"]["crate_types"] and os.path.samefile(msg["manifest_path"], manifest):
+            wasm = next((f for f in msg["filenames"] if f.endswith(".wasm")), wasm)
+    if not wasm or not os.path.exists(wasm):
+        sys.exit("cargo built no .wasm: the crate needs  crate-type = [\"cdylib\"]  under [lib] in " + manifest)
     os.makedirs(out, exist_ok=True)
     final = os.path.join(out, "app.wasm")
     shutil.copyfile(wasm, final)

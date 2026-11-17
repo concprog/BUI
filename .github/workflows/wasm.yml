@@ -29,8 +29,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: LLVM (clang with the wasm32 backend, llvm-ar), CMake and Ninja
-        run: sudo apt-get install -y clang llvm lld cmake ninja-build
+      # wasi-sdk 34's libc++ needs clang 19 (__builtin_clzg); ubuntu-latest's own clang is older
+      - name: LLVM 19 (clang with the wasm32 backend, llvm-ar, lld), CMake and Ninja
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-19 main" | sudo tee /etc/apt/sources.list.d/llvm-19.list
+          sudo apt-get update
+          sudo apt-get install -y clang-19 llvm-19 lld-19 cmake ninja-build
+          echo "WASI_CLANG=/usr/lib/llvm-19/bin" >> "$GITHUB_ENV"
+          /usr/lib/llvm-19/bin/clang --version
       - name: The WASI sysroot (cached)
         uses: actions/cache@v4
         with:
