@@ -90,7 +90,10 @@ The C kit is built for WebAssembly by CMake through `platform/wasm/wasi.cmake`, 
   `devicePixelRatio`, so a retina canvas draws twice the pixels and a change of ratio (another screen) is
   laid out again. Only the primary pointer's primary button is passed on. If the module traps, the app is
   stopped (no more frames, no listeners) and the error goes to `onerror` (default `console.error`);
-  `stop()` frees the app (`bui_stop`, `App::shutdown`).
+  `stop()` frees the app (`bui_stop`, `App::shutdown`). Startup errors (the module fails to load, or
+  `bui_start` traps or returns 0) reject the `mount()` promise instead and do not reach `onerror`: catch it.
+  A press the browser cancels (`pointercancel`, lost capture) or whose primary button is released while another
+  button is held is released in the module too.
 
 ```js
 import { mount } from './bui-web.js'
