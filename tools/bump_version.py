@@ -186,22 +186,19 @@ def plan_edits(new: str, npm: str | None) -> tuple[dict[Path, str], list[Path]]:
     return edits, gone
 
 
+def cargo_lock(cwd: Path) -> bool:
+    """Refresh a workspace's Cargo.lock: offline first (the common case, nothing to download), then online."""
+    return any(run(["cargo", "update", "--workspace", *flags], cwd=cwd, check=False).returncode == 0 for flags in (["--offline"], []))
+
+
 def refresh_locks(npm: bool) -> list[Path]:
     """Best effort: a lock file that can't be refreshed is reported, not fatal."""
     touched = []
-    r = run(["cargo", "update", "--workspace", "--offline"], cwd=RUST, check=False)
-    if r.returncode != 0:
-        r = run(["cargo", "update", "--workspace"], cwd=RUST, check=False)
-    if r.returncode == 0:
-        touched.append(RUST / "Cargo.lock")
-    else:
-        print("warning: Cargo.lock was not refreshed (run `cargo update --workspace` in bindings/rust)")
-    cli = ROOT / "tools" / "bui"
-    r = run(["cargo", "update", "--workspace", "--offline"], cwd=cli, check=False)
-    if r.returncode == 0:
-        touched.append(cli / "Cargo.lock")
-    else:
-        print("warning: tools/bui/Cargo.lock was not refreshed (run `cargo update --workspace` in tools/bui)")
+    for cwd, label in ((RUST, "bindings/rust"), (ROOT / "tools" / "bui", "tools/bui")):
+        if cargo_lock(cwd):
+            touched.append(cwd / "Cargo.lock")
+        else:
+            print(f"warning: {label}/Cargo.lock was not refreshed (run `cargo update --workspace` in {label}): CI builds with --locked and would reject it")
     if npm:
         r = run(["npm", "install", "--package-lock-only", "--ignore-scripts"], cwd=ROOT / "bindings", check=False)
         if r.returncode == 0:
