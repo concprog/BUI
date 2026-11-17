@@ -106,6 +106,13 @@ draws its first frame in about 11 ms; a changed frame took 3 ms.
 * **A malformed font traps** instead of being rejected (FreeType's `setjmp` recovery is not available; the
   embedded font is fine).
 
+## Speed
+
+`node examples/wasm/bench.mjs app.wasm [width height]` times full redraws. The counter at 1280 x 800 takes about
+3 to 5 ms a frame under Node.js on a laptop; copying the kit's pixels to the canvas's RGBA bytes took half of the
+10 ms it took before that loop was written for the compiler to vectorize. Compiling the Rust side with
+`simd128` made no measurable difference, so the build does not use it.
+
 ## Tested
 
 Node.js 26 (`examples/wasm/smoke.mjs`: the first frame, no frame when idle, a click, a resize, a retina
