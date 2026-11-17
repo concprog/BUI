@@ -22,6 +22,8 @@ const REGIONS = ['header', 'tool_header', 'footer', 'asset_shelf', 'channels', '
 const SLOT = Object.fromEntries(REGIONS.map((r) => [r.replace(/_(.)/g, (_, c) => c.toUpperCase()), r]))
 /** A region's props, as `<bui-region>` attributes. */
 const REGION_PROPS = ['size', 'hidden', 'side', 'overlap', 'resizable', 'maxsize', 'hotkey']
+/** The ones of them that are flags (a bare `<Region overlap>` means true). */
+const REGION_FLAGS = ['hidden', 'overlap', 'resizable']
 
 /** A screen's first arrangement: an editor's name, or two split by an edge. */
 const AreaSplit = {
@@ -36,10 +38,14 @@ function split (axis, factor, first, second) {
   return { axis, factor, first, second }
 }
 
+/** A name in the layout grammar: quotes and backslashes escaped, nothing else (the kit's
+ *  writer and blenderui's `AreaSplit::parse` agree on that; `JSON.stringify`'s backslash-n would not parse). */
+const quoted = (s) => `"${s.replace(/[\\"]/g, (c) => '\\' + c)}"`
+
 /** The text form `<bui-screen layout="...">` takes (blenderui's `AreaSplit::parse`). */
 function layoutText (layout) {
   if (layout == null) return null
-  if (typeof layout === 'string') return JSON.stringify(layout)
+  if (typeof layout === 'string') return quoted(layout)
   return `${layout.axis}${layout.factor}(${layoutText(layout.first)},${layoutText(layout.second)})`
 }
 
@@ -54,22 +60,66 @@ function regionAttrs (props) {
   return out
 }
 
+/** The rectangle of an area of a layout document: `[x0, y0, x1, y1]` of its four vertices. */
+function areaRect (verts, a) {
+  const xs = a.v.map((i) => verts[i][0])
+  const ys = a.v.map((i) => verts[i][1])
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]
+}
+
+const overlap = (a, b) => Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) *
+  Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]))
+const sameRect = (a, b) => a.every((v, i) => v === b[i])
+
+/**
+ * Identities for the areas of a new layout, so a framework keeps an area's component (and its
+ * state) while its neighbors are split, joined or closed. An area that has an `id` in the layout
+ * document keeps it; otherwise each area takes the identity of the `previous` area of the same
+ * editor that has its rectangle, or else overlaps it most (a survivor of a join has grown), and
+ * new areas get fresh ones. `previous` is the `areas` of the last change (empty at first).
+ */
+function areaIdentities (doc, previous) {
+  const rects = doc.areas.map((a) => areaRect(doc.verts, a))
+  const taken = new Set()
+  let fresh = previous.reduce((m, a) => Math.max(m, a.id), 0)
+  const ids = doc.areas.map((a) => (a.id === undefined ? null : a.id))
+  const claim = (i, score) => {
+    let best = -1
+    let bestScore = 0
+    previous.forEach((p, j) => {
+      if (taken.has(j) || p.editor !== doc.areas[i].editor) return
+      const s = score(p)
+      if (s > bestScore) { best = j; bestScore = s }
+    })
+    if (best >= 0) { taken.add(best); ids[i] = previous[best].id }
+  }
+  for (let i = 0; i < ids.length; i++) if (ids[i] === null) claim(i, (p) => (sameRect(p.rect, rects[i]) ? Infinity : 0))
+  for (let i = 0; i < ids.length; i++) if (ids[i] === null) claim(i, (p) => overlap(p.rect, rects[i]))
+  return doc.areas.map((a, i) => ({ id: ids[i] ?? ++fresh, editor: a.editor, rect: rects[i] }))
+}
+
 /**
  * What a `change` event of a screen's elements means: `{ layout, areas }` (the layout changed;
- * `areas` are the editors of the areas in the kit's order), `{ window: editor }` (an area was
- * dragged out of the window), or null (another element's event).
+ * `areas` are `{ id, editor, rect }` of the areas in the kit's order, `id` staying with an area as
+ * the others change, see `areaIdentities`), `{ window: editor }` (an area was dragged out of the
+ * window), or null (another element's event). `previous` is the `areas` of the last change.
  */
-function screenChange (value) {
+function screenChange (value, previous = []) {
   if (typeof value !== 'string') return null
   if (value.startsWith('window\t')) return { window: value.slice(7) }
   if (value[0] !== '{') return null
   const doc = JSON.parse(value)
-  return { layout: value, areas: doc.areas.map((a) => a.editor) }
+  return { layout: value, areas: areaIdentities(doc, previous) }
+}
+
+/** `screenChange` of an event, when `screen` itself sent it (a nested screen's events bubble). */
+function ownScreenChange (e, screen, previous) {
+  return e.target === screen ? screenChange(screen.value, previous) : null
 }
 
 /** The render function of an editor, by name (the first editor for an unknown name). */
 function editorFor (editors, name) {
-  return editors[name] ?? Object.values(editors)[0]
+  return Object.hasOwn(editors, name) ? editors[name] : Object.values(editors)[0]
 }
 
 // ---- the DOM-like API ----------------------------------------------------------------
@@ -114,22 +164,42 @@ function createScreen (document, { editors, layout, saved, onChange, onWindow, o
   if (text) screen.setAttribute('layout', text)
   if (saved) screen.setAttribute('saved', saved)
   if (ops) screen.setAttribute('ops', ops)
+  /** The editor elements the screen holds, by area identity. */
+  const held = new Map()
+  let areas = []
+  const discard = (h) => {
+    h.element.parentNode?.removeChild(h.element)
+    if (!h.element._auto) h.element.destroy() // window-made nodes have no automatic cleanup
+  }
   screen.addEventListener('change', (e) => {
-    if (e.target !== screen) return
-    const c = screenChange(screen.value)
+    const c = ownScreenChange(e, screen, areas)
     if (c === null) return
     if (c.window !== undefined) {
       onWindow?.({ editor: c.window })
       return
     }
-    while (screen.firstChild) screen.removeChild(screen.firstChild)
-    c.areas.forEach((editor, index) => {
-      screen.appendChild(editorFor(editors, editor).render({ index, editor }))
+    areas = c.areas
+    // Reconcile: an area that lives on (same identity and editor) keeps its element, so a drag of
+    // an edge does not rebuild an editor (a text field's draft); the others are made or released.
+    const next = new Map()
+    areas.forEach(({ id, editor }, index) => {
+      let h = held.get(id)
+      if (h !== undefined && h.editor !== editor) { discard(h); h = undefined }
+      next.set(id, h ?? { editor, element: editorFor(editors, editor).render({ index, editor }) })
+      held.delete(id)
     })
+    for (const h of held.values()) discard(h)
+    held.clear()
+    for (const [id, h] of next) held.set(id, h)
+    let cursor = screen.firstChild
+    for (const h of next.values()) {
+      if (h.element === cursor) cursor = cursor.nextSibling
+      else screen.insertBefore(h.element, cursor)
+    }
     onChange?.({ layout: c.layout })
   })
   return screen
 }
 
-module.exports = { AreaSplit, REGIONS, SLOT, REGION_PROPS, layoutText, regionAttrs, screenChange, editorFor,
+module.exports = { AreaSplit, REGIONS, SLOT, REGION_PROPS, REGION_FLAGS, layoutText, regionAttrs, screenChange, ownScreenChange, editorFor,
   editorElement, createScreen }

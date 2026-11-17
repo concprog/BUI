@@ -3,6 +3,11 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+import type { Element } from './index'
+
+/** What `createScreen` and `editorElement` need of a document: a `Window` or a `Document`. */
+export interface ElementFactory { createElement (tag: string): Element }
+
 /** A screen's first arrangement: an editor's name, or two split by an edge. */
 export type AreaSplitLayout = string | { axis: 'h' | 'v', factor: number, first: AreaSplitLayout, second: AreaSplitLayout }
 export const AreaSplit: {
@@ -13,6 +18,8 @@ export const AreaSplit: {
 }
 
 /** An area an editor's `render` fills: its place in the screen's area order and its editor. */
+/** An area of the kit's screen: `id` stays with it while the others are split, joined or closed. */
+export interface ScreenArea { id: number, editor: string, rect: [number, number, number, number] }
 export interface AreaInfo { index: number, editor: string }
 export interface ScreenChangeEvent { layout: string }
 export interface AreaWindowEvent { editor: string }
@@ -38,23 +45,29 @@ export type RegionSlot = 'header' | 'toolHeader' | 'footer' | 'assetShelf' | 'ch
 export const REGIONS: readonly string[]
 export const SLOT: Record<RegionSlot, string>
 export const REGION_PROPS: readonly string[]
+/** The flags among `REGION_PROPS` (a bare `<Region overlap>` is true). */
+export const REGION_FLAGS: readonly string[]
 /** The text form of a layout (`<bui-screen layout="...">`). */
 export function layoutText (layout: AreaSplitLayout | null | undefined): string | null
 export function regionAttrs (props: RegionOptions): Record<string, string>
 /** What a `change` value of a screen means (null: another element's). */
-export function screenChange (value: unknown): { layout: string, areas: string[] } | { window: string } | null
+export function screenChange (value: unknown, previous?: readonly ScreenArea[]):
+  { layout: string, areas: ScreenArea[] } | { window: string } | null
+/** `screenChange` of an event that `screen` itself sent (null for a nested screen's). */
+export function ownScreenChange (e: { target: unknown }, screen: { value: unknown } | null | undefined,
+  previous?: readonly ScreenArea[]): { layout: string, areas: ScreenArea[] } | { window: string } | null
 export function editorFor<E> (editors: Record<string, E>, name: string): E
 
 /** A `<bui-area>`: `main` and the regions, each an element or `{ element, ...RegionOptions }`. */
-export function editorElement (document: { createElement (tag: string): unknown },
-  regions: { main?: unknown } & Partial<Record<RegionSlot, unknown>>): unknown
+export function editorElement (document: ElementFactory,
+  regions: { main?: Element } & Partial<Record<RegionSlot, Element | ({ element: Element } & RegionOptions)>>): Element
 
 /** A `<bui-screen>` for the DOM-like API: each editor's `render` returns an `editorElement`. */
-export function createScreen (document: { createElement (tag: string): unknown }, options: {
-  editors: Record<string, { icon?: string, render (area: AreaInfo): unknown }>
+export function createScreen (document: ElementFactory, options: {
+  editors: Record<string, { icon?: string, render (area: AreaInfo): Element }>
   layout?: AreaSplitLayout
   saved?: string
   ops?: 'all' | 'resize'
   onChange?: (e: ScreenChangeEvent) => void
   onWindow?: (e: AreaWindowEvent) => void
-}): unknown
+}): Element

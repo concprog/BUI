@@ -302,9 +302,9 @@ function Editor ({ children, ...regions }) {
  *  `onChange({ layout })`, `onWindow({ editor })`, `ops="resize"`. */
 function Screen ({ editors, layout, saved, onChange, onWindow, ops, children, ...rest }) {
   const [areas, setAreas] = React.useState(() => [])
+  const self = React.useRef(null)
   const handle = (e) => {
-    if (e.target.localName !== 'bui-screen') return
-    const c = screen.screenChange(e.target.value)
+    const c = screen.ownScreenChange(e, self.current, areas)
     if (c === null) return
     if (c.window !== undefined) {
       onWindow?.({ editor: c.window })
@@ -313,8 +313,8 @@ function Screen ({ editors, layout, saved, onChange, onWindow, ops, children, ..
     setAreas(c.areas)
     onChange?.({ layout: c.layout })
   }
-  return React.createElement('bui-screen', { ...rest, layout: screen.layoutText(layout), saved, ops, onChange: handle },
-    areas.map((editor, index) => React.createElement(React.Fragment, { key: `${index}:${editor}` },
+  return React.createElement('bui-screen', { ...rest, ref: self, layout: screen.layoutText(layout), saved, ops, onChange: handle },
+    areas.map(({ id, editor }, index) => React.createElement(React.Fragment, { key: `${id}:${editor}` },
       screen.editorFor(editors, editor).render({ index, editor }))))
 }
 

@@ -10,9 +10,9 @@
 
   let { editors, layout, saved, ops, onchange, onwindow, ...rest } = $props()
   let areas = $state([])
+  let self = $state()
   const handle = (e) => {
-    if (e.target.localName !== 'bui-screen') return
-    const c = screen.screenChange(e.target.value)
+    const c = screen.ownScreenChange(e, self, areas)
     if (c === null) return
     if (c.window !== undefined) {
       onwindow?.({ editor: c.window })
@@ -23,8 +23,8 @@
   }
 </script>
 
-<bui-screen {...rest} layout={screen.layoutText(layout)} {saved} {ops} onchange={handle}>
-  {#each areas as editor, index (`${index}:${editor}`)}
+<bui-screen bind:this={self} {...rest} layout={screen.layoutText(layout)} {saved} {ops} onchange={handle}>
+  {#each areas as { id, editor }, index (`${id}:${editor}`)}
     {@render screen.editorFor(editors, editor).render({ index, editor })}
   {/each}
 </bui-screen>

@@ -106,7 +106,10 @@ export const { Button, Checkbox, Radio, NumberField, NumberSlider, TextField, Te
  *  `resizable`, `maxsize`, `hotkey`, `@resize="({ size, hidden }) => ..."`. */
 export const Region = {
   name: 'Region',
-  props: ['region', ...screen.REGION_PROPS],
+  // flags are declared Boolean so a bare `<Region overlap>` is true; `default: undefined` leaves an
+  // absent one to the kit's default
+  props: Object.fromEntries(['region', ...screen.REGION_PROPS].map((k) =>
+    [k, screen.REGION_FLAGS.includes(k) ? { type: Boolean, default: undefined } : null])),
   emits: ['resize'],
   setup (props, { slots, emit }) {
     const onChange = (e) => {
@@ -145,9 +148,9 @@ export const Screen = {
   emits: ['change', 'window'],
   setup (props, { emit }) {
     const areas = ref([])
+    let self = null // the element itself: a ref() would wrap it in a proxy that no event target equals
     const onChange = (e) => {
-      if (e.target.localName !== 'bui-screen') return
-      const c = screen.screenChange(e.target.value)
+      const c = screen.ownScreenChange(e, self, areas.value)
       if (c === null) return
       if (c.window !== undefined) {
         emit('window', { editor: c.window })
@@ -156,8 +159,8 @@ export const Screen = {
       areas.value = c.areas
       emit('change', { layout: c.layout })
     }
-    return () => h('bui-screen', { layout: screen.layoutText(props.layout), saved: props.saved, ops: props.ops, onChange },
-      areas.value.map((editor, index) => h(Fragment, { key: `${index}:${editor}` },
+    return () => h('bui-screen', { ref: (el) => { self = el }, layout: screen.layoutText(props.layout), saved: props.saved, ops: props.ops, onChange },
+      areas.value.map(({ id, editor }, index) => h(Fragment, { key: `${id}:${editor}` },
         [screen.editorFor(props.editors, editor).render({ index, editor })])))
   },
 }
