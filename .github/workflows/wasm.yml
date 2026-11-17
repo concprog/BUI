@@ -64,10 +64,8 @@ jobs:
         run: |
           for f in fetch.log build.log smoke.log; do
             [ -f "$f" ] || continue
-            errs=$(grep -n -i -m 8 -E 'error|fatal|FAILED' "$f" | cut -c1-300 | tr '
-' '|')
-            tail=$(tail -n 25 "$f" | cut -c1-250 | tr '
-' '|')
+            errs=$(grep -n -i -m 8 -E 'error|fatal|FAILED' "$f" | cut -c1-300 | tr '\n' '|')
+            tail=$(tail -n 25 "$f" | cut -c1-250 | tr '\n' '|')
             echo "::error title=wasm $f::first errors: ${errs} -- last lines: ${tail}" | cut -c1-3900
           done
       - uses: actions/upload-artifact@v4
