@@ -35,16 +35,8 @@ if (mode is not ("anim" or "one"))
 }
 
 const int W = 1000, H = 800;
-const float Gap = 2;
-// measure.rs Config::grid
-int cols = Math.Max(1, (int)MathF.Ceiling(MathF.Sqrt(cells * (float)W / H)));
-int rows = (cells + cols - 1) / cols;
-float cw = MathF.Floor((W - Gap) / cols - Gap);
-float hh = (H - Gap) / rows - Gap;
-float ch = MathF.Floor(hh);
-float font = MathF.Floor(Math.Clamp(hh * 0.55f, 8, 14));
 
-var grid = new CellGrid(cols, cw, ch, font, Gap);
+var grid = new CellGrid(cells, W, H);
 var canvas = new Canvas();
 for (int i = 0; i < cells; i++)
 {
@@ -58,7 +50,9 @@ long t = 0;
 window.Frame += (_, _) =>
 {
     t++;
-    if (one)
+    var (width, height) = window.Size;
+    bool resized = grid.Resize(width, height);
+    if (one && !resized)
     {
         grid.Put(canvas, 0, t);
     }
@@ -115,18 +109,18 @@ Window.Run();
 /// <summary>The grid's items: cell i is a rounded rect (id 2i+1) and its label (id 2i+2).</summary>
 internal sealed unsafe class CellGrid
 {
-    private readonly int cols;
-    private readonly float cw, ch, gap;
+    private const float Gap = 2;
+    private readonly int cells;
+    private int cols, width, height;
+    private float cw, ch, gap = Gap;
     private readonly float[] coords;    // pinned: x0 y0 x1 y1 for the rect, cx cy for the text
     private readonly byte[] labels;     // pinned: "0\0" .. "999\0", 4 bytes each
     private BKCanvasItem rect, text;
 
-    public CellGrid(int cols, float cw, float ch, float font, float gap)
+    public CellGrid(int cells, int width, int height)
     {
-        this.cols = cols;
-        this.cw = cw;
-        this.ch = ch;
-        this.gap = gap;
+        this.cells = cells;
+        Resize(width, height);
         coords = GC.AllocateArray<float>(6, pinned: true);
         labels = GC.AllocateArray<byte>(1000 * 4, pinned: true);
         for (int i = 0; i < 1000; i++)
@@ -138,8 +132,25 @@ internal sealed unsafe class CellGrid
         rect.radius = 3;
         text.type = (int)BK_ITEM_TEXT;
         text.ncoords = 2;
-        text.size = font;
         text.fill[0] = text.fill[1] = text.fill[2] = text.fill[3] = 1; // #fff
+    }
+
+    /// <summary>The grid fills the window (measure.rs Config::grid). True when the size changed.</summary>
+    public bool Resize(int w, int h)
+    {
+        if (w <= 0 || h <= 0 || (w == width && h == height))
+        {
+            return false;
+        }
+        width = w;
+        height = h;
+        cols = Math.Max(1, (int)MathF.Ceiling(MathF.Sqrt(cells * (float)w / h)));
+        int rows = (cells + cols - 1) / cols;
+        cw = MathF.Floor((w - Gap) / cols - Gap);
+        float cellH = (h - Gap) / rows - Gap;
+        ch = MathF.Floor(cellH);
+        text.size = MathF.Floor(Math.Clamp(cellH * 0.55f, 8, 14));
+        return true;
     }
 
     public void Put(Canvas canvas, int i, long t)
