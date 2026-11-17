@@ -384,7 +384,15 @@ static double op_degrees(double arg)
 
 static double op_log2(double a, double b)
 {
-  return log(a) / log(b);
+  /* Without hardware flags each step is noted: `log(1, 0)` is `0 / -inf`, a finite zero that hides the
+   * infinity of `log(0)`. */
+  const double la = log(a);
+  const double lb = log(b);
+  fe_note(la, a);
+  fe_note(lb, b);
+  const double result = la / lb;
+  fe_note(result, la, lb);
+  return result;
 }
 
 static double op_lerp(double a, double b, double x)
@@ -406,7 +414,11 @@ static double op_clamp3(double arg, double minv, double maxv)
 
 static double op_smoothstep(double a, double b, double x)
 {
-  double t = (x - a) / (b - a);
+  const double t_num = x - a;
+  const double t_den = b - a;
+  double t = t_num / t_den;
+  /* the division by zero of `smoothstep(0, 0, 1)` is noted before the clamp hides it */
+  fe_note(t, t_num, t_den);
   CLAMP(t, 0.0, 1.0);
   return t * t * (3.0 - 2.0 * t);
 }

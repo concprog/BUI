@@ -570,7 +570,10 @@ impl App {
             return;
         };
         let phys = (width as i32, height as i32);
-        let scale = scale.max(1.0);
+        // any positive finite ratio (page zoom out gives 0.75): the window's scale is what the host says
+        if !scale.is_finite() || scale <= 0.0 {
+            return;
+        }
         if (phys == w.phys && scale == w.scale) || phys.0 <= 0 || phys.1 <= 0 {
             return;
         }
@@ -1186,7 +1189,7 @@ impl Window {
                 selection_hooks: Vec::new(),
             };
             if headless {
-                win.scale = sys::BK_scale().max(1.0);
+                win.scale = sys::BK_scale().max(0.25);
                 win.phys = ((w * win.scale).round() as i32, (h * win.scale).round() as i32);
             } else {
                 let t = CString::new(title).unwrap_or_default();

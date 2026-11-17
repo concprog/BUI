@@ -37,6 +37,12 @@ fn frames_resize_scale_and_shutdown() {
     assert_eq!(app.frame_if_needed(id).map(|f| (f.0, f.1)), Some((200, 120)));
     let scale = app.window(id).map(Window::scale_factor);
     assert_eq!(scale, Some(2.0), "the window's scale followed");
+    // page zoom out: a ratio below 1 is kept (a 120 x 80 CSS canvas at 0.75 is 90 x 60 device pixels)
+    app.resize_window(id, 90, 60, 0.75);
+    assert_eq!(app.frame_if_needed(id).map(|f| (f.0, f.1)), Some((90, 60)));
+    assert_eq!(app.window(id).map(Window::scale_factor), Some(0.75));
+    app.resize_window(id, 200, 120, 2.0);
+    assert_eq!(app.frame_if_needed(id).map(|f| (f.0, f.1)), Some((200, 120)));
     // the same call again changes nothing
     app.resize_window(id, 200, 120, 2.0);
     assert!(app.frame_if_needed(id).is_none());

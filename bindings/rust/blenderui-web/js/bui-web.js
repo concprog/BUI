@@ -125,6 +125,12 @@ export async function mount (canvas, source, { fit = true, width = 640, height =
   const [w0, h0] = css()
   canvas.width = Math.round(w0 * scale())
   canvas.height = Math.round(h0 * scale())
+  if (fit && (canvas.clientWidth !== w0 || canvas.clientHeight !== h0)) {
+    // an unstyled canvas is as big in CSS pixels as its backing store: at a pixel ratio above 1 it would grow
+    // on every frame (the store follows the CSS size, which follows the store). Pin the logical size.
+    canvas.style.width = `${w0}px`
+    canvas.style.height = `${h0}px`
+  }
   if (!exports.bui_start(w0, h0, scale())) throw new Error('the app did not open a window')
 
   let running = true
@@ -173,16 +179,44 @@ export async function mount (canvas, source, { fit = true, width = 640, height =
   }
   // only the primary pointer's primary button: the module has one pointer and one button
   const primary = (e) => e.isPrimary && e.button === 0
+  // whether the module has a press that has not been released: it is released however the page learns of
+  // it (a pointerup, the primary button leaving `buttons` while another is held, or a cancellation)
+  let pressed = false
+  const release = (x, y) => {
+    if (!pressed) return
+    pressed = false
+    exports.bui_pointer_up(x, y)
+  }
   off = [
-    on('pointermove', guard((e) => { if (e.isPrimary) exports.bui_pointer_move(...at(e)) })),
+    on('pointermove', guard((e) => {
+      if (!e.isPrimary) return
+      exports.bui_pointer_move(...at(e))
+      if (pressed && !(e.buttons & 1)) release(...at(e)) // left released while another button is held
+    })),
     on('pointerdown', guard((e) => {
       if (!primary(e)) return
       canvas.focus()
       canvas.setPointerCapture(e.pointerId)
       exports.bui_pointer_move(...at(e))
+      pressed = true
       exports.bui_pointer_down(...at(e))
     })),
-    on('pointerup', guard((e) => { if (primary(e)) exports.bui_pointer_up(...at(e)) })),
+    on('pointerup', guard((e) => {
+      // the primary button's own release, or the last release of a chord whose primary button went earlier
+      if (e.isPrimary && (e.button === 0 || !(e.buttons & 1))) release(...at(e))
+    })),
+    // cancelled (a dialog, an unplugged device) or capture lost: end the press away from the canvas, so it
+    // clicks nothing
+    on('pointercancel', guard((e) => {
+      if (!e.isPrimary || !pressed) return
+      exports.bui_pointer_move(-1, -1)
+      release(-1, -1)
+    })),
+    on('lostpointercapture', guard((e) => {
+      if (!e.isPrimary || !pressed) return
+      exports.bui_pointer_move(-1, -1)
+      release(-1, -1)
+    })),
     on('wheel', guard((e) => {
       e.preventDefault()
       // the module's positive lines are wheel-up, the DOM's positive deltaY is wheel-down
