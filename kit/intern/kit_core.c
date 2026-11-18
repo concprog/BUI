@@ -410,10 +410,12 @@ BKRect bk_node_rect(const BKNode *n)
   return bk_rect(n->x, n->y, n->w, n->h);
 }
 
-/* What a node draws outside its rect: a popup's shadow, else a few pixels of outline. */
-static int damage_margin(bool in_popup)
+/* What a node draws outside its rect: a popup's shadow, its class's overhang, else a few pixels
+ * of outline. */
+static int damage_margin(const BKNode *n, bool in_popup)
 {
-  return in_popup ? (int)(bk_theme.menu_shadow_width * bk_scale_fac) + 6 : 3;
+  const int m = in_popup ? (int)(bk_theme.menu_shadow_width * bk_scale_fac) + 6 : 3;
+  return BK_MAX(m, (int)ceilf(n->cls->overhang * (float)bk_unit()) + 1);
 }
 
 static void damage_grown(BKContext *ctx, BKRect r, int m)
@@ -438,7 +440,7 @@ void bk_invalidate(BKNode *n)
 {
   BKContext *ctx = bk_ctx(n);
   if (ctx) {
-    damage_grown(ctx, bk_node_rect(n), damage_margin(node_in_popup(n)));
+    damage_grown(ctx, bk_node_rect(n), damage_margin(n, node_in_popup(n)));
   }
 }
 
@@ -450,7 +452,7 @@ static void damage_moved(BKContext *ctx, BKNode *n, bool shown, bool in_popup)
   in_popup = in_popup || (n->cls->flags & CLS_POPUP);
   const BKRect now = shown ? bk_node_rect(n) : (BKRect){0, 0, 0, 0};
   if (memcmp(&now, &n->shown, sizeof(now)) != 0) {
-    const int m = damage_margin(in_popup);
+    const int m = damage_margin(n, in_popup);
     damage_grown(ctx, n->shown, m);
     damage_grown(ctx, now, m);
     n->shown = now;

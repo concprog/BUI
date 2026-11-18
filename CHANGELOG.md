@@ -133,6 +133,7 @@ All notable changes to **blenderui** (BUI). The format follows
   audio track plays and each video with sound owns one stream and thread.
 
 ### Fixed
+- **Kit: the color ramp's end stops leave no marks.** A stop marker at either end of the band draws past the widget, outside the area that was redrawn; the damage now covers it (`BUI_CHECK_DAMAGE=1` found 9 pixels in the component tests).
 - **Kit: a menu search placed the popup with the old size.** `menu_filter` placed the popup before it marked the layout, so the popup used the size from before the new filter.
 - **Rust: Tailwind `text-sm` / `text-xs` / `text-lg` line heights.** A unitless `calc()` line height (`calc(1.25 / 0.875)`, what the Tailwind theme sets) was read as pixels (1.4 px), so the text sat about 9 px above its box and a parent with `overflow: hidden` (`truncate`) cut it. It is now a factor of the font size, like a number.
 - **Rust: `text-overflow: ellipsis` on a clipping block.** A `nowrap` text in a block with `overflow: hidden` (`truncate`) was laid out as line-box words, so it was clipped without the `…`. A block holding only text now lays it out as one measured run whatever its `overflow` (except scrolling ones), clips it to the content box and ends it with `…`; `text-overflow` takes effect only when `overflow-x` is not `visible`, as in CSS.

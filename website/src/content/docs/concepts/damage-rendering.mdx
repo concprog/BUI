@@ -27,7 +27,7 @@ On the full components demo (520×900, Ryzen 7 5800U laptop), that's the differe
 
 1. **A widget marks itself dirty.**
 
-   When a value, text or state changes, the kit marks that node's rectangle as dirty, plus a few pixels of margin. Popups get a wider margin, to cover their shadow. Nothing is drawn yet.
+   When a value, text or state changes, the kit marks that node's rectangle as dirty, plus a few pixels of margin. Popups get a wider margin, to cover their shadow. A widget that draws past its own edges, like the color ramp's stop markers, gets a margin that covers them. Nothing is drawn yet.
 
 2. **Dirty rectangles merge.**
 

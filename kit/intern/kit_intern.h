@@ -315,6 +315,7 @@ typedef struct BKClass {
    * ANIMATION_TIME, eased (do_animate) */
   double anim_time;
   int drag_group;  /* drag-toggle group (0 = none) */
+  float overhang;  /* draw goes this far outside the node's rect, in units (bk_unit) */
   void (*init)(BKNode *n);
   void (*free_ext)(BKNode *n);
   void (*measure)(BKNode *n, int *r_w, int *r_h);
