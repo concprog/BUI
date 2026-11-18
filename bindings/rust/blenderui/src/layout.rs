@@ -234,7 +234,7 @@ pub(crate) enum Content {
     /// `start..end` of the text of box `src`.
     Word { src: u32, start: u32, end: u32 },
     /// A whole text run in a flex/grid container (wraps when measured).
-    Text(String),
+    Text(SharedString),
     LineBreak,
     /// Boxed: a widget's spec is large and few boxes are widgets.
     Widget(Box<WidgetSpec>),
@@ -1468,7 +1468,7 @@ impl<'a> Builder<'a> {
         self.nodes[g].el = self.els.len() as u32;
         self.els.push(ElData { tag, id: None, attrs: Vec::new(), listeners: None, has: 0, reactive: false });
         if !text.is_empty() {
-            self.push(Some(g), Content::Text(text), Some(g), sid, child_key(key, "#text", 1), true);
+            self.push(Some(g), Content::Text(text.into()), Some(g), sid, child_key(key, "#text", 1), true);
         }
     }
 
@@ -1527,7 +1527,7 @@ impl<'a> Builder<'a> {
                 AnyElement::Text(t) if t.is_empty() => {}
                 AnyElement::Text(t) => {
                     let style = self.nodes[i].style;
-                    self.push(Some(i), Content::Text(t.into_owned()), Some(i), style,
+                    self.push(Some(i), Content::Text(t), Some(i), style,
                               child_key(parent_key, "#text", n), true);
                 }
             }
@@ -1883,7 +1883,7 @@ impl<'a> Builder<'a> {
             };
             let changed = text::bidi_visual(changed.as_deref().unwrap_or(t), rtl, ovr).or(changed);
             if let Some(t) = changed {
-                self.nodes[k].content = Content::Text(t);
+                self.nodes[k].content = Content::Text(t.into());
             }
         }
     }
@@ -2159,15 +2159,15 @@ impl<'a> Builder<'a> {
         let Content::Text(raw) = std::mem::replace(&mut self.nodes[src].content, Content::Anon) else { return };
         let mut text = match transform(&raw, tt, ws, tab) {
             std::borrow::Cow::Borrowed(_) => raw,
-            std::borrow::Cow::Owned(s) => s,
+            std::borrow::Cow::Owned(s) => s.into(),
         };
         // bidirectional text: laid out in visual order
         let (rtl, ovr) = (c.layout.direction == taffy::style::Direction::Rtl, c.bidi_override);
         if let Some(v) = text::bidi_visual(&text, rtl, ovr) {
-            text = v;
+            text = v.into();
         }
         if ws == WhiteSpace::NoWrap {
-            text = collapse(&text);
+            text = collapse(&text).into();
         }
         // pieces: byte range, trailing space, forced break after
         let mut pieces: smallvec::SmallVec<[(usize, usize, bool, bool); 16]> = smallvec::SmallVec::new();
@@ -2480,7 +2480,7 @@ pub(crate) fn layout(root: AnyElement, viewport: (f32, f32), state: &UiState, ca
                 }
                 Measure::Text { key, size, flags, line, nowrap, brk, .. } => {
                     let text = match text_box.get(key).map(|&k| &nodes[k].content) {
-                        Some(Content::Text(t)) => t.as_str(),
+                        Some(Content::Text(t)) => t.as_ref(),
                         _ => "",
                     };
                     if !text.contains([' ', '\n']) && *brk == 0 {
