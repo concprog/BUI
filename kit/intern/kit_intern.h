@@ -401,6 +401,7 @@ enum {
   NF_DEFAULT_SET = 1 << 27, /* `defval` was set: by "default", or by the first "value" a widget got */
   NF_BARE = 1 << 28,        /* "bare": an HTML text field with no frame (CSS `border-style: none`) */
   NF_SELECT = 1 << 29,      /* "select": held selected by the host (UI_SELECT: a checked push button) */
+  NF_ARRANGE = 1 << 30,     /* arrange again: it or a node under it measured again since its arrange */
 };
 
 #define BK_HTML(n) (((n)->flags & NF_HTML) != 0)
@@ -610,6 +611,7 @@ struct BKContext {
   int scroll_alpha; /* View2D.alpha_vert of the region scrollbar (0..255) */
   /* damage */
   bool layout_dirty, full_dirty;
+  int arrange_epoch; /* the measure epoch of the last layout: another one arranges every node */
   BKRect dirty[BK_MAX_DIRTY];
   int ndirty;
   BKKeyBinding keys[BK_MAX_KEYS];

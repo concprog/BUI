@@ -84,6 +84,7 @@ All notable changes to **blenderui** (BUI). The format follows
   - Examples: `examples/animation/` (a hero intro, a card grid, magnetic buttons, a marquee with drag and an equalizer).
 
 ### Changed
+- **Kit: a layout arranges only the nodes that changed.** A node is arranged again when it or a node under it measured again, or when its place changed; the rest keep their places. A frame where one label changes among 3300 nodes: 0.26 ms instead of 0.31 ms. A change of theme, scale or font still arranges every node.
 - **Kit: a layout change redraws only what moved.** A layout used to redraw the whole window. Now each widget's
   place on screen is compared with where the last frame drew it, and only widgets that moved, resized, appeared or
   disappeared are damaged, at both places (only a window resize still redraws everything). One label that grows in

@@ -161,6 +161,7 @@ void bk_stale(BKNode *n)
 {
   for (; n; n = n->parent) {
     n->nat_gen = 0;
+    n->flags |= NF_ARRANGE;
   }
 }
 
@@ -208,6 +209,7 @@ BKNode *bk_node_new_cls(const BKClass *cls)
   n->split = 0.4f;
   n->color[3] = 1.0f;
   n->nat_gen = 0;
+  n->flags |= NF_ARRANGE;
   if (cls->init) {
     cls->init(n);
   }
@@ -498,15 +500,23 @@ void bk_natural(BKNode *n, int *r_w, int *r_h)
     n->nat_w = w;
     n->nat_h = h;
     n->nat_gen = g_epoch;
+    n->flags |= NF_ARRANGE;
   }
   *r_w = n->nat_w;
   *r_h = n->nat_h;
 }
 
 int bk_configure_pending;
+static bool g_arrange_all; /* a layout after a measure epoch change */
 
 void bk_arrange(BKNode *n, int x, int y, int w, int h)
 {
+  if (!g_arrange_all && !(n->flags & NF_ARRANGE) && n->x == x && n->y == y && n->w == w &&
+      n->h == h)
+  {
+    return; /* nothing it places from changed */
+  }
+  n->flags &= ~NF_ARRANGE;
   if ((n->flags & NF_EVENTS) && (n->x != x || n->y != y || n->w != w || n->h != h)) {
     n->flags |= NF_CONFIGURED; /* reported after layout (Tk's <Configure>) */
     bk_configure_pending = 1;
@@ -2127,6 +2137,8 @@ static void layout(BKContext *ctx)
   ctx->content_h = ch;
   const int view_h = h - hh;
   ctx->scroll = BK_CLAMP(ctx->scroll, 0, BK_MAX(0, ch - view_h));
+  g_arrange_all = ctx->arrange_epoch != g_epoch;
+  ctx->arrange_epoch = g_epoch;
   if (ctx->root) {
     bk_arrange(ctx->root, 0, hh - ctx->scroll, w, BK_MAX(ch, view_h));
   }
@@ -2136,6 +2148,7 @@ static void layout(BKContext *ctx)
   for (int i = 0; i < ctx->npopups; i++) {
     bk_popup_place(ctx->popups[i], w, h);
   }
+  g_arrange_all = false;
   ctx->layout_dirty = false;
   if (was[0] != ctx->content_h || was[1] != ctx->scroll || was[2] != ctx->header_h) {
     damage_grown(ctx, track, 0); /* the thumb moved */
