@@ -1,0 +1,130 @@
+---
+title: Use BUI in your app
+sidebarLabel: In your app
+description: Add a local build of BUI to your own .NET project in Rider or Visual Studio, as a project reference or as a package from a local folder.
+section: C#
+order: 20
+languages: ["csharp"]
+sources: ["bindings/csharp/README.md", "bindings/csharp/Directory.Build.props", "bindings/csharp/src/Bui/Bui.csproj", "bindings/csharp/CMakeLists.txt"]
+---
+
+**Your app needs two parts: the C# assemblies (`Bui`, `Bui.Forms`) and the native kit.** The native kit is one shared library. .NET loads it by the name `bui_kit`:
+
+| Platform | File |
+|---|---|
+| Windows | `bui_kit.dll` |
+| macOS | `libbui_kit.dylib` |
+| Linux | `libbui_kit.so` |
+
+Both procedures below start from the same native build. Do it in the BUI checkout:
+
+```sh
+cmake -S . -B build -DBUI_BUILD_CSHARP_BINDINGS=ON
+cmake --build build --config Release --target bui_kit_shared
+```
+
+The library is in `build/bindings/csharp/`.
+
+## Reference the project
+
+Use this while you change BUI itself: a change to the C# code is in your app at the next build, and the debugger steps into the binding.
+
+Add a project reference to your app's `.csproj`. Reference `Bui.Forms` for the Windows Forms-style API, or `Bui` for the components only:
+
+```xml
+<ItemGroup>
+  <ProjectReference Include="path/to/BUI/bindings/csharp/src/Bui.Forms/Bui.Forms.csproj" />
+</ItemGroup>
+```
+
+In Rider or Visual Studio, you can also add the project to your solution (**Add → Existing Project**), then add the reference in the app's dependencies.
+
+At each build, `Bui.csproj` copies the native library from `build/bindings/csharp` into your app's output folder. If you built the kit in a different folder, set `BuiNativeDir` in your app's `.csproj`:
+
+```xml
+<PropertyGroup>
+  <BuiNativeDir>path/to/your-build/bindings/csharp</BuiNativeDir>
+</PropertyGroup>
+```
+
+After a change to the C code, build `bui_kit_shared` again. The next build of your app copies the new library.
+
+## Install a local package
+
+Use this to give an app a fixed build of BUI, the same as the package from a release.
+
+Put each native library in a folder with the name of its platform (`linux-x64`, `osx-arm64`, `osx-x64` or `win-x64`). Then make the two packages:
+
+```sh
+mkdir -p natives/linux-x64
+cp build/bindings/csharp/libbui_kit.so natives/linux-x64/
+dotnet pack bindings/csharp/src/Bui -c Release -p:BuiNatives=$PWD/natives -o feed
+dotnet pack bindings/csharp/src/Bui.Forms -c Release -o feed
+```
+
+The `feed` folder now holds `BlenderUI` and `BlenderUI.Forms`. A package can hold libraries for more than one platform: put each one in its folder before you pack.
+
+Add `feed` as a package source:
+
+- **Rider:** **Settings → NuGet → Sources**.
+- **Visual Studio:** **Tools → Options → NuGet Package Manager → Package Sources**.
+- **Command line:** put a `nuget.config` beside your app:
+
+  ```xml
+  <configuration>
+    <packageSources>
+      <add key="bui" value="path/to/feed" />
+    </packageSources>
+  </configuration>
+  ```
+
+Then install `BlenderUI.Forms` (or `BlenderUI`) from that source, or run `dotnet add package BlenderUI.Forms`. At build, .NET copies the library for your platform into the output folder.
+
+NuGet keeps each version of a package in its cache. If you pack again with the same version, remove the old copy before you restore: delete `~/.nuget/packages/blenderui` and `~/.nuget/packages/blenderui.forms`.
+
+## Your app
+
+The app's project file. The packages target `net8.0`, so use `net8.0` or later:
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+</Project>
+```
+
+A window with the Windows Forms-style API, in `Program.cs`:
+
+```csharp
+using System.Drawing;
+using Bui.Forms;
+
+using var form = new Form { Text = "My app", Size = new Size(320, 120) };
+var button = new Button { Text = "Click me", Location = new Point(110, 40), Size = new Size(100, 24) };
+button.Click += (_, _) => button.Text = "Clicked";
+form.Controls.Add(button);
+Application.Run(form);
+```
+
+The same window with the components:
+
+```csharp
+using Bui;
+
+var root = new Frame();
+var button = new Button("Click me") { Geometry = GeometryManager.Pack };
+button.Click += (_, _) => button.Text = "Clicked";
+root.Add(button);
+
+using var context = new Context(root);
+using var window = new Window(context, "My app", 320, 120);
+window.Show();
+Window.Run();
+```
+
+## If the app does not start
+
+- **`DllNotFoundException: bui_kit`:** the native library is not in the output folder (for example `bin/Debug/net8.0/`). Make sure that you built `bui_kit_shared`, and that `BuiNativeDir` or `natives/<platform>/` points to it.
+- **`BadImageFormatException`:** the app and the library are not for the same processor. The library is 64-bit: do not run the app as 32-bit (`x86`, or **Prefer 32-bit** in Visual Studio). On Apple silicon, use an `osx-arm64` library.

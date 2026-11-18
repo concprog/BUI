@@ -35,6 +35,33 @@ dotnet run -c Release --project bench/Cells -- --cells 3000 --mode anim   # the 
 
 The projects copy the library from `build/bindings/csharp`; pass `-p:BuiNativeDir=<dir>` for another build directory. The libraries target `net8.0`; the tests and example target `net9.0`.
 
+## Use a local build in your app
+
+Two procedures, both from the native build above. They work the same in Rider, Visual Studio and the `dotnet` command.
+
+**Reference the project**, to change BUI and your app together. Add to your app's `.csproj`:
+
+```xml
+<ItemGroup>
+  <ProjectReference Include="path/to/BUI/bindings/csharp/src/Bui.Forms/Bui.Forms.csproj" />
+</ItemGroup>
+```
+
+`Bui.csproj` copies the native library from `build/bindings/csharp` into your app's output folder. For a different build folder, set `<BuiNativeDir>` in your app's `.csproj`.
+
+**Install a local package**, to give an app a fixed build. Put each library in a folder with the name of its platform, then pack:
+
+```sh
+mkdir -p natives/linux-x64                          # osx-arm64, osx-x64, win-x64
+cp build/bindings/csharp/libbui_kit.so natives/linux-x64/
+dotnet pack bindings/csharp/src/Bui -c Release -p:BuiNatives=$PWD/natives -o feed
+dotnet pack bindings/csharp/src/Bui.Forms -c Release -o feed
+```
+
+Add `feed` as a package source (Rider: **Settings → NuGet → Sources**; Visual Studio: **Tools → Options → NuGet Package Manager → Package Sources**), then install `BlenderUI.Forms`. NuGet caches each version: before you pack the same version again, delete `~/.nuget/packages/blenderui` and `~/.nuget/packages/blenderui.forms`.
+
+The app must target `net8.0` or later and run as 64-bit. `DllNotFoundException: bui_kit` means the library is not in the output folder.
+
 ## Forms
 
 ```csharp
