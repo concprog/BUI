@@ -2,11 +2,8 @@
  *
  * Like GHOST_ISystem::createSystem, Wayland is tried first and X11 is the fallback: a session
  * with WAYLAND_DISPLAY and a compositor that answers gets Wayland windows, anything else X11.
- * Two cases keep X11 on a Wayland session (XWayland), because that is where the GPU renderer
- * works today (OpenGL through GLX; the Wayland host draws on the CPU):
- *   - the GPU renderer is on (BUI_GPU=1 or BUI_gpu_set_default(1) before the first window call),
- *   - BUI_WINDOW_BACKEND=x11.
- * BUI_WINDOW_BACKEND=wayland asks for Wayland even then.
+ * Both hosts draw with the GPU renderer (OpenGL through EGL) when it is on.
+ * BUI_WINDOW_BACKEND=x11 or =wayland picks one.
  *
  * Only built with Wayland support (kit_window_linux.h).
  *
@@ -18,8 +15,6 @@
 
 #  include <stdlib.h>
 #  include <string.h>
-
-#  include "GPU_raster.h"
 
 enum { BACKEND_UNDECIDED = 0, BACKEND_X11, BACKEND_WAYLAND };
 static int g_backend = BACKEND_UNDECIDED;
@@ -35,12 +30,10 @@ static bool wants_wayland(void)
     return false;
   }
   const char *display = getenv("WAYLAND_DISPLAY");
-  return display && display[0] && !BUI_gpu_default();
+  return display && display[0];
 }
 
-/* Decided by the first call that needs a window host. BK_window_supported does not decide: the
- * GPU renderer can still be asked for after it (the Rust App sets it right after), and that
- * changes the answer. */
+/* Decided by the first call that needs a window host. */
 static int backend(void)
 {
   if (g_backend == BACKEND_UNDECIDED) {

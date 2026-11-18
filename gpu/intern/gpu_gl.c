@@ -1,4 +1,4 @@
-/* BUI GPU renderer: OpenGL 3.3 core backend (Linux / X11) — see gpu_d3d11.h.
+/* BUI GPU renderer: OpenGL 3.3 core backend (Linux: X11 and Wayland) — see gpu_d3d11.h.
  *
  * The same renderer as gpu_d3d11.c on OpenGL: every primitive is one instance
  * of a single uber-shader (a GLSL 330 translation of gpu/shaders/bui_ui.hlsl),
@@ -7,12 +7,15 @@
  * masks share one R8 atlas, images one BGRA atlas, and Slug glyph outlines
  * live in RGBA32F / RG32UI textures addressed linearly, exactly as on D3D.
  *
- * Contexts (after Blender's GHOST_ContextGLX / GHOST_ContextEGL):
- *  - a window: GLX on the X11 window given as a BuiGpuX11Window (the kit's
- *    Display, so events and GL share one connection);
- *  - offscreen (NULL handle: tests, BUI_raster_pixels): EGL (surfaceless
- *    platform, else the default display), else a GLX pbuffer.
- * libGL / libEGL / libX11 are loaded with dlopen on first use, never linked:
+ * Contexts are EGL (after Blender's GHOST_ContextEGL):
+ *  - a window, given as a BuiGpuLinuxWindow: the EGL platform display of the
+ *    kit's own connection (EGL_KHR_platform_x11 on its Display,
+ *    EGL_KHR_platform_wayland on its wl_display, so events and GL share it) and
+ *    a window surface on the X11 Window, or on a wl_egl_window made for the
+ *    wl_surface;
+ *  - offscreen (NULL handle: tests, BUI_raster_pixels): the surfaceless
+ *    platform, else the default display.
+ * libEGL / libOpenGL / libwayland-egl are loaded with dlopen on first use, never linked:
  * without them bui_gpu_create returns NULL and the software raster draws.
  * As on D3D, a worker thread creates the context and the device, so the first
  * frame does not wait for the driver. The worker then releases the context,
@@ -35,7 +38,7 @@
 #  include "gpu_effect.h"
 
 /* -------------------------------------------------------------------- */
-/** \name Vendored GL / GLX / EGL / Xlib declarations
+/** \name Vendored GL / EGL declarations
  *
  * Only what this file uses, so the build needs no GL headers and the binary
  * no GL libraries.
@@ -181,39 +184,9 @@ typedef struct GLFuncs {
 } GLFuncs;
 #  undef GLF_DECL
 
-/* Xlib (opaque) */
-typedef void XDisplay;
-typedef unsigned long XID;
-typedef int (*XErrHandler)(XDisplay *, void *);
-
-/* GLX */
-typedef void *GLXFBConfig;
-typedef void *GLXContext;
 typedef void (*ProcFn)(void);
-#  define GLX_DOUBLEBUFFER 5
-#  define GLX_RED_SIZE 8
-#  define GLX_GREEN_SIZE 9
-#  define GLX_BLUE_SIZE 10
-#  define GLX_ALPHA_SIZE 11
-#  define GLX_X_VISUAL_TYPE 0x22
-#  define GLX_TRUE_COLOR 0x8002
-#  define GLX_VISUAL_ID 0x800B
-#  define GLX_DRAWABLE_TYPE 0x8010
-#  define GLX_RENDER_TYPE 0x8011
-#  define GLX_X_RENDERABLE 0x8012
-#  define GLX_WINDOW_BIT 0x1
-#  define GLX_PBUFFER_BIT 0x4
-#  define GLX_RGBA_BIT 0x1
-#  define GLX_WIDTH 0x801D
-#  define GLX_HEIGHT 0x801E
-#  define GLX_PBUFFER_HEIGHT 0x8040
-#  define GLX_PBUFFER_WIDTH 0x8041
-#  define GLX_CONTEXT_MAJOR_VERSION_ARB 0x2091
-#  define GLX_CONTEXT_MINOR_VERSION_ARB 0x2092
-#  define GLX_CONTEXT_PROFILE_MASK_ARB 0x9126
-#  define GLX_CONTEXT_CORE_PROFILE_BIT_ARB 0x1
 
-/* EGL */
+/* EGL (egl.h, eglext.h of the Khronos registry) */
 typedef void *EGLDisplay;
 typedef void *EGLConfig;
 typedef void *EGLContext;
@@ -225,6 +198,7 @@ typedef unsigned int EGLenum;
 #  define EGL_BLUE_SIZE 0x3022
 #  define EGL_GREEN_SIZE 0x3023
 #  define EGL_RED_SIZE 0x3024
+#  define EGL_NATIVE_VISUAL_ID 0x302E
 #  define EGL_SURFACE_TYPE 0x3033
 #  define EGL_NONE 0x3038
 #  define EGL_RENDERABLE_TYPE 0x3040
@@ -238,7 +212,14 @@ typedef unsigned int EGLenum;
 #  define EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT 0x1
 #  define EGL_OPENGL_BIT 0x8
 #  define EGL_PBUFFER_BIT 0x1
+#  define EGL_WINDOW_BIT 0x4
+#  define EGL_PLATFORM_X11_KHR 0x31D5     /* EGL_KHR_platform_x11, = EGL_PLATFORM_X11_EXT */
+#  define EGL_PLATFORM_WAYLAND_KHR 0x31D8 /* EGL_KHR_platform_wayland, = ..._EXT */
 #  define EGL_PLATFORM_SURFACELESS_MESA 0x31DD
+#  define EGL_PRESENT_OPAQUE_EXT 0x31DF /* EGL_EXT_present_opaque */
+
+/* wayland-egl (opaque) */
+typedef struct wl_egl_window WlEglWindow;
 
 /** \} */
 
@@ -272,87 +253,60 @@ static void *open_lib(const char *const *names)
   return NULL;
 }
 
-#  define X11_FUNCS(F) \
-    F(XDisplay *, XOpenDisplay, (const char *)) \
-    F(int, XCloseDisplay, (XDisplay *)) \
-    F(int, XDefaultScreen, (XDisplay *)) \
-    F(void *, XDefaultVisual, (XDisplay *, int)) \
-    F(unsigned long, XVisualIDFromVisual, (void *)) \
-    F(int, XFree, (void *)) \
-    F(int, XSync, (XDisplay *, int)) \
-    F(XErrHandler, XSetErrorHandler, (XErrHandler))
-
-#  define GLX_FUNCS(F) \
-    F(int, glXQueryVersion, (XDisplay *, int *, int *)) \
-    F(const char *, glXQueryExtensionsString, (XDisplay *, int)) \
-    F(GLXFBConfig *, glXChooseFBConfig, (XDisplay *, int, const int *, int *)) \
-    F(int, glXGetFBConfigAttrib, (XDisplay *, GLXFBConfig, int, int *)) \
-    F(int, glXMakeContextCurrent, (XDisplay *, XID, XID, GLXContext)) \
-    F(void, glXDestroyContext, (XDisplay *, GLXContext)) \
-    F(void, glXSwapBuffers, (XDisplay *, XID)) \
-    F(GLXContext, glXGetCurrentContext, (void)) \
-    F(XID, glXCreatePbuffer, (XDisplay *, GLXFBConfig, const int *)) \
-    F(void, glXDestroyPbuffer, (XDisplay *, XID)) \
-    F(void, glXQueryDrawable, (XDisplay *, XID, int, unsigned int *)) \
-    F(ProcFn, glXGetProcAddressARB, (const GLubyte *))
-
 #  define EGL_FUNCS(F) \
     F(ProcFn, eglGetProcAddress, (const char *)) \
     F(EGLDisplay, eglGetDisplay, (void *)) \
     F(EGLBoolean, eglInitialize, (EGLDisplay, EGLint *, EGLint *)) \
     F(EGLBoolean, eglBindAPI, (EGLenum)) \
     F(EGLBoolean, eglChooseConfig, (EGLDisplay, const EGLint *, EGLConfig *, EGLint, EGLint *)) \
+    F(EGLBoolean, eglGetConfigAttrib, (EGLDisplay, EGLConfig, EGLint, EGLint *)) \
     F(EGLContext, eglCreateContext, (EGLDisplay, EGLConfig, EGLContext, const EGLint *)) \
     F(EGLBoolean, eglDestroyContext, (EGLDisplay, EGLContext)) \
     F(EGLBoolean, eglMakeCurrent, (EGLDisplay, EGLSurface, EGLSurface, EGLContext)) \
     F(EGLContext, eglGetCurrentContext, (void)) \
     F(EGLSurface, eglCreatePbufferSurface, (EGLDisplay, EGLConfig, const EGLint *)) \
     F(EGLBoolean, eglDestroySurface, (EGLDisplay, EGLSurface)) \
+    F(EGLBoolean, eglQuerySurface, (EGLDisplay, EGLSurface, EGLint, EGLint *)) \
+    F(EGLBoolean, eglSwapBuffers, (EGLDisplay, EGLSurface)) \
+    F(EGLBoolean, eglSwapInterval, (EGLDisplay, EGLint)) \
     F(const char *, eglQueryString, (EGLDisplay, EGLint))
 
+/* libwayland-egl: the EGL native window of a wl_surface (GHOST_WindowWayland's egl_window) */
+#  define WL_EGL_FUNCS(F) \
+    F(WlEglWindow *, wl_egl_window_create, (void *, int, int)) \
+    F(void, wl_egl_window_destroy, (WlEglWindow *)) \
+    F(void, wl_egl_window_resize, (WlEglWindow *, int, int, int, int))
+
 #  define PTR_DECL(ret, name, args) static ret(*p_##name) args;
-X11_FUNCS(PTR_DECL)
-GLX_FUNCS(PTR_DECL)
 EGL_FUNCS(PTR_DECL)
+WL_EGL_FUNCS(PTR_DECL)
 #  undef PTR_DECL
 
-static void *g_libgl = NULL; /* libGL / libOpenGL: fallback for GL entry points */
+/* EGL_EXT_platform_base: client extensions, resolved after libEGL loads */
+typedef EGLDisplay (*GetPlatformDisplayFn)(EGLenum, void *, const EGLint *);
+typedef EGLSurface (*CreatePlatformWindowSurfaceFn)(EGLDisplay, EGLConfig, void *,
+                                                    const EGLint *);
+static GetPlatformDisplayFn p_eglGetPlatformDisplayEXT;
+static CreatePlatformWindowSurfaceFn p_eglCreatePlatformWindowSurfaceEXT;
+
+static void *g_libgl = NULL; /* libOpenGL / libGL: fallback for GL entry points */
 
 #  define PTR_LOAD(ret, name, args) \
     if (!(p_##name = (ret(*) args)dlsym(lib, #name))) { \
       return fail("resolving " #name); \
     }
 
-static int x11_load(void)
+static int wl_egl_load(void)
 {
   static int state = 0; /* 0 untried, 1 loaded, -1 unavailable */
   if (state == 0) {
-    static const char *const names[] = {"libX11.so.6", "libX11.so", NULL};
+    static const char *const names[] = {"libwayland-egl.so.1", "libwayland-egl.so", NULL};
     void *lib = open_lib(names);
     state = -1;
     if (!lib) {
-      return fail("loading libX11");
+      return fail("loading libwayland-egl");
     }
-    X11_FUNCS(PTR_LOAD)
-    state = 1;
-  }
-  return state > 0;
-}
-
-static int glx_load(void)
-{
-  static int state = 0;
-  if (state == 0) {
-    static const char *const names[] = {"libGL.so.1", "libGL.so", "libGLX.so.0", NULL};
-    void *lib = open_lib(names);
-    state = -1;
-    if (!lib) {
-      return fail("loading libGL");
-    }
-    if (!g_libgl) {
-      g_libgl = lib;
-    }
-    GLX_FUNCS(PTR_LOAD)
+    WL_EGL_FUNCS(PTR_LOAD)
     state = 1;
   }
   return state > 0;
@@ -373,6 +327,10 @@ static int egl_load(void)
       static const char *const gl_names[] = {"libOpenGL.so.0", "libGL.so.1", NULL};
       g_libgl = open_lib(gl_names);
     }
+    p_eglGetPlatformDisplayEXT = (GetPlatformDisplayFn)p_eglGetProcAddress(
+        "eglGetPlatformDisplayEXT");
+    p_eglCreatePlatformWindowSurfaceEXT = (CreatePlatformWindowSurfaceFn)p_eglGetProcAddress(
+        "eglCreatePlatformWindowSurfaceEXT");
     state = 1;
   }
   return state > 0;
@@ -389,33 +347,6 @@ static int has_ext(const char *list, const char *name)
     }
   }
   return 0;
-}
-
-/* Xlib errors (BadMatch from a mismatched config, a destroyed window) end the
- * process with the default handler: trap them around GLX calls, as GHOST
- * does. */
-static int g_xerr = 0;
-static int xerr_handler(XDisplay *dpy, void *ev)
-{
-  (void)dpy;
-  (void)ev;
-  g_xerr = 1;
-  return 0;
-}
-
-static XErrHandler trap_begin(XDisplay *dpy)
-{
-  p_XSync(dpy, 0);
-  g_xerr = 0;
-  return p_XSetErrorHandler(xerr_handler);
-}
-
-/* 1 when an X error happened since trap_begin */
-static int trap_end(XDisplay *dpy, XErrHandler old)
-{
-  p_XSync(dpy, 0);
-  p_XSetErrorHandler(old);
-  return g_xerr;
 }
 
 /** \} */
@@ -937,28 +868,20 @@ typedef struct FxCall {
   int floats; /* where its n_floats of the effect are in BuiGpu.fxf */
 } FxCall;
 
-enum { API_GLX = 1, API_EGL = 2 };
-
 struct BuiGpu {
   int state; /* 0 pending, 1 ready, -1 failed */
   pthread_t thread;
   int has_thread;
-  XDisplay *host_dpy;
-  XID host_win;
-  unsigned long host_visual; /* the window's VisualID (0: the default visual) */
-  int alpha;                 /* frames keep premultiplied alpha */
+  BuiGpuLinuxWindow host; /* the window (platform 0: offscreen) */
+  int alpha;              /* frames keep premultiplied alpha */
 
-  /* context */
-  int api;
-  XDisplay *xdpy;
-  int own_xdpy;
-  XID draw;  /* GLX drawable: the window or the pbuffer */
-  XID pbuf;  /* GLX pbuffer (offscreen) */
-  int onscreen;
-  GLXContext glx;
+  /* context (EGL, as GHOST_ContextEGL) */
   EGLDisplay edpy;
   EGLContext egl;
-  EGLSurface esurf;
+  EGLSurface esurf;    /* the window surface, a 1x1 pbuffer, or none (surfaceless) */
+  WlEglWindow *wl_win; /* Wayland: the native window under esurf */
+  int wl_w, wl_h;      /* its size */
+  int onscreen;
   GLFuncs f;
 
   GLuint prog_quad, prog_tri, prog_mesh;
@@ -1017,36 +940,24 @@ struct BuiGpu {
 /* Makes this renderer's context current on the calling thread. */
 static int make_current(BuiGpu *g)
 {
-  if (g->api == API_GLX) {
-    if (p_glXGetCurrentContext() == g->glx) {
-      return 1;
-    }
-    return p_glXMakeContextCurrent(g->xdpy, g->draw, g->draw, g->glx) != 0;
+  if (!g->egl) {
+    return 0;
   }
-  if (g->api == API_EGL) {
-    if (p_eglGetCurrentContext() == g->egl) {
-      return 1;
-    }
-    return p_eglMakeCurrent(g->edpy, g->esurf, g->esurf, g->egl) != 0;
+  if (p_eglGetCurrentContext() == g->egl) {
+    return 1;
   }
-  return 0;
+  return p_eglMakeCurrent(g->edpy, g->esurf, g->esurf, g->egl) != 0;
 }
 
 /** \} */
 
 /* -------------------------------------------------------------------- */
-/** \name Context creation
+/** \name Context creation (after GHOST_ContextEGL::initializeDrawingContext)
  * \{ */
 
-static ProcFn get_proc(BuiGpu *g, const char *name)
+static ProcFn get_proc(const char *name)
 {
-  ProcFn fn = NULL;
-  if (g->api == API_GLX) {
-    fn = p_glXGetProcAddressARB((const GLubyte *)name);
-  }
-  else {
-    fn = p_eglGetProcAddress(name);
-  }
+  ProcFn fn = p_eglGetProcAddress(name);
   if (!fn && g_libgl) {
     fn = (ProcFn)dlsym(g_libgl, name);
   }
@@ -1056,7 +967,7 @@ static ProcFn get_proc(BuiGpu *g, const char *name)
 static int gl_resolve(BuiGpu *g)
 {
 #  define GLF_LOAD(ret, name, args) \
-    if (!(g->f.name = (ret(*) args)get_proc(g, #name))) { \
+    if (!(g->f.name = (ret(*) args)get_proc(#name))) { \
       return fail("resolving " #name); \
     }
   GL_FUNCS(GLF_LOAD)
@@ -1064,153 +975,61 @@ static int gl_resolve(BuiGpu *g)
   return 1;
 }
 
-/* GLX: a core 3.3 context on `window` (0: on a 1x1 pbuffer). */
-static int glx_create(BuiGpu *g, XDisplay *dpy, XID window)
+/* EGL 1.4 or later on `dpy`, with the OpenGL API bound. The display stays initialized: EGL
+ * displays are per process and terminating one would pull it from under other users. */
+static int egl_init(EGLDisplay dpy)
 {
-  if (!x11_load() || !glx_load()) {
-    return 0;
+  EGLint major = 0, minor = 0;
+  return dpy && p_eglInitialize(dpy, &major, &minor) && (major > 1 || minor >= 4) &&
+         p_eglBindAPI(EGL_OPENGL_API);
+}
+
+/* An OpenGL config of `dpy` for `surface_type`. As GHOST_ContextEGL, the alpha size is asked last
+ * and dropped when no config has it (the window then shows square, opaque corners). On X11 the
+ * config is the one made for the window's visual (EGL_NATIVE_VISUAL_ID). */
+static int egl_config(const BuiGpu *g, EGLDisplay dpy, EGLint surface_type, EGLConfig *r_cfg)
+{
+  EGLint attr[] = {EGL_RENDERABLE_TYPE,
+                   EGL_OPENGL_BIT,
+                   EGL_RED_SIZE,
+                   8,
+                   EGL_GREEN_SIZE,
+                   8,
+                   EGL_BLUE_SIZE,
+                   8,
+                   EGL_SURFACE_TYPE,
+                   surface_type,
+                   EGL_ALPHA_SIZE, /* index 10: dropped first */
+                   8,
+                   EGL_NONE};
+  if (!g->alpha) {
+    attr[10] = EGL_NONE;
   }
-  if (!dpy) {
-    dpy = p_XOpenDisplay(NULL);
-    if (!dpy) {
-      return fail("XOpenDisplay");
-    }
-    g->own_xdpy = 1;
-  }
-  g->xdpy = dpy;
-  int major = 0, minor = 0;
-  if (!p_glXQueryVersion(dpy, &major, &minor) || major < 1 || (major == 1 && minor < 3)) {
-    return fail("GLX 1.3");
-  }
-  const int scr = p_XDefaultScreen(dpy);
-  const char *ext = p_glXQueryExtensionsString(dpy, scr);
-  if (!has_ext(ext, "GLX_ARB_create_context") ||
-      !has_ext(ext, "GLX_ARB_create_context_profile"))
-  {
-    return fail("GLX_ARB_create_context_profile");
-  }
-  typedef GLXContext (*CreateCtxFn)(XDisplay *, GLXFBConfig, GLXContext, int, const int *);
-  CreateCtxFn create = (CreateCtxFn)p_glXGetProcAddressARB(
-      (const GLubyte *)"glXCreateContextAttribsARB");
-  if (!create) {
-    return fail("glXCreateContextAttribsARB");
-  }
-  const int cfg_attr[] = {GLX_X_RENDERABLE,
-                          1,
-                          GLX_DRAWABLE_TYPE,
-                          window ? GLX_WINDOW_BIT : GLX_PBUFFER_BIT,
-                          GLX_RENDER_TYPE,
-                          GLX_RGBA_BIT,
-                          GLX_X_VISUAL_TYPE,
-                          GLX_TRUE_COLOR,
-                          GLX_RED_SIZE,
-                          8,
-                          GLX_GREEN_SIZE,
-                          8,
-                          GLX_BLUE_SIZE,
-                          8,
-                          GLX_ALPHA_SIZE,
-                          g->alpha ? 8 : 0,
-                          GLX_DOUBLEBUFFER,
-                          window ? 1 : 0,
-                          0};
-  int n = 0;
-  GLXFBConfig *cfgs = p_glXChooseFBConfig(dpy, scr, cfg_attr, &n);
-  if (!cfgs || n <= 0) {
-    if (cfgs) {
-      p_XFree(cfgs);
-    }
-    return fail("glXChooseFBConfig");
-  }
-  /* the window's visual (the default one, or the 32-bit ARGB one of a transparent window):
-   * take the config made for it */
-  GLXFBConfig cfg = cfgs[0];
-  if (window) {
-    const unsigned long want = g->host_visual ? g->host_visual :
-                                                p_XVisualIDFromVisual(p_XDefaultVisual(dpy, scr));
-    for (int i = 0; i < n; i++) {
-      int vid = 0;
-      if (p_glXGetFBConfigAttrib(dpy, cfgs[i], GLX_VISUAL_ID, &vid) == 0 &&
-          (unsigned long)vid == want)
-      {
-        cfg = cfgs[i];
-        break;
-      }
+  EGLConfig cfgs[64];
+  EGLint n = 0;
+  if (!p_eglChooseConfig(dpy, attr, cfgs, 64, &n) || n < 1) {
+    attr[10] = EGL_NONE;
+    if (!p_eglChooseConfig(dpy, attr, cfgs, 64, &n) || n < 1) {
+      return 0;
     }
   }
-  const int ctx_attr[] = {GLX_CONTEXT_MAJOR_VERSION_ARB,
-                          3,
-                          GLX_CONTEXT_MINOR_VERSION_ARB,
-                          3,
-                          GLX_CONTEXT_PROFILE_MASK_ARB,
-                          GLX_CONTEXT_CORE_PROFILE_BIT_ARB,
-                          0};
-  XErrHandler old = trap_begin(dpy);
-  g->glx = create(dpy, cfg, NULL, 1, ctx_attr);
-  if (g->glx && !window) {
-    const int pb_attr[] = {GLX_PBUFFER_WIDTH, 1, GLX_PBUFFER_HEIGHT, 1, 0};
-    g->pbuf = p_glXCreatePbuffer(dpy, cfg, pb_attr);
-  }
-  g->draw = window ? window : g->pbuf;
-  int ok = g->glx && g->draw && p_glXMakeContextCurrent(dpy, g->draw, g->draw, g->glx);
-  if (trap_end(dpy, old)) {
-    ok = 0;
-  }
-  p_XFree(cfgs);
-  if (!ok) {
-    return fail("GLX context");
-  }
-  g->api = API_GLX;
-  g->onscreen = window != 0;
-  if (window) { /* present doesn't wait for vblank, like the D3D Present(0) */
-    if (has_ext(ext, "GLX_EXT_swap_control")) {
-      typedef void (*SwapEXT)(XDisplay *, XID, int);
-      SwapEXT fn = (SwapEXT)p_glXGetProcAddressARB((const GLubyte *)"glXSwapIntervalEXT");
-      if (fn) {
-        old = trap_begin(dpy);
-        fn(dpy, window, 0);
-        trap_end(dpy, old);
-      }
-    }
-    else if (has_ext(ext, "GLX_MESA_swap_control")) {
-      typedef int (*SwapMESA)(unsigned);
-      SwapMESA fn = (SwapMESA)p_glXGetProcAddressARB((const GLubyte *)"glXSwapIntervalMESA");
-      if (fn) {
-        fn(0);
-      }
+  *r_cfg = cfgs[0];
+  for (int i = 0; g->host.platform == BUI_GPU_X11 && g->host.visual && i < n; i++) {
+    EGLint vid = 0;
+    if (p_eglGetConfigAttrib(dpy, cfgs[i], EGL_NATIVE_VISUAL_ID, &vid) &&
+        (unsigned long)vid == g->host.visual)
+    {
+      *r_cfg = cfgs[i];
+      break;
     }
   }
   return 1;
 }
 
-/* EGL on one display: a core 3.3 context, surfaceless or on a 1x1 pbuffer. */
-static int egl_try(BuiGpu *g, EGLDisplay dpy)
+/* A core 3.3 context on `cfg`, made current on `surf` (NULL: surfaceless). The handles go into
+ * `g` first, so context_free cleans up whatever this leaves when it fails. */
+static int egl_finish(BuiGpu *g, EGLDisplay dpy, EGLConfig cfg, EGLSurface surf)
 {
-  EGLint major = 0, minor = 0;
-  if (!dpy || !p_eglInitialize(dpy, &major, &minor)) {
-    return 0;
-  }
-  if (major < 1 || (major == 1 && minor < 4) || !p_eglBindAPI(EGL_OPENGL_API)) {
-    return 0;
-  }
-  const int surfaceless = has_ext(p_eglQueryString(dpy, EGL_EXTENSIONS),
-                                  "EGL_KHR_surfaceless_context");
-  const EGLint cfg_attr[] = {EGL_SURFACE_TYPE,
-                             surfaceless ? 0 : EGL_PBUFFER_BIT,
-                             EGL_RENDERABLE_TYPE,
-                             EGL_OPENGL_BIT,
-                             EGL_RED_SIZE,
-                             8,
-                             EGL_GREEN_SIZE,
-                             8,
-                             EGL_BLUE_SIZE,
-                             8,
-                             EGL_NONE};
-  EGLConfig cfg = NULL;
-  EGLint n = 0;
-  if (!p_eglChooseConfig(dpy, cfg_attr, &cfg, 1, &n) || n < 1) {
-    return 0;
-  }
   const EGLint ctx_attr[] = {EGL_CONTEXT_MAJOR_VERSION,
                              3,
                              EGL_CONTEXT_MINOR_VERSION,
@@ -1218,8 +1037,80 @@ static int egl_try(BuiGpu *g, EGLDisplay dpy)
                              EGL_CONTEXT_OPENGL_PROFILE_MASK,
                              EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
                              EGL_NONE};
-  EGLContext ctx = p_eglCreateContext(dpy, cfg, NULL, ctx_attr);
-  if (!ctx) {
+  g->edpy = dpy;
+  g->esurf = surf;
+  g->egl = p_eglCreateContext(dpy, cfg, NULL, ctx_attr);
+  return g->egl && p_eglMakeCurrent(dpy, surf, surf, g->egl);
+}
+
+/* A window: the platform display of the host's own connection (X11 Display or wl_display) and a
+ * window surface on the X11 Window or on a wl_egl_window made for the wl_surface. */
+static int egl_window(BuiGpu *g)
+{
+  if (!egl_load()) {
+    return 0;
+  }
+  const int wayland = g->host.platform == BUI_GPU_WAYLAND;
+  const char *cext = p_eglQueryString(NULL, EGL_EXTENSIONS); /* client extensions */
+  if (!p_eglGetPlatformDisplayEXT || !p_eglCreatePlatformWindowSurfaceEXT ||
+      !has_ext(cext, "EGL_EXT_platform_base"))
+  {
+    return fail("EGL_EXT_platform_base");
+  }
+  if (!has_ext(cext, wayland ? "EGL_KHR_platform_wayland" : "EGL_KHR_platform_x11") &&
+      !has_ext(cext, wayland ? "EGL_EXT_platform_wayland" : "EGL_EXT_platform_x11"))
+  {
+    return fail(wayland ? "EGL_EXT_platform_wayland" : "EGL_EXT_platform_x11");
+  }
+  const EGLDisplay dpy = p_eglGetPlatformDisplayEXT(
+      wayland ? EGL_PLATFORM_WAYLAND_KHR : EGL_PLATFORM_X11_KHR, g->host.display, NULL);
+  EGLConfig cfg = NULL;
+  if (!egl_init(dpy) || !egl_config(g, dpy, EGL_WINDOW_BIT, &cfg)) {
+    return fail("EGL display");
+  }
+  void *native = &g->host.window; /* X11: the platform takes a pointer to the Window */
+  if (wayland) {
+    if (!wl_egl_load()) {
+      return 0;
+    }
+    /* sized to the frame at bui_gpu_begin */
+    g->wl_w = g->wl_h = 1;
+    g->wl_win = p_wl_egl_window_create(g->host.surface, 1, 1);
+    if (!g->wl_win) {
+      return fail("wl_egl_window_create");
+    }
+    native = g->wl_win;
+  }
+  /* GHOST_ContextEGL on Wayland: an opaque window presents opaque (Blender #102994) */
+  EGLint surf_attr[] = {EGL_NONE, EGL_NONE, EGL_NONE};
+  if (wayland && !g->alpha && has_ext(p_eglQueryString(dpy, EGL_EXTENSIONS), "EGL_EXT_present_opaque"))
+  {
+    surf_attr[0] = EGL_PRESENT_OPAQUE_EXT;
+    surf_attr[1] = 1;
+  }
+  const EGLSurface surf = p_eglCreatePlatformWindowSurfaceEXT(dpy, cfg, native, surf_attr);
+  if (!surf) {
+    return fail("eglCreatePlatformWindowSurfaceEXT");
+  }
+  if (!egl_finish(g, dpy, cfg, surf)) {
+    return fail("EGL context");
+  }
+  g->onscreen = 1;
+  /* present doesn't wait for vblank, like the D3D Present(0): the host paces its frames */
+  p_eglSwapInterval(dpy, 0);
+  return 1;
+}
+
+/* Offscreen on one display: surfaceless, else on a 1x1 pbuffer. */
+static int egl_offscreen(BuiGpu *g, EGLDisplay dpy)
+{
+  if (!egl_init(dpy)) {
+    return 0;
+  }
+  const int surfaceless = has_ext(p_eglQueryString(dpy, EGL_EXTENSIONS),
+                                  "EGL_KHR_surfaceless_context");
+  EGLConfig cfg = NULL;
+  if (!egl_config(g, dpy, surfaceless ? 0 : EGL_PBUFFER_BIT, &cfg)) {
     return 0;
   }
   EGLSurface surf = NULL;
@@ -1227,25 +1118,13 @@ static int egl_try(BuiGpu *g, EGLDisplay dpy)
     const EGLint pb_attr[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
     surf = p_eglCreatePbufferSurface(dpy, cfg, pb_attr);
     if (!surf) {
-      p_eglDestroyContext(dpy, ctx);
       return 0;
     }
   }
-  if (!p_eglMakeCurrent(dpy, surf, surf, ctx)) {
-    if (surf) {
-      p_eglDestroySurface(dpy, surf);
-    }
-    p_eglDestroyContext(dpy, ctx);
-    return 0;
-  }
-  /* the display stays initialized: EGL displays are per process and
-   * terminating one would pull it from under other users */
-  g->api = API_EGL;
-  g->edpy = dpy;
-  g->egl = ctx;
-  g->esurf = surf;
-  return 1;
+  return egl_finish(g, dpy, cfg, surf);
 }
+
+static void context_free(BuiGpu *g);
 
 static int egl_create(BuiGpu *g)
 {
@@ -1257,17 +1136,15 @@ static int egl_create(BuiGpu *g)
   const int want_default = pick && !strcmp(pick, "default");
   const int want_surfaceless = pick && !strcmp(pick, "surfaceless");
   const char *cext = p_eglQueryString(NULL, EGL_EXTENSIONS); /* client extensions */
-  if (!want_default && has_ext(cext, "EGL_MESA_platform_surfaceless")) {
-    typedef EGLDisplay (*GetPlatformFn)(EGLenum, void *, const EGLint *);
-    GetPlatformFn get = NULL;
-    if (has_ext(cext, "EGL_EXT_platform_base")) {
-      get = (GetPlatformFn)p_eglGetProcAddress("eglGetPlatformDisplayEXT");
-    }
-    if (get && egl_try(g, get(EGL_PLATFORM_SURFACELESS_MESA, NULL, NULL))) {
+  if (!want_default && p_eglGetPlatformDisplayEXT && has_ext(cext, "EGL_EXT_platform_base") &&
+      has_ext(cext, "EGL_MESA_platform_surfaceless"))
+  {
+    if (egl_offscreen(g, p_eglGetPlatformDisplayEXT(EGL_PLATFORM_SURFACELESS_MESA, NULL, NULL))) {
       return 1;
     }
+    context_free(g);
   }
-  if (!want_surfaceless && egl_try(g, p_eglGetDisplay(NULL))) {
+  if (!want_surfaceless && egl_offscreen(g, p_eglGetDisplay(NULL))) {
     return 1;
   }
   return fail("EGL context");
@@ -1373,7 +1250,10 @@ static int device_init(BuiGpu *g)
     return fail("OpenGL 3.3");
   }
   if (debug_on()) {
-    fprintf(stderr, "bui gpu (gl): %s, %s | %s | %s\n", g->api == API_GLX ? "GLX" : "EGL",
+    fprintf(stderr, "bui gpu (gl): EGL %s, %s | %s | %s\n",
+            g->host.platform == BUI_GPU_WAYLAND ? "wayland" :
+            g->host.platform == BUI_GPU_X11     ? "x11" :
+                                                  "offscreen",
             (const char *)GL(glGetString)(GL_VENDOR), (const char *)GL(glGetString)(GL_RENDERER),
             ver);
   }
@@ -1470,9 +1350,6 @@ static int device_init(BuiGpu *g)
 
 static void context_release(BuiGpu *g)
 {
-  if (g->glx && p_glXGetCurrentContext() == g->glx) {
-    p_glXMakeContextCurrent(g->xdpy, 0, 0, NULL);
-  }
   if (g->egl && p_eglGetCurrentContext() == g->egl) {
     p_eglMakeCurrent(g->edpy, NULL, NULL, NULL);
   }
@@ -1480,34 +1357,25 @@ static void context_release(BuiGpu *g)
 
 static void context_free(BuiGpu *g)
 {
-  /* destroying the context frees its objects; the window may already be gone,
-   * so nothing is drawn or made current here */
-  if (g->xdpy && (g->glx || g->pbuf)) {
-    XErrHandler old = trap_begin(g->xdpy);
+  /* destroying the context frees its objects; nothing is drawn or made current here. As
+   * GHOST_ContextEGL: the context, then the surface; the wl_egl_window goes after its surface */
+  if (g->edpy) {
     context_release(g);
-    if (g->glx) {
-      p_glXDestroyContext(g->xdpy, g->glx);
+    if (g->egl) {
+      p_eglDestroyContext(g->edpy, g->egl);
     }
-    if (g->pbuf) {
-      p_glXDestroyPbuffer(g->xdpy, g->pbuf);
-    }
-    trap_end(g->xdpy, old);
-  }
-  if (g->egl) {
-    context_release(g);
     if (g->esurf) {
       p_eglDestroySurface(g->edpy, g->esurf);
     }
-    p_eglDestroyContext(g->edpy, g->egl);
   }
-  if (g->own_xdpy && g->xdpy) {
-    p_XCloseDisplay(g->xdpy);
+  if (g->wl_win) {
+    p_wl_egl_window_destroy(g->wl_win);
   }
-  g->glx = NULL;
+  g->edpy = NULL;
   g->egl = NULL;
-  g->pbuf = 0;
-  g->xdpy = NULL;
-  g->api = 0;
+  g->esurf = NULL;
+  g->wl_win = NULL;
+  g->onscreen = 0;
 }
 
 /* The GL libraries load on first use, so one worker creates a device at a time. */
@@ -1517,17 +1385,7 @@ static void *device_thread(void *arg)
 {
   BuiGpu *g = (BuiGpu *)arg;
   pthread_mutex_lock(&g_create_lock);
-  int ok;
-  if (g->host_win) { /* a window: GLX on the host's connection */
-    ok = glx_create(g, g->host_dpy, g->host_win);
-  }
-  else { /* offscreen: EGL, else a GLX pbuffer */
-    ok = egl_create(g);
-    if (!ok) {
-      context_free(g);
-      ok = glx_create(g, NULL, 0);
-    }
-  }
+  int ok = g->host.platform ? egl_window(g) : egl_create(g);
   ok = ok && device_init(g);
   context_release(g);
   pthread_mutex_unlock(&g_create_lock);
@@ -1542,15 +1400,16 @@ BuiGpu *bui_gpu_create(void *handle, int alpha)
     return NULL;
   }
   if (handle) {
-    const BuiGpuX11Window *xw = (const BuiGpuX11Window *)handle;
-    g->host_dpy = (XDisplay *)xw->display;
-    g->host_win = (XID)xw->window;
-    g->host_visual = xw->visual;
+    g->host = *(const BuiGpuLinuxWindow *)handle;
   }
+  /* a window names its platform and what that platform needs */
+  const int valid = !handle ||
+                    (g->host.platform == BUI_GPU_X11 && g->host.window) ||
+                    (g->host.platform == BUI_GPU_WAYLAND && g->host.display && g->host.surface);
   g->alpha = alpha;
   g->mask_map = (Slot *)calloc(MASK_MAP, sizeof(Slot));
   g->img_map = (Slot *)calloc(IMG_MAP, sizeof(Slot));
-  g->has_thread = (!handle || g->host_win) && g->mask_map && g->img_map &&
+  g->has_thread = valid && g->mask_map && g->img_map &&
                   pthread_create(&g->thread, NULL, device_thread, g) == 0;
   if (!g->has_thread) {
     bui_gpu_free(g);
@@ -1668,6 +1527,13 @@ void bui_gpu_begin(BuiGpu *g, int w, int h)
   g->w = w > 0 ? w : 1;
   g->h = h > 0 ? h : 1;
   g->frame++;
+  /* Wayland: the surface takes the frame's size at the next swap (GHOST_WindowWayland resizes
+   * its wl_egl_window the same way) */
+  if (g->wl_win && (g->wl_w != g->w || g->wl_h != g->h)) {
+    p_wl_egl_window_resize(g->wl_win, g->w, g->h, 0, 0);
+    g->wl_w = g->w;
+    g->wl_h = g->h;
+  }
   big_sweep(g);
 }
 
@@ -2785,18 +2651,18 @@ int bui_gpu_present(BuiGpu *g, int full)
     return g->target != 0;
   }
   if (g->onscreen) {
-    /* the back buffer is undefined after a swap (no GLX dirty-rect present):
+    /* the back buffer is undefined after a swap (no damage-rect present):
      * blit the whole frame, flipped (it is stored top row first), anchored
      * to the window's top edge */
-    unsigned int dh = 0;
-    p_glXQueryDrawable(g->xdpy, g->draw, GLX_HEIGHT, &dh);
+    EGLint dh = 0;
+    p_eglQuerySurface(g->edpy, g->esurf, EGL_HEIGHT, &dh);
     const int top = dh > 0 ? (int)dh : g->th;
     GL(glBindFramebuffer)(GL_READ_FRAMEBUFFER, g->fbo);
     GL(glBindFramebuffer)(GL_DRAW_FRAMEBUFFER, 0);
     GL(glBlitFramebuffer)(0, 0, g->tw, g->th, 0, top, g->tw, top - g->th, GL_COLOR_BUFFER_BIT,
                           GL_NEAREST);
     GL(glBindFramebuffer)(GL_FRAMEBUFFER, g->fbo);
-    p_glXSwapBuffers(g->xdpy, g->draw);
+    p_eglSwapBuffers(g->edpy, g->esurf);
   }
   else {
     GL(glFlush)();

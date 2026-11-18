@@ -82,9 +82,18 @@ struct BuiGpuSink {
     extern(C) void function(void*) end_frame;
 }
 
-/// An X11 window for GPU attach: Display*, Window and its VisualID (0: default).
-struct BuiGpuX11Window {
+/// The window platform of a BuiGpuLinuxWindow.
+enum BuiGpuPlatform : int {
+    BUI_GPU_X11 = 1,
+    BUI_GPU_WAYLAND = 2,
+}
+
+/// A Linux window for GPU attach, drawn through EGL. X11: Display*, Window and its
+/// VisualID (0: default). Wayland: wl_display* and wl_surface*.
+struct BuiGpuLinuxWindow {
+    BuiGpuPlatform platform;
     void* display;
+    void* surface;
     c_ulong window;
     c_ulong visual;
 }

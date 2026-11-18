@@ -6,7 +6,7 @@
  * GHOST_SystemX11), redraw requests coalesce into one render per loop turn,
  * and the damaged rectangles of the CPU raster are put with XPutImage (or,
  * with BUI_GPU / BK_window_set_gpu, the raster draws with OpenGL and presents
- * through GLX on the same connection).
+ * through EGL on the same connection).
  * Timers, the cross-thread wake (a pipe) and frame pacing run in the select()
  * loop.
  *
@@ -416,14 +416,16 @@ static void host_emit(void *data, BKNode *node, int kind, void *ref, double a, d
 
 /* -- rendering -- */
 
-/* Moves the window's raster to the GPU (OpenGL through GLX on our Display);
+/* Moves the window's raster to the GPU (OpenGL through EGL on our Display);
  * BUI_raster_gpu_poll switches over at the next render, and failures leave
  * it on the software raster. */
 static void gpu_attach(BKWindow *win)
 {
   if (win->xid) {
-    BuiGpuX11Window target = {g_dpy, (unsigned long)win->xid,
-                              win->visual->visualid};
+    BuiGpuLinuxWindow target = {.platform = BUI_GPU_X11,
+                                .display = g_dpy,
+                                .window = (unsigned long)win->xid,
+                                .visual = win->visual->visualid};
     BUI_raster_gpu_attach(win->raster, &target, 0);
   }
 }
@@ -999,7 +1001,7 @@ void BK_window_wm(BKWindow *win, const char *key, double a, double b)
         g_open--; /* no window: closed */
         return;
       }
-      if (gpu) { /* the device was made for the old window: GLX needs a config for the new visual */
+      if (gpu) { /* the device was made for the old window: EGL needs a config for the new visual */
         gpu_attach(win);
       }
       win->full = 1;

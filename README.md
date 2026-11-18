@@ -1200,9 +1200,9 @@ BUI has two renderers, and they draw **the same pixels**.
   is a few instanced draw calls. Text and images are cached in atlases.
   Frames render into a persistent target, so only damaged regions redraw; on
   Windows, a flip-model swap chain presents dirty rectangles. On Linux,
-  `libGL`, `libEGL` and `libX11` are loaded at run time (GLX for windows, EGL
-  for offscreen), so no GL headers are needed, and BUI falls back to the CPU
-  where OpenGL is missing. On both platforms the device starts on a worker
+  `libEGL`, `libOpenGL` and `libwayland-egl` are loaded at run time (EGL for
+  X11 and Wayland windows and for offscreen), so no GL headers are needed, and
+  BUI falls back to the CPU where OpenGL is missing. On both platforms the device starts on a worker
   thread, and the first frames draw on the CPU.
 
 The shaders evaluate the software raster's formulas: the parity test finds 10

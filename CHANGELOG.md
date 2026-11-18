@@ -84,6 +84,14 @@ All notable changes to **blenderui** (BUI). The format follows
   - Examples: `examples/animation/` (a hero intro, a card grid, magnetic buttons, a marquee with drag and an equalizer).
 
 ### Changed
+- **Linux GPU renderer: EGL in place of GLX, and on Wayland too.** Windows get their OpenGL context through EGL on the
+  host's own connection, as Blender's `GHOST_ContextEGL`: the X11 platform on the `Display` (the config made for the
+  window's visual), or the Wayland platform on the `wl_display` with a `wl_egl_window` for the surface. The native
+  Wayland host now draws with the GPU renderer (`BUI_GPU=1`, `BK_window_set_gpu`); a Wayland session no longer
+  falls back to X11 through XWayland when the GPU is on. GLX and the run-time `libGL` / `libX11` loading in
+  `gpu_gl.c` are gone (`libEGL`, `libOpenGL` and `libwayland-egl` are loaded instead). Breaking for C and D callers
+  of `BUI_raster_gpu_attach`: `BuiGpuX11Window` is now `BuiGpuLinuxWindow`, with a `platform` (`BUI_GPU_X11`,
+  `BUI_GPU_WAYLAND`) and a `surface` for Wayland.
 - **Breaking default: videos play with sound.** A `<video>` / `BK_video` autoplays with its audio track now (it
   was silent): set `muted` (HTML attribute, `BK_video_set_muted`, `Video(muted=True)`, `Video::set_muted`) for a
   silent one. Closing a video no longer waits for its audio device (the stream is released on a thread of its

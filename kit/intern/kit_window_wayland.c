@@ -11,8 +11,10 @@
  * where Wayland is absent.
  *
  * Frames are drawn by the CPU raster into wl_shm buffers (two, alternating; only the damaged
- * rectangles are copied) and paced by wl_surface.frame callbacks. The GPU renderer is not
- * available here yet (see kit_window_linux.c).
+ * rectangles are copied) and paced by wl_surface.frame callbacks. With BUI_GPU /
+ * BK_window_set_gpu, the raster draws with OpenGL through EGL on a wl_egl_window of the same
+ * surface (as GHOST_WindowWayland), and eglSwapBuffers commits the frame in place of the
+ * wl_shm buffer; the frame callbacks pace it the same way.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
@@ -366,11 +368,40 @@ static void present(BKWindow *win, Buf *b, int all)
   wl_surface_commit(win->surface);
 }
 
+/* Moves the window's raster to the GPU (OpenGL through EGL on our wl_display);
+ * BUI_raster_gpu_poll switches over at the next render, and failures leave it on the CPU raster. */
+static void gpu_attach(BKWindow *win)
+{
+  if (win->surface) {
+    BuiGpuLinuxWindow target = {
+        .platform = BUI_GPU_WAYLAND, .display = g.display, .surface = win->surface};
+    BUI_raster_gpu_attach(win->raster, &target, 0);
+  }
+}
+
+/* A GPU frame: eglSwapBuffers attaches and commits it, so the frame callback and the buffer scale
+ * are asked for first, to go in the same commit. */
+static void present_gpu(BKWindow *win, int all)
+{
+  win->frame_cb = wl_surface_frame(win->surface);
+  wl_callback_add_listener(win->frame_cb, &frame_listener, win);
+  wl_surface_set_buffer_scale(win->surface, win->bscale);
+  BUI_raster_present_native(win->raster, NULL, all);
+  if (!BUI_raster_is_gpu(win->raster)) {
+    win->full = 1; /* device lost: the CPU raster redraws everything */
+    win->render_pending = 1;
+  }
+}
+
 static void do_render(BKWindow *win)
 {
   const int w = BK_MAX(1, win->w), h = BK_MAX(1, win->h);
-  Buf *b = buf_acquire(win, w, h);
-  if (!b) {
+  if (BUI_raster_gpu_poll(win->raster)) {
+    win->full = 1; /* the renderer changed: its frame starts empty */
+  }
+  const int gpu = BUI_raster_is_gpu(win->raster);
+  Buf *b = gpu ? NULL : buf_acquire(win, w, h);
+  if (!gpu && !b) {
     return; /* both buffers are with the compositor: the release asks for the render again */
   }
   const int resized = BUI_raster_width(win->raster) != w || BUI_raster_height(win->raster) != h;
@@ -378,7 +409,12 @@ static void do_render(BKWindow *win)
   win->full = 0;
   const int regions = BK_render(win->ctx, win->raster, w, h, full);
   if (regions || full) {
-    present(win, b, full);
+    if (gpu) {
+      present_gpu(win, full);
+    }
+    else {
+      present(win, b, full);
+    }
     win->frames++;
   }
 }
@@ -1174,6 +1210,7 @@ static void close_window(BKWindow *win)
     g.repeat_key = 0;
   }
   role_destroy(win);
+  BUI_raster_gpu_release(win->raster); /* the EGL surface uses the wl_surface */
   wl_surface_destroy(win->surface);
   buf_destroy(&win->bufs[0]);
   buf_destroy(&win->bufs[1]);
@@ -1348,6 +1385,9 @@ BKWindow *bk_wl_window_new(BKContext *ctx, const char *title, int width, int hei
       " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
   float tw;
   BUI_text_prepare("", 0, bk_font_size(), ascii, (int)sizeof(ascii) - 1, &tw);
+  if (BUI_gpu_default()) {
+    gpu_attach(win); /* the device starts on its thread while the compositor answers */
+  }
   wait_configure(win);
   return win;
 }
@@ -1499,14 +1539,15 @@ BuiRaster *bk_wl_window_raster(BKWindow *win)
 
 void bk_wl_window_set_gpu(BKWindow *win, int on)
 {
-  (void)win;
-  (void)on; /* the CPU raster only, see kit_window_linux.c */
+  if (win && on) {
+    gpu_attach(win);
+    win->render_pending = 1;
+  }
 }
 
 int bk_wl_window_gpu(BKWindow *win)
 {
-  (void)win;
-  return 0;
+  return win && BUI_raster_is_gpu(win->raster);
 }
 
 int bk_wl_window_frames(BKWindow *win)
@@ -1678,6 +1719,9 @@ static double next_wait(void)
     if (!win->open) {
       continue;
     }
+    if (BUI_raster_gpu_pending(win->raster)) { /* check the device once per refresh */
+      wait = wait < 0 ? refresh_ms() : BK_MIN(wait, refresh_ms());
+    }
     if (win->render_pending && win->configured && !win->frame_cb) {
       const double hold = win->hold_until - t;
       if (hold <= 0.0) {
@@ -1740,6 +1784,13 @@ static void turn(double block_ms)
   wl_display_dispatch_pending(d);
   run_repeat();
   run_timers();
+  for (BKWindow *win = g_windows; win; win = win->next) {
+    /* a GPU device that is ready switches an idle window over too */
+    if (win->open && BUI_raster_gpu_pending(win->raster) && BUI_raster_gpu_poll(win->raster)) {
+      win->full = 1;
+      win->render_pending = 1;
+    }
+  }
   for (BKWindow *win = g_windows; win; win = win->next) {
     if (win->open && win->configured && win->render_pending && !win->frame_cb &&
         win->hold_until <= now_ms())

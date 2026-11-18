@@ -312,13 +312,19 @@ const void *BUI_text_default_font(int *r_len);
  * meanwhile) unless `wait`; poll() switches over once it is ready and returns
  * 1 when the renderer changed, so the caller must redraw the whole frame. A
  * NULL window renders offscreen (BUI_raster_pixels reads the frame back).
- * `window_handle` is an HWND on Windows; on X11 it points to a
- * BuiGpuX11Window (copied during the call). */
-typedef struct BuiGpuX11Window {
-  void *display;        /* Display * the window lives on (NULL: open one) */
-  unsigned long window; /* Window */
-  unsigned long visual; /* its VisualID (0: the default visual) */
-} BuiGpuX11Window;
+ * `window_handle` is an HWND on Windows; on Linux it points to a
+ * BuiGpuLinuxWindow (copied during the call), drawn through EGL. */
+typedef enum BuiGpuPlatform {
+  BUI_GPU_X11 = 1,
+  BUI_GPU_WAYLAND = 2,
+} BuiGpuPlatform;
+typedef struct BuiGpuLinuxWindow {
+  BuiGpuPlatform platform;
+  void *display;        /* X11: Display *; Wayland: struct wl_display * */
+  void *surface;        /* Wayland: struct wl_surface * (X11: unused) */
+  unsigned long window; /* X11: Window (Wayland: unused) */
+  unsigned long visual; /* X11: its VisualID, 0 for the default visual (Wayland: unused) */
+} BuiGpuLinuxWindow;
 int BUI_raster_gpu_attach(BuiRaster *r, void *window_handle, int wait);
 int BUI_raster_gpu_poll(BuiRaster *r);
 /* 1 while attach() still creates the device. A host polls until it is 0, so an idle window
