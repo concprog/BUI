@@ -29,15 +29,12 @@ typedef void (*TaskParallelRangeFunc)(void *__restrict userdata,
 typedef struct TaskParallelSettings {
   bool use_threading;
   int min_iter_per_thread;
-  /* BUI addition: at most this many threads, the caller included (0: all). */
-  int max_threads;
 } TaskParallelSettings;
 
 BLI_INLINE void BLI_parallel_range_settings_defaults(TaskParallelSettings *settings)
 {
   settings->use_threading = true;
   settings->min_iter_per_thread = 1;
-  settings->max_threads = 0;
 }
 
 void BLI_task_parallel_range(int start,

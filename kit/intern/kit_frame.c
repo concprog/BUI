@@ -1387,6 +1387,8 @@ static void canvas_item_draw(BuiRaster *r, const CItem *ci, float ox, float oy, 
  * polygons use the kit's global drawing state and keep a canvas serial. */
 
 #define PAR_MIN_ITEMS 64
+/* More bands than threads: balances uneven rows. */
+#define BANDS_PER_THREAD 3
 /* Every extra thread costs CPU (wake-ups, bands overlapping items), so an
  * animation uses the fewest threads that still meet the frame deadline, and
  * all of them only when it can't be met. */
@@ -1531,6 +1533,19 @@ static void band_draw(const BandJob *j, int b)
   free(view);
 }
 
+/* Threads the canvas may draw with: the pool's, or fewer with BUI_RASTER_THREADS. */
+static int par_threads(void)
+{
+  static int n = -1;
+  if (n < 0) {
+    const char *env = getenv("BUI_RASTER_THREADS");
+    const int want = env ? atoi(env) : 0;
+    n = BLI_task_scheduler_num_threads();
+    n = want > 0 ? BK_MIN(want, n) : n;
+  }
+  return n;
+}
+
 static void band_task(void *__restrict userdata, const int b, const TaskParallelTLS *__restrict tls)
 {
   (void)tls;
@@ -1574,7 +1589,7 @@ static bool canvas_draw_parallel(const CanvasData *d, float ox, float oy, int th
   memcpy(j->clip, bk_draw.clip, sizeof(j->clip));
   j->ox = ox;
   j->oy = oy;
-  j->nbands = threads * 3; /* more bands than threads: balances uneven rows */
+  j->nbands = threads * BANDS_PER_THREAD;
   j->band_h = BK_MAX(1, (j->clip[3] - j->clip[1] + j->nbands - 1) / j->nbands);
   /* bucket items by band once (in list order), so each band reads only its
    * own items instead of scanning the whole list */
@@ -1628,9 +1643,10 @@ static bool canvas_draw_parallel(const CanvasData *d, float ox, float oy, int th
   free(range);
   j->start = start;
   j->idx = idx;
+  /* nb = threads * BANDS_PER_THREAD: the pool uses `threads` threads, not more */
   TaskParallelSettings settings;
   BLI_parallel_range_settings_defaults(&settings);
-  settings.max_threads = threads;
+  settings.min_iter_per_thread = BANDS_PER_THREAD;
   BLI_task_parallel_range(0, nb, j, band_task, &settings);
   free(start);
   free(idx);
@@ -1654,7 +1670,7 @@ static void canvas_draw(BKNode *n)
   const bool small = region * 4 < (long)n->w * n->h; /* a damage rectangle, not the canvas */
   /* on the GPU, drawing only records instances: one thread is fastest */
   const int threads = (d->n >= PAR_MIN_ITEMS && !small && !BUI_raster_is_gpu(bk_draw.r)) ?
-                          threads_wanted(BLI_task_scheduler_num_threads()) :
+                          threads_wanted(par_threads()) :
                           1;
   if (bk_draw.clip[2] > bk_draw.clip[0] && bk_draw.clip[3] > bk_draw.clip[1] &&
       canvas_draw_parallel(d, ox, oy, threads))

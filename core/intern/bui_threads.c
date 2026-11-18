@@ -257,9 +257,7 @@ static int range_pool(void)
   BLI_mutex_init(&g_range_mutex);
   BLI_condition_init(&g_range_work);
   BLI_condition_init(&g_range_done);
-  const char *env = getenv("BUI_RASTER_THREADS");
-  int n = env ? atoi(env) : 0;
-  n = n > 0 ? n : BLI_system_thread_count();
+  int n = BLI_system_thread_count();
   n = n < 1 ? 1 : (n > RANGE_THREADS_MAX ? RANGE_THREADS_MAX : n);
   int started = 0;
   for (int t = 1; t < n; t++) {
@@ -300,9 +298,6 @@ void BLI_task_parallel_range(const int start,
   }
   const int per = settings->min_iter_per_thread > 0 ? settings->min_iter_per_thread : 1;
   int threads = settings->use_threading ? BLI_task_scheduler_num_threads() : 1;
-  if (settings->max_threads > 0 && settings->max_threads < threads) {
-    threads = settings->max_threads;
-  }
   if (count / per < threads) {
     threads = count / per > 0 ? count / per : 1;
   }
