@@ -1200,7 +1200,9 @@ BUI has two renderers, and they draw **the same pixels**.
   is a few instanced draw calls. Text and images are cached in atlases.
   Frames render into a persistent target, so only damaged regions redraw; on
   Windows, a flip-model swap chain presents dirty rectangles, and on Linux the
-  EGL swap passes them on (`eglSwapBuffersWithDamageKHR`). On Linux,
+  EGL swap passes them on (`eglSwapBuffersWithDamageKHR`); with
+  `EGL_EXT_buffer_age`, only the out-of-date parts of the back buffer are
+  copied. On Linux,
   `libEGL`, `libOpenGL` and `libwayland-egl` are loaded at run time (EGL for
   X11 and Wayland windows and for offscreen), so no GL headers are needed, and
   BUI falls back to the CPU where OpenGL is missing. On both platforms the device starts on a worker
@@ -1975,6 +1977,7 @@ wins.
 | `BUI_GPU`                        | `1` draws native windows on the GPU (Direct3D 11 / OpenGL 3.3). Overrides `bui.set_gpu()`, `Application::gpu()`, `BUI_gpu_set_default()`. `0` turns those defaults off; a window that asks for the GPU itself still gets it. |
 | `BUI_SLUG`                       | GPU text: `1` from glyph outlines (Slug, the default), `0` from a per-glyph atlas.                                                                                                                                           |
 | `BUI_GPU_DEBUG`                  | `1` prints why the GPU renderer couldn't start.                                                                                                                                                                              |
+| `BUI_GPU_CHECK_REPAIR`           | Testing (Linux): `1` reads the window's back buffer after each present and reports frames where the buffer-age repair left it different from the frame. Slow.                                                                 |
 | `BUI_GPU_WARP`                   | `1` (Windows) creates the Direct3D 11 device on WARP, the software rasterizer. Handy in VMs and CI.                                                                                                                          |
 | `BUI_GPU_MAX_TEXTURE`            | Testing: the largest texture side the GPU renderers give one image (at least 64), so images over it are tiled as on devices with a small limit.                                                                              |
 | `BUI_GPU_EGL`                    | `default` or `surfaceless` (Linux): the EGL platform for offscreen GPU rendering.                                                                                                                                            |

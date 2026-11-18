@@ -94,8 +94,11 @@ All notable changes to **blenderui** (BUI). The format follows
   `BUI_GPU_WAYLAND`) and a `surface` for Wayland.
 - **Linux GPU renderer: only the damage reaches the compositor.** The swap sends the frame's damaged rectangles
   with `eglSwapBuffersWithDamageKHR` (or the EXT version), as the D3D11 renderer sends dirty rectangles; whole
-  frames, too many rectangles and the first swap after a resize swap everything. The whole frame is still blitted
-  first, so the back buffer stays valid where a compositor ignores the hint.
+  frames, too many rectangles and the first swap after a resize swap everything. With `EGL_EXT_buffer_age` the back
+  buffer is repaired, not copied whole: only this frame's damage and that of the frames since the buffer was last
+  shown (the last 4 frames are kept; age 0, an older buffer or a full frame among them copies everything), and
+  `EGL_KHR_partial_update` tells the driver where. `BUI_GPU_CHECK_REPAIR=1` checks the repaired buffer against the
+  frame.
 - **Wayland: uncapped frames.** A frame request without vsync commits without waiting for the frame callback,
   as on X11 (the GPU renderer at 3000 cells: 33 fps paced, 92 uncapped).
 - **Breaking default: videos play with sound.** A `<video>` / `BK_video` autoplays with its audio track now (it

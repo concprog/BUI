@@ -217,6 +217,7 @@ typedef unsigned int EGLenum;
 #  define EGL_PLATFORM_WAYLAND_KHR 0x31D8 /* EGL_KHR_platform_wayland, = ..._EXT */
 #  define EGL_PLATFORM_SURFACELESS_MESA 0x31DD
 #  define EGL_PRESENT_OPAQUE_EXT 0x31DF /* EGL_EXT_present_opaque */
+#  define EGL_BUFFER_AGE_EXT 0x313D     /* EGL_EXT_buffer_age, = EGL_BUFFER_AGE_KHR */
 
 /* wayland-egl (opaque) */
 typedef struct wl_egl_window WlEglWindow;
@@ -289,6 +290,8 @@ typedef EGLSurface (*CreatePlatformWindowSurfaceFn)(EGLDisplay, EGLConfig, void 
                                                     const EGLint *);
 /* EGL_KHR_swap_buffers_with_damage / EGL_EXT_swap_buffers_with_damage (same signature) */
 typedef EGLBoolean (*SwapDamageFn)(EGLDisplay, EGLSurface, const EGLint *, EGLint);
+/* EGL_KHR_partial_update: eglSetDamageRegionKHR (the same arguments) */
+typedef SwapDamageFn SetDamageFn;
 static GetPlatformDisplayFn p_eglGetPlatformDisplayEXT;
 static CreatePlatformWindowSurfaceFn p_eglCreatePlatformWindowSurfaceEXT;
 
@@ -871,6 +874,15 @@ typedef struct FxCall {
   int floats; /* where its n_floats of the effect are in BuiGpu.fxf */
 } FxCall;
 
+#  define DMG_MAX 16 /* damage rects of a frame; more make it a full frame */
+#  define AGE_MAX 4  /* frames of damage kept for EGL_EXT_buffer_age (deeper buffers: full) */
+
+/* One frame's damage: rects x0, y0, x1, y1 from the top left, or the whole frame. */
+typedef struct FrameDamage {
+  int n, full;
+  int r[DMG_MAX][4];
+} FrameDamage;
+
 struct BuiGpu {
   int state; /* 0 pending, 1 ready, -1 failed */
   pthread_t thread;
@@ -885,8 +897,13 @@ struct BuiGpu {
   WlEglWindow *wl_win; /* Wayland: the native window under esurf */
   int wl_w, wl_h;      /* its size */
   int onscreen;
+  int interval_set; /* the window surface's swap interval is 0 */
   SwapDamageFn swap_damage; /* NULL: the display has no damage swap */
+  SetDamageFn set_damage;   /* NULL: no EGL_KHR_partial_update */
+  int buffer_age;           /* EGL_EXT_buffer_age: the back buffer is repaired, not redrawn */
   int sw, sh;               /* the window surface's size at the last swap */
+  FrameDamage hist[AGE_MAX]; /* the damage of the last swaps; hist_head is the latest */
+  int hist_head, n_hist;
   GLFuncs f;
 
   GLuint prog_quad, prog_tri, prog_mesh;
@@ -936,7 +953,7 @@ struct BuiGpu {
   Batch *b;
   int n_b, cap_b;
 
-  int dmg[16][4];
+  int dmg[DMG_MAX][4];
   int n_dmg, dmg_full;
 };
 
@@ -951,7 +968,16 @@ static int make_current(BuiGpu *g)
   if (p_eglGetCurrentContext() == g->egl) {
     return 1;
   }
-  return p_eglMakeCurrent(g->edpy, g->esurf, g->esurf, g->egl) != 0;
+  if (!p_eglMakeCurrent(g->edpy, g->esurf, g->esurf, g->egl)) {
+    return 0;
+  }
+  if (g->onscreen && !g->interval_set) {
+    /* present doesn't wait for vblank, like the D3D Present(0): the host paces its frames. The
+     * interval belongs to the surface bound here */
+    p_eglSwapInterval(g->edpy, 0);
+    g->interval_set = 1;
+  }
+  return 1;
 }
 
 /** \} */
@@ -1031,9 +1057,9 @@ static int egl_config(const BuiGpu *g, EGLDisplay dpy, EGLint surface_type, EGLC
   return 1;
 }
 
-/* A core 3.3 context on `cfg`, made current on `surf` (NULL: surfaceless). The handles go into
- * `g` first, so context_free cleans up whatever this leaves when it fails. */
-static int egl_finish(BuiGpu *g, EGLDisplay dpy, EGLConfig cfg, EGLSurface surf)
+/* A core 3.3 context on `cfg` for `surf`, made current on `bind` (`surf` or NULL: surfaceless).
+ * The handles go into `g` first, so context_free cleans up whatever this leaves when it fails. */
+static int egl_finish(BuiGpu *g, EGLDisplay dpy, EGLConfig cfg, EGLSurface surf, EGLSurface bind)
 {
   const EGLint ctx_attr[] = {EGL_CONTEXT_MAJOR_VERSION,
                              3,
@@ -1045,7 +1071,7 @@ static int egl_finish(BuiGpu *g, EGLDisplay dpy, EGLConfig cfg, EGLSurface surf)
   g->edpy = dpy;
   g->esurf = surf;
   g->egl = p_eglCreateContext(dpy, cfg, NULL, ctx_attr);
-  return g->egl && p_eglMakeCurrent(dpy, surf, surf, g->egl);
+  return g->egl && p_eglMakeCurrent(dpy, bind, bind, g->egl);
 }
 
 /* A window: the platform display of the host's own connection (X11 Display or wl_display) and a
@@ -1097,22 +1123,36 @@ static int egl_window(BuiGpu *g)
   if (!surf) {
     return fail("eglCreatePlatformWindowSurfaceEXT");
   }
-  if (!egl_finish(g, dpy, cfg, surf)) {
+  /* the device is made with no surface bound where EGL allows it: a window surface bound here
+   * takes its first back buffer now, at the size before the first frame (1x1 on Wayland), and
+   * the first frame would go into it. make_current binds the surface on the drawing thread. */
+  const char *ext = p_eglQueryString(dpy, EGL_EXTENSIONS);
+  const int unbound = has_ext(ext, "EGL_KHR_surfaceless_context");
+  if (!egl_finish(g, dpy, cfg, surf, unbound ? NULL : surf)) {
     return fail("EGL context");
   }
   g->onscreen = 1;
-  /* present doesn't wait for vblank, like the D3D Present(0): the host paces its frames */
-  p_eglSwapInterval(dpy, 0);
+  if (!unbound) {
+    p_eglSwapInterval(dpy, 0);
+    g->interval_set = 1;
+  }
   /* only what changed goes to the compositor, like the D3D dirty rects */
-  const char *ext = p_eglQueryString(dpy, EGL_EXTENSIONS);
   if (has_ext(ext, "EGL_KHR_swap_buffers_with_damage")) {
     g->swap_damage = (SwapDamageFn)p_eglGetProcAddress("eglSwapBuffersWithDamageKHR");
   }
   else if (has_ext(ext, "EGL_EXT_swap_buffers_with_damage")) {
     g->swap_damage = (SwapDamageFn)p_eglGetProcAddress("eglSwapBuffersWithDamageEXT");
   }
+  /* a back buffer of known age is repaired where it is out of date, not blitted whole; with
+   * partial update, the driver is told where (KHR_partial_update needs the age query first) */
+  g->buffer_age = has_ext(ext, "EGL_EXT_buffer_age") || has_ext(ext, "EGL_KHR_partial_update");
+  if (g->buffer_age && has_ext(ext, "EGL_KHR_partial_update")) {
+    g->set_damage = (SetDamageFn)p_eglGetProcAddress("eglSetDamageRegionKHR");
+  }
   if (debug_on()) {
-    fprintf(stderr, "bui gpu (gl): damage swap %s\n", g->swap_damage ? "on" : "unavailable");
+    fprintf(stderr, "bui gpu (gl): damage swap %s, buffer age %s, partial update %s\n",
+            g->swap_damage ? "on" : "unavailable", g->buffer_age ? "on" : "unavailable",
+            g->set_damage ? "on" : "unavailable");
   }
   return 1;
 }
@@ -1137,7 +1177,7 @@ static int egl_offscreen(BuiGpu *g, EGLDisplay dpy)
       return 0;
     }
   }
-  return egl_finish(g, dpy, cfg, surf);
+  return egl_finish(g, dpy, cfg, surf, surf);
 }
 
 static void context_free(BuiGpu *g);
@@ -2658,41 +2698,175 @@ void bui_gpu_clear(BuiGpu *g, int x, int y, int w, int h)
   GL(glDisable)(GL_SCISSOR_TEST);
 }
 
-/* Swaps, telling the compositor which rectangles changed (EGL_KHR_swap_buffers_with_damage). The
- * rectangles are a hint, so the whole back buffer was drawn before. They are x, y, w, h from the
- * bottom left: the frame's rows (top first) sit from the surface's top edge `top`. A whole frame,
- * too many rectangles, none, or a resized surface (where the spec leaves the rects undefined)
- * swaps everything. */
-static void swap(BuiGpu *g, int top, int whole)
+/* This frame's damage, clamped to the frame: rects x0, y0, x1, y1 from the top left. `full` when
+ * the whole frame counts (a whole frame, too many rectangles, none, or a resized surface). */
+static void frame_damage(const BuiGpu *g, int whole, FrameDamage *d)
 {
-  EGLint rects[sizeof(g->dmg) / sizeof(g->dmg[0])][4];
-  EGLint n = 0;
-  for (int i = 0; g->swap_damage && !whole && !g->dmg_full && i < g->n_dmg; i++) {
-    const int *d = g->dmg[i];
-    const int x0 = d[0] < 0 ? 0 : d[0], y0 = d[1] < 0 ? 0 : d[1];
-    const int x1 = d[2] > g->tw ? g->tw : d[2], y1 = d[3] > g->th ? g->th : d[3];
+  d->n = 0;
+  d->full = whole || g->dmg_full || g->n_dmg == 0;
+  for (int i = 0; !d->full && i < g->n_dmg; i++) {
+    const int *r = g->dmg[i];
+    const int x0 = r[0] < 0 ? 0 : r[0], y0 = r[1] < 0 ? 0 : r[1];
+    const int x1 = r[2] > g->tw ? g->tw : r[2], y1 = r[3] > g->th ? g->th : r[3];
     if (x1 > x0 && y1 > y0) {
-      rects[n][0] = x0;
-      rects[n][1] = top - y1;
-      rects[n][2] = x1 - x0;
-      rects[n][3] = y1 - y0;
-      n++;
+      int *o = d->r[d->n++];
+      o[0] = x0;
+      o[1] = y0;
+      o[2] = x1;
+      o[3] = y1;
     }
   }
-  if (n > 0) {
-    static int told = 0;
-    if (!told && debug_on() && rects[0][2] * rects[0][3] < g->tw * g->th) {
-      told = 1;
-      fprintf(stderr, "bui gpu (gl): first partial swap, %d rects, first %d,%d %dx%d\n", (int)n,
-              (int)rects[0][0], (int)rects[0][1], (int)rects[0][2], (int)rects[0][3]);
+  d->full = d->full || d->n == 0;
+}
+
+/* Where a back buffer of `age` swaps (EGL_EXT_buffer_age) differs from this frame: this frame's
+ * damage and that of the age - 1 frames before it (as Firefox keeps damage per buffer). Returns
+ * the count, or -1 when the whole frame must be blitted: age 0 (undefined contents), a history
+ * too short, a full frame among them, or too many rectangles. */
+static int repair_rects(const BuiGpu *g, const FrameDamage *cur, int age, int out[][4], int cap)
+{
+  if (age <= 0 || cur->full || age - 1 > g->n_hist) {
+    return -1;
+  }
+  int n = 0;
+  for (int k = 0; k < age; k++) {
+    const FrameDamage *d = k == 0 ? cur : &g->hist[(g->hist_head + AGE_MAX + 1 - k) % AGE_MAX];
+    if (d->full || n + d->n > cap) {
+      return -1;
     }
-    if (!g->swap_damage(g->edpy, g->esurf, &rects[0][0], n) && debug_on()) {
+    memcpy(out[n], d->r, sizeof(int[4]) * (size_t)d->n);
+    n += d->n;
+  }
+  return n;
+}
+
+/* EGL rects (x, y, w, h from the bottom left) of top-left `r`: the frame's rows (top first) sit
+ * from the surface's top edge `top`. */
+static int egl_rects(const int r[][4], int n, int top, EGLint out[][4])
+{
+  for (int i = 0; i < n; i++) {
+    out[i][0] = r[i][0];
+    out[i][1] = top - r[i][3];
+    out[i][2] = r[i][2] - r[i][0];
+    out[i][3] = r[i][3] - r[i][1];
+  }
+  return n;
+}
+
+/* Blits frame rect `r` (top left) to the back buffer, flipped (the frame is stored top row
+ * first) and anchored to the surface's top edge. */
+static void blit_rect(BuiGpu *g, const int r[4], int top)
+{
+  GL(glBlitFramebuffer)(r[0], r[1], r[2], r[3], r[0], top - r[1], r[2], top - r[3],
+                        GL_COLOR_BUFFER_BIT, GL_NEAREST);
+}
+
+/* BUI_GPU_CHECK_REPAIR=1 (tests): the back buffer, repaired from its age, must equal the frame.
+ * Reads both back and counts the pixels whose colour differs; prints the frames that differ. */
+static void check_repair(BuiGpu *g, int top, int age, int n)
+{
+  static int on = -1;
+  static unsigned frames = 0, bad = 0;
+  if (on < 0) {
+    const char *env = getenv("BUI_GPU_CHECK_REPAIR");
+    on = env && env[0] == '1';
+  }
+  if (!on || top < g->th) {
+    return;
+  }
+  const size_t px = (size_t)g->tw * (size_t)g->th;
+  uint32_t *frame = (uint32_t *)malloc(px * 4), *back = (uint32_t *)malloc(px * 4);
+  if (frame && back) {
+    GL(glPixelStorei)(GL_PACK_ALIGNMENT, 4);
+    GL(glPixelStorei)(GL_PACK_ROW_LENGTH, 0);
+    GL(glReadPixels)(0, 0, g->tw, g->th, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, frame);
+    GL(glBindFramebuffer)(GL_READ_FRAMEBUFFER, 0);
+    GL(glReadPixels)(0, top - g->th, g->tw, g->th, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, back);
+    GL(glBindFramebuffer)(GL_READ_FRAMEBUFFER, g->fbo);
+    size_t diff = 0;
+    for (int y = 0; y < g->th; y++) { /* the back buffer's rows are bottom first */
+      const uint32_t *f = frame + (size_t)y * g->tw, *b = back + (size_t)(g->th - 1 - y) * g->tw;
+      for (int x = 0; x < g->tw; x++) {
+        diff += ((f[x] ^ b[x]) & 0xFFFFFFu) != 0;
+      }
+    }
+    frames++;
+    if (diff) {
+      bad++;
+      fprintf(stderr, "bui gpu (gl): repair check: frame %u, age %d, %d rects: %zu px differ\n",
+              frames, age, n, diff);
+    }
+    else if (frames % 120 == 0) {
+      fprintf(stderr, "bui gpu (gl): repair check: %u frames, %u differ\n", frames, bad);
+    }
+  }
+  free(frame);
+  free(back);
+}
+
+/* Present on a window surface. The back buffer gets what changed since it was last shown (all of
+ * it without a known buffer age); the swap tells the compositor what changed since the last one
+ * (EGL_KHR_swap_buffers_with_damage, a hint). */
+static void present_window(BuiGpu *g, int full)
+{
+  /* Wayland: the size given to wl_egl_window_resize (the query reports the old size until the
+   * swap after a resize); X11: the window's, as the server has it */
+  EGLint dw = g->wl_w, dh = g->wl_h;
+  if (!g->wl_win) {
+    p_eglQuerySurface(g->edpy, g->esurf, EGL_WIDTH, &dw);
+    p_eglQuerySurface(g->edpy, g->esurf, EGL_HEIGHT, &dh);
+  }
+  const int top = dh > 0 ? (int)dh : g->th;
+  const int resized = dw != g->sw || dh != g->sh;
+  g->sw = dw;
+  g->sh = dh;
+  FrameDamage cur;
+  frame_damage(g, full || resized, &cur);
+
+  /* what the back buffer needs: queried before anything draws to it (EGL_KHR_partial_update) */
+  EGLint age = 0;
+  if (g->buffer_age) {
+    p_eglQuerySurface(g->edpy, g->esurf, EGL_BUFFER_AGE_EXT, &age);
+  }
+  int repair[AGE_MAX * DMG_MAX][4];
+  const int n = repair_rects(g, &cur, age, repair, AGE_MAX * DMG_MAX);
+  EGLint rects[AGE_MAX * DMG_MAX][4];
+  if (n > 0 && g->set_damage) {
+    /* nothing is drawn outside these: a tiler loads and stores only their tiles */
+    g->set_damage(g->edpy, g->esurf, &rects[0][0], egl_rects(repair, n, top, rects));
+  }
+  GL(glBindFramebuffer)(GL_READ_FRAMEBUFFER, g->fbo);
+  GL(glBindFramebuffer)(GL_DRAW_FRAMEBUFFER, 0);
+  if (n < 0) {
+    const int whole[4] = {0, 0, g->tw, g->th};
+    blit_rect(g, whole, top);
+  }
+  for (int i = 0; i < n; i++) {
+    blit_rect(g, repair[i], top);
+  }
+  check_repair(g, top, age, n);
+  GL(glBindFramebuffer)(GL_FRAMEBUFFER, g->fbo);
+
+  if (g->swap_damage && !cur.full) {
+    const EGLint m = egl_rects(cur.r, cur.n, top, rects);
+    if (!g->swap_damage(g->edpy, g->esurf, &rects[0][0], m) && debug_on()) {
       fprintf(stderr, "bui gpu (gl): damage swap failed: 0x%x\n", (unsigned)p_eglGetError());
     }
   }
   else {
     p_eglSwapBuffers(g->edpy, g->esurf);
   }
+  if (debug_on() && !cur.full && n >= 0) {
+    static int told = 0;
+    if (!told) {
+      told = 1;
+      fprintf(stderr, "bui gpu (gl): first partial present: buffer age %d, %d repair rects, %d damage rects\n",
+              (int)age, n, cur.n);
+    }
+  }
+  g->hist_head = (g->hist_head + 1) % AGE_MAX;
+  g->hist[g->hist_head] = cur;
+  g->n_hist = g->n_hist < AGE_MAX ? g->n_hist + 1 : AGE_MAX;
 }
 
 int bui_gpu_present(BuiGpu *g, int full)
@@ -2703,25 +2877,7 @@ int bui_gpu_present(BuiGpu *g, int full)
     return g->target != 0;
   }
   if (g->onscreen) {
-    /* the back buffer is undefined after a swap: blit the whole frame, flipped (it is stored top
-     * row first), anchored to the window's top edge */
-    /* Wayland: the size given to wl_egl_window_resize (the query reports the old size until the
-     * swap after a resize); X11: the window's, as the server has it */
-    EGLint dw = g->wl_w, dh = g->wl_h;
-    if (!g->wl_win) {
-      p_eglQuerySurface(g->edpy, g->esurf, EGL_WIDTH, &dw);
-      p_eglQuerySurface(g->edpy, g->esurf, EGL_HEIGHT, &dh);
-    }
-    const int top = dh > 0 ? (int)dh : g->th;
-    GL(glBindFramebuffer)(GL_READ_FRAMEBUFFER, g->fbo);
-    GL(glBindFramebuffer)(GL_DRAW_FRAMEBUFFER, 0);
-    GL(glBlitFramebuffer)(0, 0, g->tw, g->th, 0, top, g->tw, top - g->th, GL_COLOR_BUFFER_BIT,
-                          GL_NEAREST);
-    GL(glBindFramebuffer)(GL_FRAMEBUFFER, g->fbo);
-    const int resized = dw != g->sw || dh != g->sh;
-    g->sw = dw;
-    g->sh = dh;
-    swap(g, top, full || resized);
+    present_window(g, full);
   }
   else {
     GL(glFlush)();

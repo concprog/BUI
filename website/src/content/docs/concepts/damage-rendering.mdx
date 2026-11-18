@@ -54,7 +54,7 @@ On the full components demo (520×900, Ryzen 7 5800U laptop), that's the differe
    - **Windows:** the damaged regions are copied straight to the window.
    - **Linux (X11):** each damaged rectangle is sent with `XPutImage`.
    - **macOS:** each damaged rectangle is invalidated on the view, which redraws it from the frame.
-   - **GPU renderer:** frames render into a persistent target, so only damaged regions are drawn on the GPU. On Windows, the flip-model swap chain gets dirty rectangles; on Linux, the EGL swap gets them through `eglSwapBuffersWithDamageKHR` (or the EXT version) where the driver has it. Either way the system compositor only recomposes what changed.
+   - **GPU renderer:** frames render into a persistent target, so only damaged regions are drawn on the GPU. On Windows, the flip-model swap chain gets dirty rectangles; on Linux, the EGL swap gets them through `eglSwapBuffersWithDamageKHR` (or the EXT version) where the driver has it. Where the driver reports the back buffer's age (`EGL_EXT_buffer_age`), only the parts that changed since that buffer was last shown are copied into it (this frame's damage and that of the frames since), and with `EGL_KHR_partial_update` the driver is told which parts those are. Either way the system compositor only recomposes what changed.
 
 </Steps>
 
