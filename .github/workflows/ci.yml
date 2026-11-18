@@ -180,6 +180,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUI_BUILD_CSHARP_BINDINGS=ON \
             -DBUI_BUILD_PYTHON_BINDINGS=OFF -DBUI_BUILD_IMGUI=OFF -DBUI_WARNINGS_AS_ERRORS=OFF
           cmake --build build --config Release --parallel 4 --target bui_kit_shared
+          ls build/bindings/csharp/*bui_kit.* | grep -E '\.(dll|dylib|so)$'
       - name: Headless suite
         working-directory: bindings/csharp
         run: dotnet run --project tests/Bui.Tests

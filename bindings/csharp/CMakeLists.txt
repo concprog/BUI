@@ -10,7 +10,11 @@ if(CMAKE_VERSION VERSION_LESS 3.24) # $<LINK_LIBRARY:WHOLE_ARCHIVE>
   return()
 endif()
 
-add_library(bui_kit_shared SHARED ${BUI_SOURCE_DIR}/kit/include/BUI_kit.h)
+# Visual Studio links a library only when it compiles something: one empty source
+file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/bui_kit_shared.c
+  CONTENT "/* the shared kit: all of its code comes from the static libraries */\ntypedef int bui_kit_shared_unit;\n")
+add_library(bui_kit_shared SHARED ${BUI_SOURCE_DIR}/kit/include/BUI_kit.h
+  ${CMAKE_CURRENT_BINARY_DIR}/bui_kit_shared.c)
 # $<0:> keeps multi-config generators (Visual Studio, Xcode) from adding a
 # Release/ or Debug/ directory: the projects find the library in one place
 set_target_properties(bui_kit_shared PROPERTIES
