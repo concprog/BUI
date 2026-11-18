@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "BLI_task.h"
 #include "kit_intern.h"
 
 #ifdef _WIN32
@@ -24,11 +25,9 @@
 #  ifndef NOMINMAX
 #    define NOMINMAX
 #  endif
-#  if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0601
-#    undef _WIN32_WINNT
-#    define _WIN32_WINNT 0x0601 /* thread pool work objects */
-#  endif
 #  include <windows.h>
+#else
+#  include <time.h>
 #endif
 
 static int u(void)
@@ -1414,7 +1413,9 @@ static double now_ms(void)
   QueryPerformanceCounter(&t);
   return (double)t.QuadPart * 1000.0 / (double)freq.QuadPart;
 #else
-  return 0.0;
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (double)t.tv_sec * 1000.0 + (double)t.tv_nsec / 1e6;
 #endif
 }
 
@@ -1497,7 +1498,6 @@ typedef struct BandJob {
   int nbands, band_h;
   const int *start; /* band b draws items idx[start[b] .. start[b + 1]) */
   const int *idx;
-  volatile long next;
 } BandJob;
 
 static void band_draw(const BandJob *j, int b)
@@ -1531,37 +1531,11 @@ static void band_draw(const BandJob *j, int b)
   free(view);
 }
 
-static int par_threads(void)
+static void band_task(void *__restrict userdata, const int b, const TaskParallelTLS *__restrict tls)
 {
-  static int n = -1;
-  if (n < 0) {
-    const char *env = getenv("BUI_RASTER_THREADS");
-    n = env ? atoi(env) : 0;
-#ifdef _WIN32
-    if (n <= 0) {
-      SYSTEM_INFO si;
-      GetSystemInfo(&si);
-      n = (int)si.dwNumberOfProcessors;
-    }
-#endif
-    n = BK_CLAMP(n, 1, 8);
-  }
-  return n;
+  (void)tls;
+  band_draw((const BandJob *)userdata, b);
 }
-
-#ifdef _WIN32
-static BandJob g_job;
-static VOID CALLBACK band_worker(PTP_CALLBACK_INSTANCE inst, PVOID ctx, PTP_WORK work)
-{
-  (void)inst;
-  (void)work;
-  BandJob *j = (BandJob *)ctx;
-  long b;
-  while ((b = InterlockedIncrement(&j->next) - 1) < j->nbands) {
-    band_draw(j, (int)b);
-  }
-}
-#endif
 
 /* Draw `d` in bands on several threads; false when it has to be drawn serially. */
 static bool canvas_draw_parallel(const CanvasData *d, float ox, float oy, int threads)
@@ -1574,7 +1548,6 @@ static bool canvas_draw_parallel(const CanvasData *d, float ox, float oy, int th
       return false;
     }
   }
-#ifdef _WIN32
   ItemPrep *prep = (ItemPrep *)malloc(sizeof(ItemPrep) * (size_t)d->n);
   if (!prep) {
     return false;
@@ -1593,15 +1566,8 @@ static bool canvas_draw_parallel(const CanvasData *d, float ox, float oy, int th
     return false;
   }
   /* phase 2: bands on the pool, this thread included */
-  static PTP_WORK work = NULL;
-  if (!work) {
-    work = CreateThreadpoolWork(band_worker, &g_job, NULL);
-    if (!work) {
-      free(prep);
-      return false;
-    }
-  }
-  BandJob *j = &g_job;
+  BandJob job;
+  BandJob *j = &job;
   j->d = d;
   j->prep = prep;
   j->base = bk_draw.r;
@@ -1662,21 +1628,14 @@ static bool canvas_draw_parallel(const CanvasData *d, float ox, float oy, int th
   free(range);
   j->start = start;
   j->idx = idx;
-  j->next = 0;
-  for (int t = 1; t < threads; t++) {
-    SubmitThreadpoolWork(work);
-  }
-  band_worker(NULL, j, NULL);
-  WaitForThreadpoolWorkCallbacks(work, FALSE);
+  TaskParallelSettings settings;
+  BLI_parallel_range_settings_defaults(&settings);
+  settings.max_threads = threads;
+  BLI_task_parallel_range(0, nb, j, band_task, &settings);
   free(start);
   free(idx);
   free(prep);
   return true;
-#else
-  (void)ox;
-  (void)oy;
-  return false;
-#endif
 }
 
 static void canvas_draw(BKNode *n)
@@ -1695,7 +1654,7 @@ static void canvas_draw(BKNode *n)
   const bool small = region * 4 < (long)n->w * n->h; /* a damage rectangle, not the canvas */
   /* on the GPU, drawing only records instances: one thread is fastest */
   const int threads = (d->n >= PAR_MIN_ITEMS && !small && !BUI_raster_is_gpu(bk_draw.r)) ?
-                          threads_wanted(par_threads()) :
+                          threads_wanted(BLI_task_scheduler_num_threads()) :
                           1;
   if (bk_draw.clip[2] > bk_draw.clip[0] && bk_draw.clip[3] > bk_draw.clip[1] &&
       canvas_draw_parallel(d, ox, oy, threads))
