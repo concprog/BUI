@@ -419,6 +419,7 @@ struct BKNode {
   void *bref;          /* borrowed host wrapper (C-owned node), retained */
 
   int x, y, w, h;
+  BKRect shown; /* where the last layout put it on screen (empty when not shown): damage on change */
   int nat_w, nat_h, nat_gen;
   float weight;
   int fill; /* in a column: takes a share of the spare height (a region filling its area) */

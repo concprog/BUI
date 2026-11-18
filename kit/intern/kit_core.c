@@ -225,6 +225,9 @@ const char *BK_node_type(const BKNode *n)
   return n->cls->name;
 }
 
+static bool node_in_popup(const BKNode *n);
+static void damage_moved(BKContext *ctx, BKNode *n, bool shown, bool in_popup);
+
 static void node_detach(BKNode *child)
 {
   BKNode *p = child->parent;
@@ -234,6 +237,7 @@ static void node_detach(BKNode *child)
   BKContext *ctx = bk_ctx(child);
   if (ctx) {
     bk_forget(ctx, child);
+    damage_moved(ctx, child, false, node_in_popup(p)); /* what it showed goes */
     bk_relayout(p);
   }
   for (int i = 0; i < p->nkids; i++) {
@@ -406,20 +410,54 @@ BKRect bk_node_rect(const BKNode *n)
   return bk_rect(n->x, n->y, n->w, n->h);
 }
 
+/* What a node draws outside its rect: a popup's shadow, else a few pixels of outline. */
+static int damage_margin(bool in_popup)
+{
+  return in_popup ? (int)(bk_theme.menu_shadow_width * bk_scale_fac) + 6 : 3;
+}
+
+static void damage_grown(BKContext *ctx, BKRect r, int m)
+{
+  if (r.xmax <= r.xmin || r.ymax <= r.ymin) {
+    return;
+  }
+  bk_ctx_dirty_rect(ctx, (BKRect){r.xmin - m, r.ymin - m, r.xmax + m, r.ymax + m});
+}
+
+static bool node_in_popup(const BKNode *n)
+{
+  for (; n; n = n->parent) {
+    if (n->cls->flags & CLS_POPUP) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void bk_invalidate(BKNode *n)
 {
   BKContext *ctx = bk_ctx(n);
-  if (!ctx) {
-    return;
+  if (ctx) {
+    damage_grown(ctx, bk_node_rect(n), damage_margin(node_in_popup(n)));
   }
-  int m = 3;
-  for (const BKNode *p = n; p; p = p->parent) {
-    if (p->cls->flags & CLS_POPUP) {
-      m = (int)(bk_theme.menu_shadow_width * bk_scale_fac) + 6;
-      break;
-    }
+}
+
+/* Blender tags a region for redraw; here a layout tags each node whose place on screen changed
+ * (moved, resized, shown or hidden): its old and new places are damaged, nothing else is. */
+static void damage_moved(BKContext *ctx, BKNode *n, bool shown, bool in_popup)
+{
+  shown = shown && NODE_VISIBLE(n);
+  in_popup = in_popup || (n->cls->flags & CLS_POPUP);
+  const BKRect now = shown ? bk_node_rect(n) : (BKRect){0, 0, 0, 0};
+  if (memcmp(&now, &n->shown, sizeof(now)) != 0) {
+    const int m = damage_margin(in_popup);
+    damage_grown(ctx, n->shown, m);
+    damage_grown(ctx, now, m);
+    n->shown = now;
   }
-  bk_ctx_dirty_rect(ctx, bk_rect(n->x - m, n->y - m, n->w + 2 * m, n->h + 2 * m));
+  for (int i = 0; i < n->nkids; i++) {
+    damage_moved(ctx, n->kids[i], shown, in_popup);
+  }
 }
 
 void bk_relayout(BKNode *n)
@@ -2058,8 +2096,22 @@ void bk_clipboard_set(BKContext *ctx, const char *s)
 /** \name Rendering
  * \{ */
 
+static void region_scroll_rects(BKContext *ctx, BKRect *r_track, BKRect *r_thumb);
+
+/* The region scrollbar's track, empty while the content fits. */
+static BKRect region_track(BKContext *ctx)
+{
+  BKRect track = {0, 0, 0, 0}, thumb;
+  if (ctx->content_h > ctx->win_h - ctx->header_h) {
+    region_scroll_rects(ctx, &track, &thumb);
+  }
+  return track;
+}
+
 static void layout(BKContext *ctx)
 {
+  const BKRect track = region_track(ctx);
+  const int was[3] = {ctx->content_h, ctx->scroll, ctx->header_h};
   const int w = ctx->win_w, h = ctx->win_h;
   int hw = 0, hh = 0;
   if (ctx->header) {
@@ -2083,6 +2135,19 @@ static void layout(BKContext *ctx)
     bk_popup_place(ctx->popups[i], w, h);
   }
   ctx->layout_dirty = false;
+  if (was[0] != ctx->content_h || was[1] != ctx->scroll || was[2] != ctx->header_h) {
+    damage_grown(ctx, track, 0); /* the thumb moved */
+    damage_grown(ctx, region_track(ctx), 0);
+  }
+  BKNode *roots[] = {ctx->root, ctx->header};
+  for (int i = 0; i < 2; i++) {
+    if (roots[i]) {
+      damage_moved(ctx, roots[i], true, false);
+    }
+  }
+  for (int i = 0; i < ctx->npopups; i++) {
+    damage_moved(ctx, ctx->popups[i], true, false);
+  }
 }
 
 /* interface_region_tooltip.cc: portions of the line height, and the wrap width. */
@@ -2310,6 +2375,39 @@ static void draw_region(BKContext *ctx, const BKRect *rect)
   bk_image_pass_end();
 }
 
+/* BUI_CHECK_DAMAGE=1: draw a partial frame again in full and count the pixels the damage missed. */
+static void check_damage(BKContext *ctx, BuiRaster *r, int w, int h)
+{
+  static int on = -1;
+  if (on < 0) {
+    const char *env = getenv("BUI_CHECK_DAMAGE");
+    on = env && env[0] == '1';
+  }
+  const uint32_t *px = on ? BUI_raster_pixels(r) : NULL;
+  if (!px) {
+    return;
+  }
+  const size_t n = (size_t)w * (size_t)h;
+  uint32_t *partial = (uint32_t *)malloc(n * sizeof(uint32_t));
+  if (!partial) {
+    return;
+  }
+  memcpy(partial, px, n * sizeof(uint32_t));
+  BUI_raster_begin_frame(r, w, h);
+  const BKRect all = bk_rect(0, 0, w, h);
+  draw_region(ctx, &all);
+  BUI_raster_end_frame(r);
+  px = BUI_raster_pixels(r);
+  size_t missed = 0;
+  for (size_t i = 0; i < n; i++) {
+    missed += partial[i] != px[i];
+  }
+  if (missed) {
+    fprintf(stderr, "bui: damage missed %zu pixels\n", missed);
+  }
+  free(partial);
+}
+
 int BK_needs_render(BKContext *ctx)
 {
   return ctx->layout_dirty || ctx->full_dirty || ctx->ndirty > 0;
@@ -2345,8 +2443,9 @@ int BK_render(BKContext *ctx, BuiRaster *r, int w, int h, int full)
   BK_configure(ctx, w, h);
   if (BUI_raster_width(r) != w || BUI_raster_height(r) != h) {
     ctx->layout_dirty = true;
+    full = 1; /* a new frame buffer: nothing in it to keep */
   }
-  if (full || ctx->layout_dirty) {
+  if (full) {
     ctx->full_dirty = true;
   }
   if (ctx->layout_dirty) {
@@ -2358,7 +2457,6 @@ int BK_render(BKContext *ctx, BuiRaster *r, int w, int h, int full)
   }
   bk_custom_frames(ctx); /* immediate-mode nodes build this frame (they dirty themselves) */
   if (ctx->layout_dirty) {
-    ctx->full_dirty = true;
     layout(ctx);
   }
   if (!ctx->full_dirty && ctx->ndirty == 0) {
@@ -2388,6 +2486,7 @@ int BK_render(BKContext *ctx, BuiRaster *r, int w, int h, int full)
     }
     BUI_raster_end_frame_region(r, bbox.xmin, bbox.ymin, bk_rw(&bbox), bk_rh(&bbox));
     regions = ctx->ndirty;
+    check_damage(ctx, r, w, h);
   }
   ctx->full_dirty = false;
   ctx->ndirty = 0;
