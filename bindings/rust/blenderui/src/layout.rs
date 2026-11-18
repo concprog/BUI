@@ -2482,33 +2482,33 @@ pub(crate) fn layout(root: AnyElement, viewport: (f32, f32), state: &UiState, ca
     let stale = b.changed || std::mem::replace(&mut b.recon.laid, laid) != laid;
     let Builder { nodes, els, taffy, styles, text: tc, title, text_box, widgets, .. } = b;
     if stale {
-    taffy.compute(root_id, avail, |known, available, ctx| {
-            match ctx {
-                Measure::Area { key, .. } => {
-                    let w = known.width.unwrap_or(match available.width {
-                        AvailableSpace::Definite(w) => w,
-                        _ => 0.0,
-                    });
-                    Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or_else(|| widgets(*key, WidgetAsk::Height(w)).1) }
+        taffy.compute(root_id, avail, |known, available, ctx| {
+                match ctx {
+                    Measure::Area { key, .. } => {
+                        let w = known.width.unwrap_or(match available.width {
+                            AvailableSpace::Definite(w) => w,
+                            _ => 0.0,
+                        });
+                        Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or_else(|| widgets(*key, WidgetAsk::Height(w)).1) }
+                    }
+                    Measure::Word { width, line } => Size { width: known.width.unwrap_or(*width),
+                                                            height: known.height.unwrap_or(*line) },
+                    Measure::Text { key, size, flags, line, nowrap, brk, .. } => {
+                        let text = match text_box.get(key).map(|&k| &nodes[k].content) {
+                            Some(Content::Text(t)) => t.as_ref(),
+                            _ => "",
+                        };
+                        let max_w = known.width.unwrap_or(match available.width {
+                            AvailableSpace::Definite(w) => w,
+                            AvailableSpace::MinContent => 0.0,
+                            AvailableSpace::MaxContent => f32::INFINITY,
+                        });
+                        let wrapped = tc.wrap(text, *size, *flags, if *nowrap { f32::INFINITY } else { max_w }, *brk);
+                        Size { width: known.width.unwrap_or(wrapped.width.ceil()),
+                               height: known.height.unwrap_or(*line * wrapped.lines.len().max(1) as f32) }
+                    }
                 }
-                Measure::Word { width, line } => Size { width: known.width.unwrap_or(*width),
-                                                        height: known.height.unwrap_or(*line) },
-                Measure::Text { key, size, flags, line, nowrap, brk, .. } => {
-                    let text = match text_box.get(key).map(|&k| &nodes[k].content) {
-                        Some(Content::Text(t)) => t.as_ref(),
-                        _ => "",
-                    };
-                    let max_w = known.width.unwrap_or(match available.width {
-                        AvailableSpace::Definite(w) => w,
-                        AvailableSpace::MinContent => 0.0,
-                        AvailableSpace::MaxContent => f32::INFINITY,
-                    });
-                    let wrapped = tc.wrap(text, *size, *flags, if *nowrap { f32::INFINITY } else { max_w }, *brk);
-                    Size { width: known.width.unwrap_or(wrapped.width.ceil()),
-                           height: known.height.unwrap_or(*line * wrapped.lines.len().max(1) as f32) }
-                }
-            }
-        });
+            });
     }
     drop(s);
     let _s = span(Phase::Place);
