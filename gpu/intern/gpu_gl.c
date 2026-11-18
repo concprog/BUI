@@ -269,6 +269,7 @@ static void *open_lib(const char *const *names)
     F(EGLBoolean, eglQuerySurface, (EGLDisplay, EGLSurface, EGLint, EGLint *)) \
     F(EGLBoolean, eglSwapBuffers, (EGLDisplay, EGLSurface)) \
     F(EGLBoolean, eglSwapInterval, (EGLDisplay, EGLint)) \
+    F(EGLint, eglGetError, (void)) \
     F(const char *, eglQueryString, (EGLDisplay, EGLint))
 
 /* libwayland-egl: the EGL native window of a wl_surface (GHOST_WindowWayland's egl_window) */
@@ -286,6 +287,8 @@ WL_EGL_FUNCS(PTR_DECL)
 typedef EGLDisplay (*GetPlatformDisplayFn)(EGLenum, void *, const EGLint *);
 typedef EGLSurface (*CreatePlatformWindowSurfaceFn)(EGLDisplay, EGLConfig, void *,
                                                     const EGLint *);
+/* EGL_KHR_swap_buffers_with_damage / EGL_EXT_swap_buffers_with_damage (same signature) */
+typedef EGLBoolean (*SwapDamageFn)(EGLDisplay, EGLSurface, const EGLint *, EGLint);
 static GetPlatformDisplayFn p_eglGetPlatformDisplayEXT;
 static CreatePlatformWindowSurfaceFn p_eglCreatePlatformWindowSurfaceEXT;
 
@@ -882,6 +885,8 @@ struct BuiGpu {
   WlEglWindow *wl_win; /* Wayland: the native window under esurf */
   int wl_w, wl_h;      /* its size */
   int onscreen;
+  SwapDamageFn swap_damage; /* NULL: the display has no damage swap */
+  int sw, sh;               /* the window surface's size at the last swap */
   GLFuncs f;
 
   GLuint prog_quad, prog_tri, prog_mesh;
@@ -1098,6 +1103,17 @@ static int egl_window(BuiGpu *g)
   g->onscreen = 1;
   /* present doesn't wait for vblank, like the D3D Present(0): the host paces its frames */
   p_eglSwapInterval(dpy, 0);
+  /* only what changed goes to the compositor, like the D3D dirty rects */
+  const char *ext = p_eglQueryString(dpy, EGL_EXTENSIONS);
+  if (has_ext(ext, "EGL_KHR_swap_buffers_with_damage")) {
+    g->swap_damage = (SwapDamageFn)p_eglGetProcAddress("eglSwapBuffersWithDamageKHR");
+  }
+  else if (has_ext(ext, "EGL_EXT_swap_buffers_with_damage")) {
+    g->swap_damage = (SwapDamageFn)p_eglGetProcAddress("eglSwapBuffersWithDamageEXT");
+  }
+  if (debug_on()) {
+    fprintf(stderr, "bui gpu (gl): damage swap %s\n", g->swap_damage ? "on" : "unavailable");
+  }
   return 1;
 }
 
@@ -2642,27 +2658,70 @@ void bui_gpu_clear(BuiGpu *g, int x, int y, int w, int h)
   GL(glDisable)(GL_SCISSOR_TEST);
 }
 
+/* Swaps, telling the compositor which rectangles changed (EGL_KHR_swap_buffers_with_damage). The
+ * rectangles are a hint, so the whole back buffer was drawn before. They are x, y, w, h from the
+ * bottom left: the frame's rows (top first) sit from the surface's top edge `top`. A whole frame,
+ * too many rectangles, none, or a resized surface (where the spec leaves the rects undefined)
+ * swaps everything. */
+static void swap(BuiGpu *g, int top, int whole)
+{
+  EGLint rects[sizeof(g->dmg) / sizeof(g->dmg[0])][4];
+  EGLint n = 0;
+  for (int i = 0; g->swap_damage && !whole && !g->dmg_full && i < g->n_dmg; i++) {
+    const int *d = g->dmg[i];
+    const int x0 = d[0] < 0 ? 0 : d[0], y0 = d[1] < 0 ? 0 : d[1];
+    const int x1 = d[2] > g->tw ? g->tw : d[2], y1 = d[3] > g->th ? g->th : d[3];
+    if (x1 > x0 && y1 > y0) {
+      rects[n][0] = x0;
+      rects[n][1] = top - y1;
+      rects[n][2] = x1 - x0;
+      rects[n][3] = y1 - y0;
+      n++;
+    }
+  }
+  if (n > 0) {
+    static int told = 0;
+    if (!told && debug_on() && rects[0][2] * rects[0][3] < g->tw * g->th) {
+      told = 1;
+      fprintf(stderr, "bui gpu (gl): first partial swap, %d rects, first %d,%d %dx%d\n", (int)n,
+              (int)rects[0][0], (int)rects[0][1], (int)rects[0][2], (int)rects[0][3]);
+    }
+    if (!g->swap_damage(g->edpy, g->esurf, &rects[0][0], n) && debug_on()) {
+      fprintf(stderr, "bui gpu (gl): damage swap failed: 0x%x\n", (unsigned)p_eglGetError());
+    }
+  }
+  else {
+    p_eglSwapBuffers(g->edpy, g->esurf);
+  }
+}
+
 int bui_gpu_present(BuiGpu *g, int full)
 {
-  (void)full;
   flush(g);
   if (!g->target || !make_current(g)) {
     g->n_dmg = g->dmg_full = 0;
     return g->target != 0;
   }
   if (g->onscreen) {
-    /* the back buffer is undefined after a swap (no damage-rect present):
-     * blit the whole frame, flipped (it is stored top row first), anchored
-     * to the window's top edge */
-    EGLint dh = 0;
-    p_eglQuerySurface(g->edpy, g->esurf, EGL_HEIGHT, &dh);
+    /* the back buffer is undefined after a swap: blit the whole frame, flipped (it is stored top
+     * row first), anchored to the window's top edge */
+    /* Wayland: the size given to wl_egl_window_resize (the query reports the old size until the
+     * swap after a resize); X11: the window's, as the server has it */
+    EGLint dw = g->wl_w, dh = g->wl_h;
+    if (!g->wl_win) {
+      p_eglQuerySurface(g->edpy, g->esurf, EGL_WIDTH, &dw);
+      p_eglQuerySurface(g->edpy, g->esurf, EGL_HEIGHT, &dh);
+    }
     const int top = dh > 0 ? (int)dh : g->th;
     GL(glBindFramebuffer)(GL_READ_FRAMEBUFFER, g->fbo);
     GL(glBindFramebuffer)(GL_DRAW_FRAMEBUFFER, 0);
     GL(glBlitFramebuffer)(0, 0, g->tw, g->th, 0, top, g->tw, top - g->th, GL_COLOR_BUFFER_BIT,
                           GL_NEAREST);
     GL(glBindFramebuffer)(GL_FRAMEBUFFER, g->fbo);
-    p_eglSwapBuffers(g->edpy, g->esurf);
+    const int resized = dw != g->sw || dh != g->sh;
+    g->sw = dw;
+    g->sh = dh;
+    swap(g, top, full || resized);
   }
   else {
     GL(glFlush)();

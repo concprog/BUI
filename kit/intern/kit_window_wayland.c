@@ -320,8 +320,20 @@ static void frame_done(void *data, struct wl_callback *cb, uint32_t time)
 
 static struct wl_callback_listener frame_listener = {.done = frame_done};
 
+/* Before a commit: the buffer scale, and the frame callback that paces the next frame. An
+ * uncapped frame (a frame request without vsync, as on X11) asks for none, so the next one
+ * renders at once. */
+static void commit_prepare(BKWindow *win, int paced)
+{
+  if (paced) {
+    win->frame_cb = wl_surface_frame(win->surface);
+    wl_callback_add_listener(win->frame_cb, &frame_listener, win);
+  }
+  wl_surface_set_buffer_scale(win->surface, win->bscale);
+}
+
 /* Copies what changed into a free buffer and commits it; false: no buffer was free. */
-static void present(BKWindow *win, Buf *b, int all)
+static void present(BKWindow *win, Buf *b, int all, int paced)
 {
   const int w = BUI_raster_width(win->raster), h = BUI_raster_height(win->raster);
   const uint32_t *px = BUI_raster_pixels(win->raster);
@@ -361,9 +373,7 @@ static void present(BKWindow *win, Buf *b, int all)
 #  endif
   b->valid = true;
   b->busy = true;
-  win->frame_cb = wl_surface_frame(win->surface);
-  wl_callback_add_listener(win->frame_cb, &frame_listener, win);
-  wl_surface_set_buffer_scale(win->surface, win->bscale);
+  commit_prepare(win, paced);
   wl_surface_attach(win->surface, b->buffer, 0, 0);
   wl_surface_commit(win->surface);
 }
@@ -381,11 +391,9 @@ static void gpu_attach(BKWindow *win)
 
 /* A GPU frame: eglSwapBuffers attaches and commits it, so the frame callback and the buffer scale
  * are asked for first, to go in the same commit. */
-static void present_gpu(BKWindow *win, int all)
+static void present_gpu(BKWindow *win, int all, int paced)
 {
-  win->frame_cb = wl_surface_frame(win->surface);
-  wl_callback_add_listener(win->frame_cb, &frame_listener, win);
-  wl_surface_set_buffer_scale(win->surface, win->bscale);
+  commit_prepare(win, paced);
   BUI_raster_present_native(win->raster, NULL, all);
   if (!BUI_raster_is_gpu(win->raster)) {
     win->full = 1; /* device lost: the CPU raster redraws everything */
@@ -393,7 +401,8 @@ static void present_gpu(BKWindow *win, int all)
   }
 }
 
-static void do_render(BKWindow *win)
+/* Returns 1 when a frame was committed. */
+static int do_render(BKWindow *win, int paced)
 {
   const int w = BK_MAX(1, win->w), h = BK_MAX(1, win->h);
   if (BUI_raster_gpu_poll(win->raster)) {
@@ -402,25 +411,28 @@ static void do_render(BKWindow *win)
   const int gpu = BUI_raster_is_gpu(win->raster);
   Buf *b = gpu ? NULL : buf_acquire(win, w, h);
   if (!gpu && !b) {
-    return; /* both buffers are with the compositor: the release asks for the render again */
+    return 0; /* both buffers are with the compositor: the release asks for the render again */
   }
   const int resized = BUI_raster_width(win->raster) != w || BUI_raster_height(win->raster) != h;
   const int full = win->full || resized;
   win->full = 0;
   const int regions = BK_render(win->ctx, win->raster, w, h, full);
-  if (regions || full) {
-    if (gpu) {
-      present_gpu(win, full);
-    }
-    else {
-      present(win, b, full);
-    }
-    win->frames++;
+  if (!regions && !full) {
+    return 0;
   }
+  if (gpu) {
+    present_gpu(win, full, paced);
+  }
+  else {
+    present(win, b, full, paced);
+  }
+  win->frames++;
+  return 1;
 }
 
 static void render_window(BKWindow *win)
 {
+  const int uncapped = win->want_frame && !win->frame_vsync;
   if (win->want_frame && win->cb.on_frame) {
     win->want_frame = 0;
     win->frame_start = now_ms();
@@ -430,7 +442,7 @@ static void render_window(BKWindow *win)
     }
   }
   win->render_pending = 0;
-  do_render(win);
+  const int committed = do_render(win, !uncapped);
   if (win->want_frame) {
     bk_frame_ms = now_ms() - win->frame_start;
     bk_frame_budget_ms = win->frame_vsync ? refresh_ms() : 0.0;
@@ -442,7 +454,7 @@ static void render_window(BKWindow *win)
   if (BK_animating(win->ctx)) {
     win->render_pending = 1; /* paced by the frame callback */
   }
-  if (win->render_pending && !win->frame_cb) {
+  if (win->render_pending && !win->frame_cb && !committed) {
     win->hold_until = now_ms() + refresh_ms(); /* nothing was presented: do not spin */
   }
 }

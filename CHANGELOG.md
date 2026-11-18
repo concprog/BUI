@@ -92,6 +92,12 @@ All notable changes to **blenderui** (BUI). The format follows
   `gpu_gl.c` are gone (`libEGL`, `libOpenGL` and `libwayland-egl` are loaded instead). Breaking for C and D callers
   of `BUI_raster_gpu_attach`: `BuiGpuX11Window` is now `BuiGpuLinuxWindow`, with a `platform` (`BUI_GPU_X11`,
   `BUI_GPU_WAYLAND`) and a `surface` for Wayland.
+- **Linux GPU renderer: only the damage reaches the compositor.** The swap sends the frame's damaged rectangles
+  with `eglSwapBuffersWithDamageKHR` (or the EXT version), as the D3D11 renderer sends dirty rectangles; whole
+  frames, too many rectangles and the first swap after a resize swap everything. The whole frame is still blitted
+  first, so the back buffer stays valid where a compositor ignores the hint.
+- **Wayland: uncapped frames.** A frame request without vsync commits without waiting for the frame callback,
+  as on X11 (the GPU renderer at 3000 cells: 33 fps paced, 92 uncapped).
 - **Breaking default: videos play with sound.** A `<video>` / `BK_video` autoplays with its audio track now (it
   was silent): set `muted` (HTML attribute, `BK_video_set_muted`, `Video(muted=True)`, `Video::set_muted`) for a
   silent one. Closing a video no longer waits for its audio device (the stream is released on a thread of its

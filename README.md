@@ -1199,7 +1199,8 @@ BUI has two renderers, and they draw **the same pixels**.
   each primitive is one 128-byte instance of a single uber-shader, so a frame
   is a few instanced draw calls. Text and images are cached in atlases.
   Frames render into a persistent target, so only damaged regions redraw; on
-  Windows, a flip-model swap chain presents dirty rectangles. On Linux,
+  Windows, a flip-model swap chain presents dirty rectangles, and on Linux the
+  EGL swap passes them on (`eglSwapBuffersWithDamageKHR`). On Linux,
   `libEGL`, `libOpenGL` and `libwayland-egl` are loaded at run time (EGL for
   X11 and Wayland windows and for offscreen), so no GL headers are needed, and
   BUI falls back to the CPU where OpenGL is missing. On both platforms the device starts on a worker
