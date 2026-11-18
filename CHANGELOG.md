@@ -84,6 +84,11 @@ All notable changes to **blenderui** (BUI). The format follows
   - Examples: `examples/animation/` (a hero intro, a card grid, magnetic buttons, a marquee with drag and an equalizer).
 
 ### Changed
+- **Kit: a layout change redraws only what moved.** A layout used to redraw the whole window. Now each widget's
+  place on screen is compared with where the last frame drew it, and only widgets that moved, resized, appeared or
+  disappeared are damaged, at both places (only a window resize still redraws everything). One label that grows in
+  a 1280×1440 column: 0.14 ms instead of 4.5 ms. `BUI_CHECK_DAMAGE=1` draws each partial frame again in full and
+  reports missed pixels; `tests/damage_test.c` checks added, removed, hidden, collapsed and tab-switched widgets.
 - **Linux GPU renderer: EGL in place of GLX, and on Wayland too.** Windows get their OpenGL context through EGL on the
   host's own connection, as Blender's `GHOST_ContextEGL`: the X11 platform on the `Display` (the config made for the
   window's visual), or the Wayland platform on the `wl_display` with a `wl_egl_window` for the surface. The native
