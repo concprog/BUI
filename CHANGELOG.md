@@ -84,6 +84,11 @@ All notable changes to **blenderui** (BUI). The format follows
   - Examples: `examples/animation/` (a hero intro, a card grid, magnetic buttons, a marquee with drag and an equalizer).
 
 ### Changed
+- **Kit: a layout change redraws only what moved.** A layout used to redraw the whole window. Now each widget's
+  place on screen is compared with where the last frame drew it, and only widgets that moved, resized, appeared or
+  disappeared are damaged, at both places (only a window resize still redraws everything). One label that grows in
+  a 1280×1440 column: 0.14 ms instead of 4.5 ms. `BUI_CHECK_DAMAGE=1` draws each partial frame again in full and
+  reports missed pixels; `tests/damage_test.c` checks added, removed, hidden, collapsed and tab-switched widgets.
 - **Kit: a changed node measures again, not the whole tree.** The natural-size cache no longer restarts on every layout. A property write, a value change, an animation step or a child change marks the node and its ancestors stale; theme, scale and font changes still reset every node. A frame where one label changes does about 20% less work (3000 rows, measured by instruction count); a frame where every label changes is unchanged, because each label is measured once either way. No extra memory: `nat_gen` is the mark.
 - **Rust: layout styles by index, declarations in one allocation.** The layout tree held its shared taffy styles
   behind reference counts; they are entries of a table the tree owns, and a node holds an index (the table drops
