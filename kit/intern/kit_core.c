@@ -147,7 +147,22 @@ double bk_time(void)
 /** \name Nodes
  * \{ */
 
-static int g_gen = 1; /* layout generation for the natural-size cache */
+/* natural-size cache: a node's size is valid while its `nat_gen` is the epoch. Zero marks it stale
+ * (a node and its ancestors, see bk_stale). The epoch moves for inputs of every node: theme, scale,
+ * font. */
+static int g_epoch = 1;
+
+void bk_measure_reset(void)
+{
+  g_epoch++;
+}
+
+void bk_stale(BKNode *n)
+{
+  for (; n; n = n->parent) {
+    n->nat_gen = 0;
+  }
+}
 
 static const BKClass *const g_classes[] = {
     &bk_cls_column,   &bk_cls_row,       &bk_cls_split,       &bk_cls_grid,       &bk_cls_box,
@@ -409,7 +424,7 @@ void bk_invalidate(BKNode *n)
 
 void bk_relayout(BKNode *n)
 {
-  g_gen++;
+  bk_stale(n);
   BKContext *ctx = bk_ctx(n);
   if (ctx) {
     ctx->layout_dirty = true;
@@ -419,7 +434,7 @@ void bk_relayout(BKNode *n)
 
 void bk_natural(BKNode *n, int *r_w, int *r_h)
 {
-  if (n->nat_gen != g_gen) {
+  if (n->nat_gen != g_epoch) {
     int w = 4 * bk_unit(), h = bk_unit();
     if (n->cls->measure || BK_HTML(n)) {
       const float saved = bk_text_scale;
@@ -442,7 +457,7 @@ void bk_natural(BKNode *n, int *r_w, int *r_h)
     }
     n->nat_w = w;
     n->nat_h = h;
-    n->nat_gen = g_gen;
+    n->nat_gen = g_epoch;
   }
   *r_w = n->nat_w;
   *r_h = n->nat_h;
@@ -596,6 +611,7 @@ void bk_set_value_silent(BKNode *n, double v)
   v = bk_clamp_value(n, v);
   if (v != n->value) {
     n->value = v;
+    bk_stale(n); /* a number's width follows its text */
     bk_invalidate(n);
   }
 }
@@ -606,6 +622,7 @@ void bk_set_value(BKNode *n, double v)
   if (v != n->value) {
     bk_undo_record(n, 0);
     n->value = v;
+    bk_stale(n);
     bk_changed(n);
   }
 }
@@ -944,7 +961,7 @@ void bk_views_check(BKContext *ctx)
   }
 }
 
-int BK_set_num(BKNode *n, const char *key, double v)
+static int set_num(BKNode *n, const char *key, double v)
 {
   if (n->cls->set_num && n->cls->set_num(n, key, v)) {
     return 1;
@@ -1127,6 +1144,16 @@ int BK_set_num(BKNode *n, const char *key, double v)
   return 0;
 }
 
+/* Any property can change a measured size, so a write marks the node (and its ancestors) stale. */
+int BK_set_num(BKNode *n, const char *key, double v)
+{
+  const int done = set_num(n, key, v);
+  if (done) {
+    bk_stale(n);
+  }
+  return done;
+}
+
 double BK_get_num(BKNode *n, const char *key)
 {
   double cv;
@@ -1216,7 +1243,7 @@ static void edit_follow_text(BKNode *n)
   n->edit = fresh;
 }
 
-int BK_set_str(BKNode *n, const char *key, const char *v)
+static int set_str(BKNode *n, const char *key, const char *v)
 {
   if (n->cls->set_str && n->cls->set_str(n, key, v)) {
     return 1;
@@ -1299,6 +1326,16 @@ int BK_set_str(BKNode *n, const char *key, const char *v)
   return 0;
 }
 
+/* Any property can change a measured size, so a write marks the node (and its ancestors) stale. */
+int BK_set_str(BKNode *n, const char *key, const char *v)
+{
+  const int done = set_str(n, key, v);
+  if (done) {
+    bk_stale(n);
+  }
+  return done;
+}
+
 const char *BK_get_str(BKNode *n, const char *key)
 {
   if (n->cls->get_str) {
@@ -1379,7 +1416,7 @@ int BK_get_color(BKNode *n, const char *key, float r[4])
   return 0;
 }
 
-int BK_set_strs(BKNode *n, const char *key, const char *const *v, int count)
+static int set_strs(BKNode *n, const char *key, const char *const *v, int count)
 {
   if (n->cls->set_strs && n->cls->set_strs(n, key, v, count)) {
     return 1;
@@ -1420,6 +1457,16 @@ int BK_set_strs(BKNode *n, const char *key, const char *const *v, int count)
     return 1;
   }
   return 0;
+}
+
+/* Any property can change a measured size, so a write marks the node (and its ancestors) stale. */
+int BK_set_strs(BKNode *n, const char *key, const char *const *v, int count)
+{
+  const int done = set_strs(n, key, v, count);
+  if (done) {
+    bk_stale(n);
+  }
+  return done;
 }
 
 int BK_strs_count(BKNode *n, const char *key)
@@ -1558,6 +1605,7 @@ void bk_theme_mark_set(void)
 void bk_theme_changed(void)
 {
   bk_theme_gen++;
+  bk_measure_reset();
   for (BKContext *c = g_contexts; c; c = c->next_ctx) {
     c->layout_dirty = true; /* shadow widths size popups */
     c->full_dirty = true;
@@ -2012,7 +2060,6 @@ void bk_clipboard_set(BKContext *ctx, const char *s)
 
 static void layout(BKContext *ctx)
 {
-  g_gen++;
   const int w = ctx->win_w, h = ctx->win_h;
   int hw = 0, hh = 0;
   if (ctx->header) {
@@ -3791,6 +3838,7 @@ static void anim_step(BKContext *ctx)
     float fac = (float)((now - ctx->anim_start[i]) / (time > 0.0 ? time : ANIMATION_TIME));
     fac = BK_MIN(time > 0.0 ? BK_MAX(fac, 0.0f) : sqrtf(BK_MAX(fac, 0.0f)), 1.0f);
     n->anim = fac >= 1.0f ? target : ctx->anim_from[i] + (target - ctx->anim_from[i]) * fac;
+    bk_stale(n); /* its size follows `anim` */
     if (n->anim == target) {
       const int last = --ctx->nanim;
       ctx->anim[i] = ctx->anim[last];
@@ -3798,7 +3846,6 @@ static void anim_step(BKContext *ctx)
       ctx->anim_from[i] = ctx->anim_from[last];
     }
   }
-  g_gen++;
   ctx->layout_dirty = true;
 }
 
