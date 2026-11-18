@@ -329,6 +329,9 @@ pub(crate) enum Measure {
     /// Text of the box registered under `key` this frame (already
     /// whitespace-processed and transformed); `hash` identifies the text.
     Text { key: Key, hash: u64, size: f32, flags: i32, line: f32, nowrap: bool, brk: u8 },
+    /// One word (nothing to wrap): measured when built. Compared by size, not text, so a new
+    /// word of the same width keeps the cached layout of the leaf and of its ancestors.
+    Word { width: f32, line: f32 },
     /// A textarea with `field-sizing: content`: its height is asked of the kit at the width it gets;
     /// `hash` identifies the text.
     Area { key: Key, hash: u64 },
@@ -371,6 +374,9 @@ struct Recon {
     stamp: u32,
     /// Nodes for duplicate keys this frame: removed next frame.
     extra: Vec<NodeId>,
+    /// The root and viewport (bits) of the last computed layout: with nothing changed since,
+    /// the layouts in the tree are still current and taffy is not run.
+    laid: Option<(NodeId, (u32, u32))>,
 }
 
 /// Everything layout keeps across frames, owned by the window.
@@ -1890,14 +1896,18 @@ impl<'a> Builder<'a> {
 
     /// The measure context for the text of box `node`, registered under `key`.
     fn text_measure(&mut self, key: Key, node: usize, c: StyleId, nowrap: bool) -> Measure {
-        self.text_box.insert(key, node);
-        let hash = match &self.nodes[node].content {
-            Content::Text(t) => hash_parts(&[t.as_bytes()]),
-            _ => 0,
-        };
         let c = &self.styles[c];
-        Measure::Text { key, hash, size: c.font_size, flags: text::flags(c), line: c.line_px(), nowrap,
-                        brk: text::break_mode(c) }
+        let (size, flags, line, brk) = (c.font_size, text::flags(c), c.line_px(), text::break_mode(c));
+        let t = match &self.nodes[node].content {
+            Content::Text(t) => t.as_ref(),
+            _ => "",
+        };
+        if brk == 0 && !t.contains([' ', '\n']) {
+            return Measure::Word { width: self.text.width(t, size, flags).ceil(), line };
+        }
+        let hash = hash_parts(&[t.as_bytes()]);
+        self.text_box.insert(key, node);
+        Measure::Text { key, hash, size, flags, line, nowrap, brk }
     }
 
     /// The taffy node for box `i` (and its subtree). Marks it dirty when
@@ -2468,7 +2478,10 @@ pub(crate) fn layout(root: AnyElement, viewport: (f32, f32), state: &UiState, ca
     });
     let avail = Size { width: AvailableSpace::Definite(viewport.0),
                        height: AvailableSpace::Definite(viewport.1) };
+    let laid = Some((root_id, (viewport.0.to_bits(), viewport.1.to_bits())));
+    let stale = b.changed || std::mem::replace(&mut b.recon.laid, laid) != laid;
     let Builder { nodes, els, taffy, styles, text: tc, title, text_box, widgets, .. } = b;
+    if stale {
     taffy.compute(root_id, avail, |known, available, ctx| {
             match ctx {
                 Measure::Area { key, .. } => {
@@ -2478,17 +2491,13 @@ pub(crate) fn layout(root: AnyElement, viewport: (f32, f32), state: &UiState, ca
                     });
                     Size { width: known.width.unwrap_or(w), height: known.height.unwrap_or_else(|| widgets(*key, WidgetAsk::Height(w)).1) }
                 }
+                Measure::Word { width, line } => Size { width: known.width.unwrap_or(*width),
+                                                        height: known.height.unwrap_or(*line) },
                 Measure::Text { key, size, flags, line, nowrap, brk, .. } => {
                     let text = match text_box.get(key).map(|&k| &nodes[k].content) {
                         Some(Content::Text(t)) => t.as_ref(),
                         _ => "",
                     };
-                    if !text.contains([' ', '\n']) && *brk == 0 {
-                        // one word: no wrapping to do
-                        let w = tc.width(text, *size, *flags);
-                        return Size { width: known.width.unwrap_or(w.ceil()),
-                                      height: known.height.unwrap_or(*line) };
-                    }
                     let max_w = known.width.unwrap_or(match available.width {
                         AvailableSpace::Definite(w) => w,
                         AvailableSpace::MinContent => 0.0,
@@ -2500,6 +2509,7 @@ pub(crate) fn layout(root: AnyElement, viewport: (f32, f32), state: &UiState, ca
                 }
             }
         });
+    }
     drop(s);
     let _s = span(Phase::Place);
     let mut frame = Frame { nodes, els, title, by_key: Default::default() };
