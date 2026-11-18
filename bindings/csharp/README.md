@@ -8,7 +8,16 @@ Blender's widgets, layout and interaction rules from .NET, in three layers:
 | Components | `Bui` | `Node`, `Frame`, `Panel`, `Button`, `Label`, `Canvas`, `Context`, `Window`, `Raster`, `Kit`. |
 | Forms | `Bui.Forms` | A Windows Forms-style API: `Form`, `Button`, `Controls.Add`, `Location`, `Size`, `Dock`, `Click`, `Application.Run`. |
 
-Status: a first slice. Linux and macOS (GCC or Clang builds of the kit); Windows needs a MinGW build of the kit (MSVC has no exports yet).
+Status: a first slice. Linux, macOS and Windows (MSVC or MinGW); CI builds and tests all four runners (Linux x64, macOS arm64 and x64, Windows x64).
+
+## Install
+
+```sh
+dotnet add package BlenderUI          # components (and the kit for linux-x64, osx-arm64, osx-x64, win-x64)
+dotnet add package BlenderUI.Forms    # the Windows Forms-style API
+```
+
+The package carries the kit as `runtimes/<rid>/native/` (`bui_kit.dll`, `libbui_kit.dylib`, `libbui_kit.so`); .NET copies the one for the app's platform.
 
 ## Build
 
@@ -16,7 +25,7 @@ The binding loads `libbui_kit` (a shared build of the kit) by the name `bui_kit`
 
 ```sh
 cmake -S . -B build -DBUI_BUILD_CSHARP_BINDINGS=ON
-cmake --build build --target bui_kit_shared      # build/bindings/csharp/libbui_kit.so
+cmake --build build --config Release --target bui_kit_shared   # build/bindings/csharp/: libbui_kit.so, libbui_kit.dylib or bui_kit.dll
 cd bindings/csharp
 dotnet run --project tests/Bui.Tests              # headless suite
 dotnet run --project examples/Hello               # a window

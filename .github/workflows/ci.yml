@@ -153,6 +153,41 @@ jobs:
       - name: cargo build (Node.js addon, QuickJS runtime)
         run: cargo build -p blenderui-node -p blenderui-qjs
 
+  # bindings/csharp loads the kit as one shared library (bui_kit.dll, libbui_kit.dylib,
+  # libbui_kit.so): build it with CMake (MSVC on Windows), run the headless suite and
+  # build the examples and the benchmark.
+  csharp:
+    name: dotnet (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel, ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+      - name: X11 headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev
+      - name: Build the shared kit
+        shell: bash
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUI_BUILD_CSHARP_BINDINGS=ON \
+            -DBUI_BUILD_PYTHON_BINDINGS=OFF -DBUI_BUILD_IMGUI=OFF -DBUI_WARNINGS_AS_ERRORS=OFF
+          cmake --build build --config Release --parallel 4 --target bui_kit_shared
+      - name: Headless suite
+        working-directory: bindings/csharp
+        run: dotnet run --project tests/Bui.Tests
+      - name: Examples and benchmark build
+        working-directory: bindings/csharp
+        shell: bash
+        run: for p in examples/Hello examples/Widgets bench/Cells; do dotnet build -c Release "$p" || exit 1; done
+
   # bindings/d builds the C kit through its own CMake pre-build script (which finds
   # Visual Studio's CMake on Windows), then runs the integration suite as a plain
   # executable. The suite is headless, so no display server is needed. LDC is the

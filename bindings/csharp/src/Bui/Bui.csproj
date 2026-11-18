@@ -8,13 +8,19 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- the shared kit beside the assembly; .NET loads it by the name "bui_kit" -->
+    <!-- the shared kit of this machine beside the assembly; .NET loads it by the name "bui_kit" -->
     <None Include="$(BuiNativeDir)/libbui_kit.so" Condition="Exists('$(BuiNativeDir)/libbui_kit.so')"
-          CopyToOutputDirectory="PreserveNewest" Link="libbui_kit.so" />
+          CopyToOutputDirectory="PreserveNewest" Link="libbui_kit.so" Pack="false" />
     <None Include="$(BuiNativeDir)/libbui_kit.dylib" Condition="Exists('$(BuiNativeDir)/libbui_kit.dylib')"
-          CopyToOutputDirectory="PreserveNewest" Link="libbui_kit.dylib" />
-    <None Include="$(BuiNativeDir)/libbui_kit.dll" Condition="Exists('$(BuiNativeDir)/libbui_kit.dll')"
-          CopyToOutputDirectory="PreserveNewest" Link="bui_kit.dll" />
+          CopyToOutputDirectory="PreserveNewest" Link="libbui_kit.dylib" Pack="false" />
+    <None Include="$(BuiNativeDir)/bui_kit.dll" Condition="Exists('$(BuiNativeDir)/bui_kit.dll')"
+          CopyToOutputDirectory="PreserveNewest" Link="bui_kit.dll" Pack="false" />
+  </ItemGroup>
+
+  <!-- The package: one shared kit per platform, BuiNatives/<rid>/<library> (CI collects them),
+       packed as runtimes/<rid>/native/, where NuGet takes native assets from -->
+  <ItemGroup Condition="'$(BuiNatives)' != ''">
+    <None Include="$(BuiNatives)/**/*" Pack="true" PackagePath="runtimes/%(RecursiveDir)native/%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

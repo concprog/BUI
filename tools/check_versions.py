@@ -71,6 +71,10 @@ def main() -> int:
     found["bindings/d/source/bui/kit.d (numbers)"] = ".".join(p.group(1) for p in dparts)
     found["bindings/d/source/bui/kit.d (string)"] = dstring.group(1)
 
+    # the NuGet packages (bindings/csharp/Directory.Build.props)
+    found["bindings/csharp/Directory.Build.props"] = re.search(
+        r"<Version>([^<]+)</Version>", read(ROOT / "bindings" / "csharp" / "Directory.Build.props")).group(1)
+
     # the published crates name their siblings with an exact version
     for crate in ("blenderui", "blenderui-macros", "blenderui-imgui", "blenderui-table", "blenderui-vlist", "blenderui-paint"):
         text = read(RUST / crate / "Cargo.toml")

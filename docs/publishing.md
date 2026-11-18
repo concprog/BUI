@@ -76,6 +76,25 @@ Remove the source tree from `sys.path` and keep `examples/` on it for
 
 No API tokens are stored anywhere.
 
+## NuGet (`BlenderUI`, `BlenderUI.Forms`)
+
+The C# binding loads the kit as one shared library. `release.yml` builds it once per platform
+(`nuget-native`: linux-x64 on Ubuntu 22.04, osx-arm64, osx-x64, win-x64 with MSVC), then the
+`nuget` job packs it as `runtimes/<rid>/native/` (the folder .NET takes native assets from) and
+pushes both packages with `--skip-duplicate`. On Windows the export list of `bui_kit.dll` is
+generated from the functions the binding imports (`bindings/csharp/CMakeLists.txt`).
+
+One-time setup:
+
+1. On nuget.org, open the user menu > **Trusted Publishing** and add a policy: repository owner
+   and name of this repository, workflow file `release.yml` (the file name only).
+2. In the GitHub repository, add the secret `NUGET_USER`: the nuget.org profile name (not the
+   e-mail address).
+
+The policy is bound to the repository's GitHub IDs at the first successful push. A policy of a
+private repository stays active for 7 days only until that first push. Each run trades the job's
+OIDC token for an API key that is valid for one hour.
+
 ## Releasing everything at once
 
 One command does the whole release:

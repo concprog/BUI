@@ -13,7 +13,9 @@
 # One-time setup (repository Settings > Secrets and variables > Actions):
 #   CARGO_REGISTRY_TOKEN   a crates.io API token (scopes: publish-new, publish-update)
 #   LUAROCKS_API_KEY       a luarocks.org API key (luarocks.org > Settings > API keys), for the `luarocks` job
-# npm and PyPI need no secret: both use trusted publishing (OIDC). On npmjs.com, each of
+#   NUGET_USER             the nuget.org profile name (not an e-mail) that owns BlenderUI, for the `nuget` job
+# npm, PyPI and NuGet need no token: all three use trusted publishing (OIDC). On nuget.org
+# (user menu > Trusted Publishing), a policy names this repository and release.yml. On npmjs.com, each of
 # @blender-ui/native, its platform packages (@blender-ui/native-<tag>, bindings/node/platform.js)
 # and @blender-ui/react lists this repository and the workflow file release.yml as its trusted
 # publisher. See docs/publishing.md.
@@ -280,9 +282,83 @@ jobs:
           fi
           luarocks upload "$rockspec" --api-key="$LUAROCKS_API_KEY" --skip-pack
 
+  nuget-native:
+    name: NuGet native (${{ matrix.rid }})
+    needs: versions
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-22.04, rid: linux-x64, lib: libbui_kit.so }
+          - { os: macos-15, rid: osx-arm64, lib: libbui_kit.dylib }
+          - { os: macos-15-intel, rid: osx-x64, lib: libbui_kit.dylib }
+          - { os: windows-latest, rid: win-x64, lib: bui_kit.dll }
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: X11 and Wayland headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libwayland-dev libxkbcommon-dev wayland-protocols pkg-config
+      - name: Build the shared kit
+        shell: bash
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUI_BUILD_CSHARP_BINDINGS=ON \
+            -DBUI_BUILD_PYTHON_BINDINGS=OFF -DBUI_BUILD_IMGUI=OFF -DBUI_WARNINGS_AS_ERRORS=OFF
+          cmake --build build --config Release --parallel 4 --target bui_kit_shared
+          mkdir -p natives/${{ matrix.rid }}
+          cp build/bindings/csharp/${{ matrix.lib }} natives/${{ matrix.rid }}/
+      - name: Strip (Linux, macOS)
+        if: runner.os != 'Windows'
+        run: strip ${{ runner.os == 'macOS' && '-x' || '--strip-unneeded' }} natives/${{ matrix.rid }}/${{ matrix.lib }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-native-${{ matrix.rid }}
+          path: natives
+          if-no-files-found: error
+
+  nuget:
+    name: NuGet
+    needs: [versions, ci, nuget-native]
+    if: ${{ !cancelled() && needs.versions.result == 'success' && needs.nuget-native.result == 'success' && (needs.ci.result == 'success' || needs.ci.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # the OIDC token NuGet/login trades for a one-hour API key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nuget-native-*
+          path: natives
+          merge-multiple: true
+      - name: Pack (one shared kit per platform under runtimes/<rid>/native/)
+        working-directory: bindings/csharp
+        run: |
+          dotnet pack src/Bui -c Release -p:BuiNatives="$GITHUB_WORKSPACE/natives" -o "$GITHUB_WORKSPACE/nupkg"
+          dotnet pack src/Bui.Forms -c Release -o "$GITHUB_WORKSPACE/nupkg"
+          unzip -l "$GITHUB_WORKSPACE"/nupkg/BlenderUI.*.nupkg | grep runtimes/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nupkg
+          path: nupkg
+      - name: NuGet login (OIDC, a one-hour API key)
+        if: env.PUBLISH == 'true'
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+      - name: Push (a version already on nuget.org is skipped)
+        if: env.PUBLISH == 'true'
+        run: dotnet nuget push "nupkg/*.nupkg" --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
   github-release:
     name: GitHub Release
-    needs: [crates, npm, luarocks]
+    needs: [crates, npm, luarocks, nuget]
     if: github.event_name == 'push' || github.event.inputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:

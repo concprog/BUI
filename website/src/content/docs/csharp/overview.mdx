@@ -10,7 +10,7 @@ sources: ["bindings/csharp/README.md", "bindings/csharp/CMakeLists.txt", "bindin
 
 **`bindings/csharp` gives .NET programs Blender's widget drawing, layout and interaction rules.** It has three layers: every `BK_*` function of `BUI_kit.h`, generated with no marshalling stubs; C# components (`Node`, `Button`, `Context`, `Window`); and a Windows Forms-style API on top.
 
-It is a first slice: Linux and macOS, with a MinGW build of the kit on Windows.
+It is a first slice. It runs on Linux, macOS and Windows, and installs from NuGet: `dotnet add package BlenderUI` (and `BlenderUI.Forms`), with the native kit for Linux x64, macOS arm64 and x64, and Windows x64 in the package.
 
 ## Build it
 
