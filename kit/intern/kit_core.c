@@ -1193,11 +1193,17 @@ static int set_num(BKNode *n, const char *key, double v)
   return 0;
 }
 
+/* The notifying setter marks the node stale before its callback runs, which may free the node. */
+static bool notifies(const char *key)
+{
+  return strcmp(key, "set_value") == 0;
+}
+
 /* Any property can change a measured size, so a write marks the node (and its ancestors) stale. */
 int BK_set_num(BKNode *n, const char *key, double v)
 {
   const int done = set_num(n, key, v);
-  if (done) {
+  if (done && !notifies(key)) {
     bk_stale(n);
   }
   return done;
@@ -1317,6 +1323,7 @@ static int set_str(BKNode *n, const char *key, const char *v)
       bk_undo_record(n, 1);
       bk_set_text(&n->text, v);
       edit_follow_text(n);
+      bk_stale(n);
       bk_changed(n);
     }
     return 1;
@@ -1379,7 +1386,7 @@ static int set_str(BKNode *n, const char *key, const char *v)
 int BK_set_str(BKNode *n, const char *key, const char *v)
 {
   const int done = set_str(n, key, v);
-  if (done) {
+  if (done && !notifies(key)) {
     bk_stale(n);
   }
   return done;
