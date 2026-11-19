@@ -160,7 +160,6 @@ pub fn set_tailwind(on: bool) {
 /// the data isn't a font.
 pub fn add_font(family: &str, bold: bool, italic: bool, data: &[u8]) -> bool {
     let fam = std::ffi::CString::new(family).unwrap_or_default();
-    text::register_family(family);
     let flags = if bold { 1 } else { 0 } | if italic { 2 } else { 0 };
     let len = data.len().min(i32::MAX as usize) as i32;
     // SAFETY: the kit copies the bytes; both pointers are valid for the call.

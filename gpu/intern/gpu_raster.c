@@ -6,6 +6,12 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#  include <fcntl.h> /* font files are mapped (file_map) */
+#  include <sys/mman.h>
+#  include <sys/stat.h>
+#  include <unistd.h>
+#endif
 
 #define TILE_W 64
 #define TILE_H 32
@@ -2680,8 +2686,10 @@ void BUI_raster_set_font(BuiRaster *r, const char *family, int flags)
 #  define TEXT_GDI 0
 #endif
 
+#define MAX_FALLBACKS 8
+
 typedef struct FontSlot {
-  char family[64];
+  char family[256]; /* a family, or a CSS list "A,B,C" (the first found draws) */
   int px;
   int flags;
   int ascent;
@@ -2695,12 +2703,25 @@ typedef struct FontSlot {
   float embolden;  /* synthetic bold: extra pixels per glyph */
   void *ft_size;   /* FreeType: this slot's FT_Size */
   float opsz;      /* FreeType: optical size (Blender: the text size) */
+  int fb[MAX_FALLBACKS]; /* the faces of the rest of the list, for glyphs the face lacks */
+  int fb_n;
 #endif
 } FontSlot;
 
-#define MAX_FONTS 48
+/* A slot is a (family, size, style); each fallback face a run draws with takes
+ * one too, so text in several scripts at several sizes needs many. 240 keeps a
+ * slot in a byte (TextRun.gslot) and in the glyph cache's key (slot + 1 in its
+ * top 8 bits). */
+#define MAX_FONTS 240
+/* Slots kept free for the fallback faces of the run about to be built (its own font list's
+ * MAX_FALLBACKS, then the system's per script): a lookup that may empty the table does when
+ * fewer are left, as a run's fallbacks can't (the run holds its slots). */
+#define RUN_ROOM 16
 static FontSlot g_fonts[MAX_FONTS];
 static int g_font_count = 0;
+/* A run was built while the table was full (its fallback glyphs missing): the
+ * next lookup that may empty the table does, once, and the runs are built again. */
+static int g_fonts_short = 0;
 
 typedef struct TextRun {
   uint64_t hash;
@@ -2716,7 +2737,15 @@ typedef struct TextRun {
   int ng; /* -1: not built yet */
   uint16_t *gid;
   float *gx;
+  /* each glyph's font slot (a fallback's for a character `font` lacks; NULL: all `font`) */
+  uint8_t *gslot;
 } TextRun;
+
+/* The font slot glyph `i` of a run is drawn with. */
+static inline int glyph_slot(const TextRun *e, int i)
+{
+  return e->gslot ? e->gslot[i] : e->font;
+}
 
 #define RUN_CAP 8192 /* power of two */
 #define RUN_MAX_FILL 6000
@@ -2742,6 +2771,7 @@ static void runs_flush(void)
     free(g_runs[i].mask);
     free(g_runs[i].gid);
     free(g_runs[i].gx);
+    free(g_runs[i].gslot);
   }
   memset(g_runs, 0, sizeof(TextRun) * RUN_CAP);
   g_run_count = 0;
@@ -2758,7 +2788,10 @@ static void fonts_flush(void)
   runs_flush(); /* runs reference font slots */
 }
 
-static int font_get(const char *family, int flags, float size)
+/* The slot of `family` at `size` with `flags`, opened when new. `flush`: a full
+ * table is emptied first (never while a run is being built: its slots would
+ * go); without, a full table gives -1. */
+static int font_open(const char *family, int flags, float size, int flush)
 {
   if (!family || !family[0] || strcmp(family, "TkDefaultFont") == 0) {
     family = "";
@@ -2770,6 +2803,10 @@ static int font_get(const char *family, int flags, float size)
   if (px > 512) {
     px = 512;
   }
+  if (flush && (g_fonts_short || g_font_count > MAX_FONTS - RUN_ROOM)) {
+    g_fonts_short = 0;
+    fonts_flush(); /* the runs built short are built again, with room for their faces */
+  }
   for (int i = 0; i < g_font_count; i++) {
     if (g_fonts[i].px == px && g_fonts[i].flags == flags &&
         strcmp(g_fonts[i].family, family) == 0)
@@ -2778,6 +2815,9 @@ static int font_get(const char *family, int flags, float size)
     }
   }
   if (g_font_count == MAX_FONTS) {
+    if (!flush) {
+      return -1;
+    }
     fonts_flush();
   }
   FontSlot *s = &g_fonts[g_font_count];
@@ -2789,6 +2829,11 @@ static int font_get(const char *family, int flags, float size)
     return -1;
   }
   return g_font_count++;
+}
+
+static int font_get(const char *family, int flags, float size)
+{
+  return font_open(family, flags, size, 1);
 }
 
 static uint64_t run_hash(int font, const char *s, int len)
@@ -2997,8 +3042,11 @@ static int gpu_text_glyphs(BuiRaster *r, TextRun *e, float x, float y, const flo
   const FontSlot *fs = &g_fonts[e->font];
   const float ox = floorf(x + 0.5f), base = floorf(y + 0.5f);
   const int slug = slug_for((float)fs->px, shear) && bui_gpu_slug_on(r->gpu);
-  const int passes = embolden > 0.0f ? 1 + (int)(embolden + 0.5f) : 1; /* synthetic bold */
   for (int i = 0; i < e->ng; i++) {
+    /* each glyph's own face: a fallback's for a character the run's lacks */
+    glyph_draw_info(e, i, &face, &scale, &embolden, &shear);
+    const int passes = embolden > 0.0f ? 1 + (int)(embolden + 0.5f) : 1; /* synthetic bold */
+    const FontSlot *gs = &g_fonts[glyph_slot(e, i)];
     const float pen = ox + e->gx[i];
     if (slug) {
       float bbox[4], band[4];
@@ -3036,7 +3084,7 @@ static int gpu_text_glyphs(BuiRaster *r, TextRun *e, float x, float y, const flo
       /* a FreeType bitmap is emboldened already (glyph_get): its passes are not drawn twice */
       int atlas_passes = passes;
 #if TEXT_FT
-      if (g_faces[fs->face].ft && fs->ft_size) {
+      if (g_faces[gs->face].ft && gs->ft_size) {
         atlas_passes = 1;
       }
 #endif
@@ -3115,15 +3163,64 @@ static HDC text_dc(void)
   return g_dc;
 }
 
+static int CALLBACK gdi_family_found(const LOGFONTW *lf, const TEXTMETRICW *tm, DWORD type, LPARAM found)
+{
+  (void)lf, (void)tm, (void)type;
+  *(int *)found = 1;
+  return 0;
+}
+
+/* The first family of a CSS list "A, 'B', serif" that GDI has (generic names
+ * map to Windows' fonts): CreateFontW takes one name and silently substitutes
+ * a default for one it lacks, so the list is resolved here, once per slot. */
+static void gdi_pick_family(const char *list, wchar_t out[LF_FACESIZE])
+{
+  static const struct {
+    const char *css;
+    const wchar_t *gdi;
+  } generic[] = {{"sans-serif", L"Segoe UI"},  {"system-ui", L"Segoe UI"},
+                 {"ui-sans-serif", L"Segoe UI"}, {"monospace", L"Consolas"},
+                 {"ui-monospace", L"Consolas"},  {"serif", L"Times New Roman"},
+                 {"ui-serif", L"Times New Roman"}};
+  for (const char *p = list; *p;) {
+    const char *end = strchr(p, ',');
+    const char *next = end ? end + 1 : p + strlen(p);
+    if (!end) {
+      end = next;
+    }
+    while (p < end && (*p == ' ' || *p == '"' || *p == '\'')) {
+      p++;
+    }
+    while (end > p && (end[-1] == ' ' || end[-1] == '"' || end[-1] == '\'')) {
+      end--;
+    }
+    const int n = (int)(end - p);
+    for (size_t g = 0; n > 0 && g < sizeof(generic) / sizeof(generic[0]); g++) {
+      if ((int)strlen(generic[g].css) == n && _strnicmp(p, generic[g].css, n) == 0) {
+        wcscpy(out, generic[g].gdi);
+        return;
+      }
+    }
+    LOGFONTW lf = {.lfCharSet = DEFAULT_CHARSET};
+    const int w = n > 0 ? MultiByteToWideChar(CP_UTF8, 0, p, n, lf.lfFaceName, LF_FACESIZE - 1) : 0;
+    int found = 0;
+    if (w > 0) {
+      lf.lfFaceName[w] = 0;
+      EnumFontFamiliesExW(text_dc(), &lf, (FONTENUMPROCW)gdi_family_found, (LPARAM)&found, 0);
+    }
+    if (found) {
+      wcscpy(out, lf.lfFaceName);
+      return;
+    }
+    p = next;
+  }
+  wcscpy(out, L"Segoe UI");
+}
+
 static int be_font_open(FontSlot *s, const char *family, int flags, int px)
 {
-  if (!family[0]) {
-    family = "Segoe UI";
-  }
-  wchar_t wfam[64];
-  if (MultiByteToWideChar(CP_UTF8, 0, family, -1, wfam, 64) == 0) {
-    wcscpy(wfam, L"Segoe UI");
-  }
+  wchar_t wfam[LF_FACESIZE];
+  gdi_pick_family(family, wfam);
   HFONT font = CreateFontW(-px, 0, 0, 0, (flags & BUI_FONT_BOLD) ? FW_BOLD : FW_NORMAL,
                            (flags & BUI_FONT_ITALIC) ? TRUE : FALSE,
                            (flags & BUI_FONT_UNDERLINE) ? TRUE : FALSE, FALSE, DEFAULT_CHARSET,
@@ -3304,6 +3401,8 @@ int BUI_text_add_font(const char *family, int flags, const void *data, int len)
 #  endif
 #  include <stdio.h>
 
+#  include "gpu_fonts.h"
+
 /* FreeType (BUI_TEXT_FT, the default): glyphs are loaded, hinted and
  * rasterized the way Blender's BLF does (blenfont/intern/blf_glyph.cc):
  * light hinting, the variable Inter at the text's optical size, gamma 1.43.
@@ -3322,8 +3421,9 @@ static FT_Library g_ft = NULL;
 #  endif
 
 typedef struct Face {
-  char key[96]; /* file path, or "mem:<family>" */
+  char key[GPU_FONT_PATH + 16]; /* file path ("path#n": face n of a collection), or "mem:<family>" */
   unsigned char *data;
+  long len; /* bytes of `data` (shared by the faces of one collection) */
   stbtt_fontinfo info;
   int ascent, descent, line_gap; /* font units */
 #  if TEXT_FT
@@ -3335,7 +3435,7 @@ typedef struct Face {
 #  endif
 } Face;
 
-#  define MAX_FACES 32
+#  define MAX_FACES 64
 static Face g_faces[MAX_FACES];
 static int g_face_count = 0;
 
@@ -3377,7 +3477,7 @@ static int ft_axis(const FT_MM_Var *mm, FT_ULong tag)
   return -1;
 }
 
-static void ft_face_open(Face *f, const unsigned char *data, long len)
+static void ft_face_open(Face *f, const unsigned char *data, long len, int index)
 {
   f->ft = NULL;
   f->mm = NULL;
@@ -3388,7 +3488,7 @@ static void ft_face_open(Face *f, const unsigned char *data, long len)
     g_ft = NULL;
     return;
   }
-  if (FT_New_Memory_Face(g_ft, data, (FT_Long)len, 0, &f->ft) != 0) {
+  if (FT_New_Memory_Face(g_ft, data, (FT_Long)len, index, &f->ft) != 0) {
     f->ft = NULL;
     return;
   }
@@ -3433,14 +3533,14 @@ static FT_Face ft_use(const FontSlot *s)
 }
 #  endif
 
-static int face_init(Face *f, unsigned char *data, long len)
+static int face_init(Face *f, unsigned char *data, long len, int index)
 {
-  const int off = stbtt_GetFontOffsetForIndex(data, 0);
+  const int off = stbtt_GetFontOffsetForIndex(data, index);
   if (off < 0 || !stbtt_InitFont(&f->info, data, off)) {
     return 0;
   }
 #  if TEXT_FT
-  ft_face_open(f, data, len);
+  ft_face_open(f, data, len, index);
 #  else
   (void)len;
 #  endif
@@ -3468,38 +3568,116 @@ static int face_init(Face *f, unsigned char *data, long len)
   return 1;
 }
 
-static int face_load_file(const char *path)
+/* Whether face `face` is a bold one (its OS/2 weight is 600 or more): bold
+ * text drawn with it needs no synthetic bold. */
+static int face_bold(int face)
 {
+  if (face < 0 || face >= g_face_count) {
+    return 0;
+  }
+  const stbtt_fontinfo *info = &g_faces[face].info;
+  const stbtt_uint32 os2 = stbtt__find_table(info->data, (stbtt_uint32)info->fontstart, "OS/2");
+  return os2 && ttUSHORT(info->data + os2 + 4) >= 600;
+}
+
+/* The bytes of the file at `path`, mapped read-only: a font file is used for
+ * as long as the process runs (faces are never freed: glyph caches name
+ * them), and a mapping costs only the pages read, which the system can drop
+ * and read again (fallback CJK fonts are 10 to 20 MB, of which a page of
+ * lyrics reads a few hundred KB). NULL when it can't be read. */
+static unsigned char *file_map(const char *path, long *r_len)
+{
+  *r_len = 0;
+#  ifdef _WIN32
+  HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, NULL);
+  if (file == INVALID_HANDLE_VALUE) {
+    return NULL;
+  }
+  LARGE_INTEGER size;
+  HANDLE map = GetFileSizeEx(file, &size) && size.QuadPart > 0 && size.QuadPart < 0x7fffffff ?
+                   CreateFileMappingA(file, NULL, PAGE_READONLY, 0, 0, NULL) :
+                   NULL;
+  CloseHandle(file); /* the mapping keeps the file open */
+  void *data = map ? MapViewOfFile(map, FILE_MAP_READ, 0, 0, 0) : NULL;
+  if (map) {
+    CloseHandle(map); /* the view keeps the mapping */
+  }
+  *r_len = data ? (long)size.QuadPart : 0;
+  return (unsigned char *)data;
+#  else
+  const int fd = open(path, O_RDONLY);
+  if (fd < 0) {
+    return NULL;
+  }
+  struct stat st;
+  void *data = fstat(fd, &st) == 0 && st.st_size > 0 && st.st_size < 0x7fffffff ?
+                   mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0) :
+                   MAP_FAILED;
+  close(fd); /* the mapping keeps the file */
+  if (data == MAP_FAILED) {
+    return NULL;
+  }
+  *r_len = (long)st.st_size;
+  return (unsigned char *)data;
+#  endif
+}
+
+static void file_unmap(unsigned char *data, long len)
+{
+#  ifdef _WIN32
+  (void)len;
+  UnmapViewOfFile(data);
+#  else
+  munmap(data, (size_t)len);
+#  endif
+}
+
+/* Face `index` of the font file at `path` (0 for a single font), loaded once.
+ * Faces of one collection share the file's bytes (faces are never freed). */
+static int face_load(const char *path, int index)
+{
+  char key[sizeof(g_faces[0].key)];
+  if (index > 0) {
+    snprintf(key, sizeof(key), "%s#%d", path, index);
+  }
+  else {
+    snprintf(key, sizeof(key), "%s", path);
+  }
+  const size_t plen = strlen(path);
+  const Face *same_file = NULL;
   for (int i = 0; i < g_face_count; i++) {
-    if (strcmp(g_faces[i].key, path) == 0) {
+    if (strcmp(g_faces[i].key, key) == 0) {
       return i;
     }
+    if (strncmp(g_faces[i].key, path, plen) == 0 && (!g_faces[i].key[plen] || g_faces[i].key[plen] == '#')) {
+      same_file = &g_faces[i];
+    }
   }
-  if (g_face_count == MAX_FACES || strlen(path) >= sizeof(g_faces[0].key)) {
+  if (g_face_count == MAX_FACES || plen + 12 >= sizeof(g_faces[0].key)) {
     return -1;
   }
-  FILE *fp = fopen(path, "rb");
-  if (!fp) {
+  unsigned char *data = same_file ? same_file->data : NULL;
+  long n = same_file ? same_file->len : 0;
+  if (!data && !(data = file_map(path, &n))) {
     return -1;
   }
-  fseek(fp, 0, SEEK_END);
-  const long n = ftell(fp);
-  fseek(fp, 0, SEEK_SET);
-  unsigned char *data = n > 0 ? (unsigned char *)malloc((size_t)n) : NULL;
-  if (!data || fread(data, 1, (size_t)n, fp) != (size_t)n) {
-    free(data);
-    fclose(fp);
-    return -1;
-  }
-  fclose(fp);
   Face *f = &g_faces[g_face_count];
   memset(f, 0, sizeof(*f));
-  if (!face_init(f, data, n)) {
-    free(data);
+  if (!face_init(f, data, n, index)) {
+    if (!same_file) {
+      file_unmap(data, n);
+    }
     return -1;
   }
-  strcpy(f->key, path);
+  f->len = n;
+  strcpy(f->key, key);
   return g_face_count++;
+}
+
+static int face_load_file(const char *path)
+{
+  return face_load(path, 0);
 }
 
 #  ifndef BUI_NO_INTER
@@ -3519,7 +3697,7 @@ static int face_inter(int bold)
       memset(f, 0, sizeof(*f));
       /* stb_truetype and FreeType only read the data */
       unsigned char *data = (unsigned char *)g_font_inter_variable;
-      if (face_init(f, data, (long)sizeof(g_font_inter_variable))) {
+      if (face_init(f, data, (long)sizeof(g_font_inter_variable), 0)) {
 #    if TEXT_FT
         f->wght = bold ? 700.0f : 400.0f;
 #    endif
@@ -3560,7 +3738,7 @@ int BUI_text_add_font(const char *family, int flags, const void *data, int len)
   memcpy(copy, data, (size_t)len);
   Face *f = &g_faces[g_face_count];
   memset(f, 0, sizeof(*f));
-  if (!face_init(f, copy, len)) {
+  if (!face_init(f, copy, len, 0)) {
     free(copy);
     return 0;
   }
@@ -3574,51 +3752,6 @@ int BUI_text_add_font(const char *family, int flags, const void *data, int len)
   return 1;
 }
 
-/* Font folders, most specific first. */
-static int font_dirs(char dirs[][260], int max)
-{
-  int n = 0;
-  const char *env = getenv("BUI_FONT_DIR");
-  if (env && env[0] && n < max) {
-    snprintf(dirs[n++], 260, "%s", env);
-  }
-#  ifdef _WIN32
-  const char *win = getenv("WINDIR");
-  snprintf(dirs[n++], 260, "%s/Fonts", win ? win : "C:/Windows");
-  const char *local = getenv("LOCALAPPDATA");
-  if (local && n < max) {
-    snprintf(dirs[n++], 260, "%s/Microsoft/Windows/Fonts", local);
-  }
-#  elif defined(__APPLE__)
-  static const char *mac[] = {"/System/Library/Fonts", "/System/Library/Fonts/Supplemental",
-                              "/Library/Fonts"};
-  for (int i = 0; i < 3 && n < max; i++) {
-    snprintf(dirs[n++], 260, "%s", mac[i]);
-  }
-  const char *home = getenv("HOME");
-  if (home && n < max) {
-    snprintf(dirs[n++], 260, "%s/Library/Fonts", home);
-  }
-#  else
-  static const char *nix[] = {
-      "/usr/share/fonts/truetype/dejavu", "/usr/share/fonts/dejavu",
-      "/usr/share/fonts/TTF",             "/usr/share/fonts/truetype/liberation",
-      "/usr/share/fonts/liberation",      "/usr/share/fonts/truetype/noto",
-      "/usr/share/fonts/noto",            "/usr/share/fonts/google-noto",
-      "/usr/share/fonts/truetype",        "/usr/local/share/fonts",
-      "/usr/share/fonts"};
-  for (int i = 0; i < (int)(sizeof(nix) / sizeof(nix[0])) && n < max; i++) {
-    snprintf(dirs[n++], 260, "%s", nix[i]);
-  }
-  const char *home = getenv("HOME");
-  if (home && n + 1 < max) {
-    snprintf(dirs[n++], 260, "%s/.local/share/fonts", home);
-    snprintf(dirs[n++], 260, "%s/.fonts", home);
-  }
-#  endif
-  return n;
-}
-
 /* File names per generic family and style (regular, bold, italic, both). */
 typedef struct FamilyFiles {
   const char *names; /* '|'-separated aliases */
@@ -3626,7 +3759,7 @@ typedef struct FamilyFiles {
 } FamilyFiles;
 
 static const FamilyFiles g_families[] = {
-    {"|sans|sans-serif|inter|segoe ui|system-ui|helvetica|arial|dejavu sans|liberation sans|noto "
+    {"|sans|sans-serif|ui-sans-serif|inter|segoe ui|system-ui|helvetica|arial|dejavu sans|liberation sans|noto "
      "sans|tkdefaultfont|tktextfont|tkheadingfont|tkcaptionfont|tkmenufont|",
      {"segoeui.ttf|DejaVuSans.ttf|LiberationSans-Regular.ttf|NotoSans-Regular.ttf|Arial.ttf|"
       "arial.ttf|Helvetica.ttc|SFNS.ttf",
@@ -3636,7 +3769,7 @@ static const FamilyFiles g_families[] = {
       "Italic.ttf|ariali.ttf",
       "segoeuiz.ttf|DejaVuSans-BoldOblique.ttf|LiberationSans-BoldItalic.ttf|NotoSans-"
       "BoldItalic.ttf|Arial Bold Italic.ttf|arialbi.ttf"}},
-    {"|mono|monospace|courier|courier new|consolas|menlo|dejavu sans mono|liberation "
+    {"|mono|monospace|ui-monospace|courier|courier new|consolas|menlo|dejavu sans mono|liberation "
      "mono|tkfixedfont|",
      {"consola.ttf|DejaVuSansMono.ttf|LiberationMono-Regular.ttf|NotoSansMono-Regular.ttf|"
       "Menlo.ttc|cour.ttf",
@@ -3644,7 +3777,7 @@ static const FamilyFiles g_families[] = {
       "courbd.ttf",
       "consolai.ttf|DejaVuSansMono-Oblique.ttf|LiberationMono-Italic.ttf|couri.ttf",
       "consolaz.ttf|DejaVuSansMono-BoldOblique.ttf|LiberationMono-BoldItalic.ttf|courbi.ttf"}},
-    {"|serif|times|times new roman|georgia|dejavu serif|liberation serif|",
+    {"|serif|ui-serif|times|times new roman|georgia|dejavu serif|liberation serif|",
      {"times.ttf|DejaVuSerif.ttf|LiberationSerif-Regular.ttf|NotoSerif-Regular.ttf|Times New "
       "Roman.ttf|Times.ttc",
       "timesbd.ttf|DejaVuSerif-Bold.ttf|LiberationSerif-Bold.ttf|NotoSerif-Bold.ttf|Times New "
@@ -3715,8 +3848,9 @@ static int face_from_files(const char *files, char dirs[][260], int ndirs)
   return -1;
 }
 
-/* The face for family + style; *r_have gets the style bits it really has. */
-static int face_find(const char *family, int style, int *r_have)
+/* The face for family + style; *r_have gets the style bits it really has.
+ * `strict`: -1 for a family nothing has (else the default face draws it). */
+static int face_lookup(const char *family, int style, int *r_have, int strict)
 {
   /* 1. registered fonts: exact style, then any style of the family */
   for (int pass = 0; pass < 2; pass++) {
@@ -3746,7 +3880,7 @@ static int face_find(const char *family, int style, int *r_have)
     }
   }
   char dirs[16][260];
-  const int nd = font_dirs(dirs, 16);
+  const int nd = gpu_font_dirs(dirs, 16);
   /* 3. BUI_FONT overrides the default face */
   const char *env = (!family[0] || family_index(family) == 0) ? getenv("BUI_FONT") : NULL;
   if (env && env[0]) {
@@ -3756,10 +3890,20 @@ static int face_find(const char *family, int style, int *r_have)
       return f;
     }
   }
-  /* 4. a known generic family, then "<family>.ttf", then the default */
+  /* 4. a known generic family, then an installed font of that name (its own
+   * family names), then "<family>.ttf", then the default */
   int fam = family_index(family);
   int generic = family_generic(family);
   if (fam < 0) {
+    char path[GPU_FONT_PATH];
+    int index = 0, have = 0;
+    if (gpu_font_named(family, style, path, &index, &have)) {
+      const int f = face_load(path, index);
+      if (f >= 0) {
+        *r_have = have;
+        return f;
+      }
+    }
     char files[200];
     char squashed[64];
     int k = 0;
@@ -3775,6 +3919,9 @@ static int face_find(const char *family, int style, int *r_have)
     if (f >= 0) {
       *r_have = 0;
       return f;
+    }
+    if (strict) {
+      return -1;
     }
     fam = 0;
     generic = 1; /* unknown family: the default face */
@@ -3810,7 +3957,7 @@ static int face_find(const char *family, int style, int *r_have)
     }
   }
   if (fam != 0) {
-    return face_find("", style, r_have);
+    return face_lookup("", style, r_have, 0);
   }
   if (g_reg_count > 0) {
     *r_have = g_regs[0].style;
@@ -3819,12 +3966,49 @@ static int face_find(const char *family, int style, int *r_have)
   return -1;
 }
 
+/* The family of a slot of its own for face N: "#face:N" (a fallback face's glyphs). */
+#  define FACE_SLOT "#face:"
+
+/* The face of the first family of `family` (a CSS list "A,B,C") that is
+ * registered or installed, the default face when none is; the faces of the
+ * others go to the slot's fallbacks, for the glyphs the first lacks. */
+static int list_faces(FontSlot *s, const char *family, int style, int *r_have)
+{
+  if (strncmp(family, FACE_SLOT, strlen(FACE_SLOT)) == 0) {
+    const int face = atoi(family + strlen(FACE_SLOT));
+    *r_have = face_bold(face) ? BUI_FONT_BOLD : 0; /* synthesized only when it isn't */
+    return face;
+  }
+  if (!strchr(family, ',')) {
+    return face_lookup(family, style, r_have, 0);
+  }
+  int primary = -1;
+  for (const char *p = family; *p;) {
+    const char *end = strchr(p, ',');
+    const int n = end ? (int)(end - p) : (int)strlen(p);
+    char name[128];
+    snprintf(name, sizeof(name), "%.*s", n, p);
+    int have = 0;
+    const int f = name[0] ? face_lookup(name, style, &have, 1) : -1;
+    if (f >= 0 && primary < 0) {
+      primary = f;
+      *r_have = have;
+    }
+    else if (f >= 0 && f != primary && s->fb_n < MAX_FALLBACKS) {
+      s->fb[s->fb_n++] = f;
+    }
+    p = end ? end + 1 : p + n;
+  }
+  return primary >= 0 ? primary : face_lookup("", style, r_have, 0);
+}
+
 static int be_font_open(FontSlot *s, const char *family, int flags, int px)
 {
+  gpu_font_index_warm(); /* fonts by name, read meanwhile off this thread */
   const int style = flags & (BUI_FONT_BOLD | BUI_FONT_ITALIC);
   int have = 0;
-  const int face = face_find(family, style, &have);
-  if (face < 0) {
+  const int face = list_faces(s, family, style, &have);
+  if (face < 0 || face >= g_face_count) {
     return 0;
   }
   const Face *f = &g_faces[face];
@@ -4039,49 +4223,172 @@ static const GlyphBmp *glyph_get(int slot, const FontSlot *s, int glyph, int pha
   return g;
 }
 
-/* Walks the glyphs of a run: pen positions in pixels (unrounded). */
-typedef void (*GlyphFn)(void *user, int glyph, float pen);
+/* Walks the glyphs of a run: each one's font slot (a fallback's for a
+ * character the run's own face lacks), glyph and pen position in pixels
+ * (unrounded). */
+typedef void (*GlyphFn)(void *user, int slot, int glyph, float pen);
 
-static float glyph_walk(const FontSlot *s, const char *utf8, int len, GlyphFn fn, void *user)
+/* The system's fallback face of each group (gpu_fonts.c), regular [0] and
+ * bold [1], once looked for (`g_fallback_done`; -1: none installed). Faces
+ * are never freed, so these stay valid. */
+static int g_fallback_face[2][GPU_FALLBACK_GROUPS];
+static int g_fallback_done[2][GPU_FALLBACK_GROUPS];
+
+/* What a run's Han characters are drawn as: Han is shared by Chinese, Japanese
+ * and Korean, so a run with kana is Japanese, one with Hangul Korean, and one
+ * with neither Chinese (the Han group's own faces). Found once per run, on its
+ * first Han character the run's fonts lack. */
+typedef struct RunScript {
+  const char *utf8;
+  int len;
+  int han; /* GPU_FALLBACK_KANA, _HANGUL or _HAN; -1 until looked for */
+} RunScript;
+
+static int run_han_group(RunScript *rs)
 {
-  const stbtt_fontinfo *info = &g_faces[s->face].info;
-#  if TEXT_FT
-  /* advances of the instance in use (weight, optical size), unhinted */
-  FT_Face ft = ft_use(s);
-#  endif
+  for (int i = 0; rs->han < 0 && i < rs->len;) {
+    const int g = gpu_font_fallback_group(utf8_next(rs->utf8, rs->len, &i));
+    rs->han = (g == GPU_FALLBACK_KANA || g == GPU_FALLBACK_HANGUL) ? g : -1;
+  }
+  if (rs->han < 0) {
+    rs->han = GPU_FALLBACK_HAN;
+  }
+  return rs->han;
+}
+
+static int face_has(int face, int cp)
+{
+  return face >= 0 && stbtt_FindGlyphIndex(&g_faces[face].info, cp) != 0;
+}
+
+/* The installed face of group `g` in weight `bold`. */
+static int group_face(int g, int bold)
+{
+  if (!g_fallback_done[bold][g]) {
+    g_fallback_done[bold][g] = 1;
+    char dirs[16][GPU_FONT_PATH];
+    const int nd = gpu_font_dirs(dirs, 16);
+    g_fallback_face[bold][g] = face_from_files(gpu_font_fallback_files(g, bold), dirs, nd);
+  }
+  return g_fallback_face[bold][g];
+}
+
+/* The installed face for `cp` by its script, then any script; a bold face
+ * for `bold` text when the system has one. -1: none. */
+static int system_fallback(int cp, int bold, RunScript *rs)
+{
+  int group = gpu_font_fallback_group(cp);
+  if (group == GPU_FALLBACK_HAN) {
+    const int han = run_han_group(rs);
+    for (int w = bold; w >= 0 && han != GPU_FALLBACK_HAN; w--) {
+      const int f = group_face(han, w);
+      if (face_has(f, cp)) {
+        return f; /* Japanese or Korean forms of the character */
+      }
+    }
+  }
+  for (int g = group;; g = GPU_FALLBACK_ANY) {
+    for (int w = bold; w >= 0; w--) {
+      const int f = group_face(g, w);
+      if (face_has(f, cp)) {
+        return f;
+      }
+    }
+    if (g == GPU_FALLBACK_ANY) {
+      return -1;
+    }
+  }
+}
+
+/* The slot for `cp`, which slot `font` lacks: the face of the run's last
+ * fallback (`*last`), then the rest of the slot's font list, then the
+ * system's for the character's script; at the slot's size and style.
+ * -1: no face has it, or the slot table is full (it is never emptied while
+ * a run is built). */
+static int fallback_slot(int font, int cp, int *last, RunScript *rs)
+{
+  if (*last >= 0 && face_has(g_fonts[*last].face, cp)) {
+    return *last;
+  }
+  const FontSlot *s = &g_fonts[font];
+  int face = -1;
+  for (int k = 0; k < s->fb_n && face < 0; k++) {
+    face = face_has(s->fb[k], cp) ? s->fb[k] : -1;
+  }
+  const int bold = (s->flags & BUI_FONT_BOLD) ? 1 : 0;
+  if (face < 0) {
+    face = system_fallback(cp, bold, rs);
+  }
+  if (face < 0) {
+    return -1;
+  }
+  char name[32];
+  snprintf(name, sizeof(name), FACE_SLOT "%d", face);
+  const int slot = font_open(name, s->flags, (float)s->px, 0);
+  if (slot >= 0) {
+    *last = slot;
+  }
+  else if (g_font_count == MAX_FONTS) {
+    g_fonts_short = 1; /* drawn without it now; the table is emptied before the next run */
+  }
+  return slot;
+}
+
+static float glyph_walk(int font, const char *utf8, int len, GlyphFn fn, void *user)
+{
   float pen = 0.0f;
-  int prev = 0;
+  int prev = 0, prev_slot = -1, last = -1;
+  RunScript rs = {utf8, len, -1};
+#  if TEXT_FT
+  FT_Face ft = NULL;
+#  endif
   for (int i = 0; i < len;) {
     int cp = utf8_next(utf8, len, &i);
     if (cp == '\t') {
       cp = ' ';
     }
-    const int glyph = stbtt_FindGlyphIndex(info, cp);
-    if (prev) {
+    int slot = font;
+    int glyph = stbtt_FindGlyphIndex(&g_faces[g_fonts[font].face].info, cp);
+    if (glyph == 0 && cp > ' ') {
+      const int fb = fallback_slot(font, cp, &last, &rs);
+      if (fb >= 0) {
+        slot = fb;
+        glyph = stbtt_FindGlyphIndex(&g_faces[g_fonts[fb].face].info, cp);
+      }
+    }
+    const FontSlot *s = &g_fonts[slot];
+    const stbtt_fontinfo *info = &g_faces[s->face].info;
+    if (slot != prev_slot) {
+#  if TEXT_FT
+      /* advances of the instance in use (weight, optical size), unhinted */
+      ft = ft_use(s);
+#  endif
+    }
+    else if (prev) {
       pen += s->scale * (float)stbtt_GetGlyphKernAdvance(info, prev, glyph);
     }
     if (fn) {
-      fn(user, glyph, pen);
+      fn(user, slot, glyph, pen);
     }
+    prev = glyph;
+    prev_slot = slot;
 #  if TEXT_FT
     FT_Fixed ftadv;
     if (ft && FT_Get_Advance(ft, (FT_UInt)glyph, FT_LOAD_NO_HINTING, &ftadv) == 0) {
       pen += (float)ftadv / 65536.0f + s->embolden;
-      prev = glyph;
       continue;
     }
 #  endif
     int adv, lsb;
     stbtt_GetGlyphHMetrics(info, glyph, &adv, &lsb);
     pen += s->scale * (float)adv + s->embolden;
-    prev = glyph;
   }
   return pen;
 }
 
 static float be_measure(const FontSlot *s, const char *utf8, int len)
 {
-  return floorf(glyph_walk(s, utf8, len, NULL, NULL) + 0.5f);
+  return floorf(glyph_walk((int)(s - g_fonts), utf8, len, NULL, NULL) + 0.5f);
 }
 
 typedef struct GlyphList {
@@ -4089,7 +4396,7 @@ typedef struct GlyphList {
   int cap;
 } GlyphList;
 
-static void list_glyph(void *user, int glyph, float pen)
+static void list_glyph(void *user, int slot, int glyph, float pen)
 {
   GlyphList *l = (GlyphList *)user;
   TextRun *e = l->e;
@@ -4097,26 +4404,28 @@ static void list_glyph(void *user, int glyph, float pen)
     l->cap = l->cap ? l->cap * 2 : 16;
     uint16_t *g = (uint16_t *)realloc(e->gid, sizeof(uint16_t) * (size_t)l->cap);
     float *x = (float *)realloc(e->gx, sizeof(float) * (size_t)l->cap);
-    if (!g || !x) {
-      e->gid = g ? g : e->gid;
-      e->gx = x ? x : e->gx;
+    uint8_t *f = (uint8_t *)realloc(e->gslot, (size_t)l->cap);
+    e->gid = g ? g : e->gid;
+    e->gx = x ? x : e->gx;
+    e->gslot = f ? f : e->gslot;
+    if (!g || !x || !f) {
+      l->cap = e->ng; /* what is there stays; this glyph is dropped */
       return;
     }
-    e->gid = g;
-    e->gx = x;
   }
   e->gid[e->ng] = (uint16_t)glyph;
   e->gx[e->ng] = pen;
+  e->gslot[e->ng] = (uint8_t)slot;
   e->ng++;
 }
 
-/* The run's glyph ids and pen positions (built once). */
+/* The run's glyph ids, slots and pen positions (built once). */
 static int run_glyphs(TextRun *e)
 {
   if (e->ng < 0) {
     e->ng = 0;
     GlyphList l = {e, 0};
-    glyph_walk(&g_fonts[e->font], e->text, e->len, list_glyph, &l);
+    glyph_walk(e->font, e->text, e->len, list_glyph, &l);
   }
   return 1;
 }
@@ -4124,8 +4433,7 @@ static int run_glyphs(TextRun *e)
 static int glyph_draw_info(const TextRun *e, int i, int *r_face, float *r_scale, float *r_embolden,
                            float *r_shear)
 {
-  (void)i;
-  const FontSlot *s = &g_fonts[e->font];
+  const FontSlot *s = &g_fonts[glyph_slot(e, i)];
   *r_face = s->face;
   *r_scale = s->scale;
   *r_embolden = s->embolden;
@@ -4138,11 +4446,11 @@ static int glyph_draw_info(const TextRun *e, int i, int *r_face, float *r_scale,
 static const void *glyph_bitmap(const TextRun *e, int i, float pen, int *r_x, int *r_y, int *r_w,
                                 int *r_h, const uint8_t **r_bits)
 {
-  const FontSlot *s = &g_fonts[e->font];
+  const int slot = glyph_slot(e, i);
   const float px = floorf(pen * 4.0f + 0.5f) * 0.25f;
   const int whole = (int)floorf(px);
   const int phase = (int)((px - (float)whole) * 4.0f) & 3;
-  const GlyphBmp *g = glyph_get(e->font, s, e->gid[i], phase);
+  const GlyphBmp *g = glyph_get(slot, &g_fonts[slot], e->gid[i], phase);
   if (!g || !g->bits) {
     return NULL;
   }
@@ -4153,6 +4461,7 @@ static const void *glyph_bitmap(const TextRun *e, int i, float pen, int *r_x, in
   *r_bits = g->bits;
   return g;
 }
+
 
 #  if TEXT_FT
 /* FT_Outline_Decompose into the same quadratic list as below. */
@@ -4367,13 +4676,13 @@ typedef struct BuildCtx {
   float shear; /* synthetic italic: pixels per pixel above the baseline */
 } BuildCtx;
 
-static void build_glyph(void *user, int glyph, float pen)
+static void build_glyph(void *user, int slot, int glyph, float pen)
 {
   BuildCtx *c = (BuildCtx *)user;
   const float px = floorf(pen * 4.0f + 0.5f) * 0.25f;
   const int whole = (int)floorf(px);
   const int phase = (int)((px - (float)whole) * 4.0f) & 3;
-  const GlyphBmp *g = glyph_get(c->slot, c->s, glyph, phase);
+  const GlyphBmp *g = glyph_get(slot, &g_fonts[slot], glyph, phase);
   if (!g || !g->bits) {
     return;
   }
@@ -4430,7 +4739,7 @@ static void be_build(TextRun *e, const FontSlot *fs)
   }
   BuildCtx c = {fs, (int)(fs - g_fonts), mask, mw, mh, pad, fs->ascent,
                 (fs->synth & BUI_FONT_ITALIC) ? 0.2f : 0.0f};
-  glyph_walk(fs, e->text, e->len, build_glyph, &c);
+  glyph_walk(c.slot, e->text, e->len, build_glyph, &c);
   if (fs->embolden > 0.0f) { /* synthetic bold: smear right */
     const int k = (int)(fs->embolden + 0.5f);
     for (int y = 0; y < mh; y++) {
