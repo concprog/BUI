@@ -84,6 +84,7 @@
   F(XrmGetStringDatabase) \
   F(XrmInitialize) \
   F(XSendEvent) \
+  F(XUngrabPointer) \
   F(XSetInputFocus) \
   F(XSetSelectionOwner) \
   F(XSetWMNormalHints) \
@@ -163,6 +164,7 @@ static int x11_load(void)
 #  define XrmGetStringDatabase (*p_XrmGetStringDatabase)
 #  define XrmInitialize (*p_XrmInitialize)
 #  define XSendEvent (*p_XSendEvent)
+#  define XUngrabPointer (*p_XUngrabPointer)
 #  define XSetInputFocus (*p_XSetInputFocus)
 #  define XSetSelectionOwner (*p_XSetSelectionOwner)
 #  define XSetWMNormalHints (*p_XSetWMNormalHints)
@@ -987,6 +989,27 @@ void BK_window_wm(BKWindow *win, const char *key, double a, double b)
     win->frameless = a != 0;
     motif_frame(win, !win->frameless);
   }
+  else if (!strcmp(key, "move")) { /* EWMH _NET_WM_MOVERESIZE, as GTK starts a title-bar drag */
+    Window root, child;
+    int rx, ry, wx, wy;
+    unsigned int mask;
+    XQueryPointer(g_dpy, win->xid, &root, &child, &rx, &ry, &wx, &wy, &mask);
+    XUngrabPointer(g_dpy, CurrentTime); /* the press's grab: the window manager takes it */
+    XEvent xev;
+    memset(&xev, 0, sizeof(xev));
+    xev.xclient.type = ClientMessage;
+    xev.xclient.send_event = True;
+    xev.xclient.window = win->xid;
+    xev.xclient.message_type = XInternAtom(g_dpy, "_NET_WM_MOVERESIZE", False);
+    xev.xclient.format = 32;
+    xev.xclient.data.l[0] = rx;
+    xev.xclient.data.l[1] = ry;
+    xev.xclient.data.l[2] = 8; /* _NET_WM_MOVERESIZE_MOVE */
+    xev.xclient.data.l[3] = Button1;
+    xev.xclient.data.l[4] = 1; /* a normal application */
+    XSendEvent(g_dpy, root, False, SubstructureRedirectMask | SubstructureNotifyMask, &xev);
+    XFlush(g_dpy);
+  }
   else if (!strcmp(key, "topmost")) {
     win->above = a != 0;
     net_wm_state(win, win->above, "_NET_WM_STATE_ABOVE", NULL);
@@ -1091,6 +1114,26 @@ int BK_window_wm_get(BKWindow *win, const char *key, double *r_a, double *r_b)
       *r_a = rx - wx;
       *r_b = ry - wy;
     }
+    return 1;
+  }
+  if (!strcmp(key, "state")) { /* GHOST_WindowX11::getState: maximized (3) from _NET_WM_STATE */
+    Atom type;
+    int format;
+    unsigned long n, after;
+    unsigned char *prop = NULL;
+    XGetWindowProperty(g_dpy, win->xid, XInternAtom(g_dpy, "_NET_WM_STATE", False), 0, 64, False,
+                       XA_ATOM, &type, &format, &n, &after, &prop);
+    const Atom horz = XInternAtom(g_dpy, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
+    const Atom vert = XInternAtom(g_dpy, "_NET_WM_STATE_MAXIMIZED_VERT", False);
+    int found = 0;
+    for (unsigned long i = 0; prop && i < n; i++) {
+      const Atom s = ((const Atom *)prop)[i];
+      found |= (s == horz) | ((s == vert) << 1);
+    }
+    if (prop) {
+      XFree(prop);
+    }
+    *r_a = found == 3 ? 3 : 0;
     return 1;
   }
   return 0;

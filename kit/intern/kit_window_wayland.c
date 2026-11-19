@@ -1589,6 +1589,11 @@ void bk_wl_window_wm(BKWindow *win, const char *key, double a, double b)
       set_frame(win);
     }
   }
+  else if (!strcmp(key, "move")) { /* the compositor moves it, from the last press's serial */
+    if (win->toplevel && g.seat) {
+      xdg_toplevel_move(win->toplevel, g.seat, g.serial);
+    }
+  }
   else if (!strcmp(key, "transparent") && (a != 0) != BUI_raster_alpha(win->raster)) {
     BUI_raster_set_alpha(win->raster, a != 0);
     buf_destroy(&win->bufs[0]); /* new buffers in the other format */
