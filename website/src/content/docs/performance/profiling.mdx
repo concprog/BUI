@@ -24,6 +24,8 @@ BUI_PROFILE=1 node app.js
 
 Any value turns it on, even `0`; unset it to turn it off. When it's off, it costs one check per phase.
 
+**One slow frame hides in an average.** In Rust, `BUI_PROFILE=each` prints every frame on its own line, with its total, so a resize, a first open or a hitch shows as the frame it is.
+
 There are two kinds of output, depending on your app.
 
 ### Rust and JavaScript: per-phase times
