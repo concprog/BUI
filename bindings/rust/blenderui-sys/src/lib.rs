@@ -296,6 +296,8 @@ unsafe extern "C" {
     pub fn BK_imbuf_decode(data: *const c_void, len: usize, max_w: c_int, max_h: c_int) -> *mut BKImBuf;
     pub fn BK_imbuf_load(path: *const c_char, max_w: c_int, max_h: c_int) -> *mut BKImBuf;
     pub fn BK_imbuf_from_rgba(rgba: *const c_uchar, w: c_int, h: c_int, stride: c_int) -> *mut BKImBuf;
+    /// An image of premultiplied ARGB words (copied as they are).
+    pub fn BK_imbuf_from_argb(argb: *const u32, w: c_int, h: c_int) -> *mut BKImBuf;
     pub fn BK_imbuf_free(ib: *mut BKImBuf);
     pub fn BK_imbuf_size(ib: *const BKImBuf, r_w: *mut c_int, r_h: *mut c_int) -> c_int;
     pub fn BK_imbuf_pixels(ib: *const BKImBuf, frame: c_int) -> *const u32;
@@ -396,10 +398,10 @@ unsafe extern "C" {
     pub fn BK_canvas_set_item(canvas: *mut BKNode, item: *const BKCanvasItem);
     pub fn BK_canvas_add_item(canvas: *mut BKNode, item: *const BKCanvasItem);
     pub fn BK_canvas_put_item(canvas: *mut BKNode, index: c_int, item: *const BKCanvasItem);
-    /// Offscreen: `items` (device pixels) drawn into a `w` x `h` straight-alpha
-    /// RGBA8 buffer whose top left is at (`x0`, `y0`). 1 on success.
+    /// Offscreen: `items` (device pixels) drawn into a `w` x `h` buffer of
+    /// premultiplied ARGB words whose top left is at (`x0`, `y0`). 1 on success.
     pub fn BK_canvas_rasterize(items: *const BKCanvasItem, n: c_int, x0: f32, y0: f32, w: c_int, h: c_int,
-                               rgba: *mut u8) -> c_int;
+                               argb: *mut u32) -> c_int;
     pub fn BK_canvas_truncate(canvas: *mut BKNode, count: c_int);
     pub fn BK_canvas_delete(canvas: *mut BKNode, id: c_int);
     pub fn BK_canvas_count(canvas: *mut BKNode) -> c_int;

@@ -1753,15 +1753,16 @@ static void canvas_draw(BKNode *n)
 /* Offscreen rasterization for CSS effects (filters, blend modes, masks,
  * clip-path, rotate/skew): draws `items` (device pixels, as BK_canvas_put_item
  * takes them) with the canvas' own item code into a w x h buffer whose top
- * left is at (x0, y0), and writes straight-alpha RGBA8 to `rgba`. The CPU
+ * left is at (x0, y0), and writes premultiplied ARGB words to `argb` (the
+ * kit's image format: BK_imbuf_from_argb takes them as they are). The CPU
  * raster has no alpha channel, so the items are drawn on black and on white:
- * alpha = 1 - (white - black), colour = black / alpha (exact for coverage
- * antialiasing). Declared in the Rust sys crate, not in BUI_kit.h.
- * Returns 1 on success. */
+ * alpha = 1 - (white - black), and the colour on black is the premultiplied
+ * colour (exact for coverage antialiasing; no division). Declared in the
+ * Rust sys crate, not in BUI_kit.h. Returns 1 on success. */
 int BK_canvas_rasterize(const BKCanvasItem *items, int n, float x0, float y0, int w, int h,
-                        unsigned char *rgba)
+                        uint32_t *argb)
 {
-  if (w <= 0 || h <= 0 || w > 8192 || h > 8192 || !rgba) {
+  if (w <= 0 || h <= 0 || w > 8192 || h > 8192 || !argb) {
     return 0;
   }
   CItem *ci = (CItem *)calloc((size_t)BK_MAX(n, 1), sizeof(CItem));
@@ -1798,20 +1799,15 @@ int BK_canvas_rasterize(const BKCanvasItem *items, int n, float x0, float y0, in
     }
     for (size_t k = 0; k < (size_t)w * (size_t)h; k++) {
       const uint32_t b = black[k], wt = px[k];
-      unsigned char *o = rgba + 4 * k;
       /* per channel: white - black = 255 * (1 - alpha); use the mean */
       const int dr = (int)((wt >> 16) & 255) - (int)((b >> 16) & 255);
       const int dg = (int)((wt >> 8) & 255) - (int)((b >> 8) & 255);
       const int db = (int)(wt & 255) - (int)(b & 255);
       const int a = BK_CLAMP(255 - (dr + dg + db) / 3, 0, 255);
-      o[3] = (unsigned char)a;
-      if (a == 0) {
-        o[0] = o[1] = o[2] = 0;
-        continue;
-      }
-      o[0] = (unsigned char)BK_MIN(255, (int)((b >> 16) & 255) * 255 / a);
-      o[1] = (unsigned char)BK_MIN(255, (int)((b >> 8) & 255) * 255 / a);
-      o[2] = (unsigned char)BK_MIN(255, (int)(b & 255) * 255 / a);
+      /* premultiplied: no channel above alpha */
+      const int cr = BK_MIN(a, (int)((b >> 16) & 255)), cg = BK_MIN(a, (int)((b >> 8) & 255)),
+                cb = BK_MIN(a, (int)(b & 255));
+      argb[k] = (uint32_t)a << 24 | (uint32_t)cr << 16 | (uint32_t)cg << 8 | (uint32_t)cb;
     }
   }
   free(black);
