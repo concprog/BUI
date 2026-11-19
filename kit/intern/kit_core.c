@@ -500,7 +500,6 @@ void bk_natural(BKNode *n, int *r_w, int *r_h)
     n->nat_w = w;
     n->nat_h = h;
     n->nat_gen = g_epoch;
-    n->flags |= NF_ARRANGE;
   }
   *r_w = n->nat_w;
   *r_h = n->nat_h;
@@ -2123,7 +2122,7 @@ static BKRect region_track(BKContext *ctx)
 static void layout(BKContext *ctx)
 {
   const BKRect track = region_track(ctx);
-  const int was[3] = {ctx->content_h, ctx->scroll, ctx->header_h};
+  const int old_content_h = ctx->content_h, old_scroll = ctx->scroll, old_header_h = ctx->header_h;
   const int w = ctx->win_w, h = ctx->win_h;
   int hw = 0, hh = 0;
   if (ctx->header) {
@@ -2150,7 +2149,7 @@ static void layout(BKContext *ctx)
   }
   g_arrange_all = false;
   ctx->layout_dirty = false;
-  if (was[0] != ctx->content_h || was[1] != ctx->scroll || was[2] != ctx->header_h) {
+  if (old_content_h != ctx->content_h || old_scroll != ctx->scroll || old_header_h != ctx->header_h) {
     damage_grown(ctx, track, 0); /* the thumb moved */
     damage_grown(ctx, region_track(ctx), 0);
   }
