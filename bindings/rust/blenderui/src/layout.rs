@@ -356,9 +356,7 @@ enum Form {
     Lines,
 }
 
-/// A taffy style as a box makes it. It lives on the stack for one node, so boxing the large
-/// variant would only add an allocation per node.
-#[allow(clippy::large_enum_variant)]
+/// A taffy style as a box makes it.
 enum Made {
     Shared(StyleIx),
     Own(Style),
