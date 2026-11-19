@@ -356,7 +356,9 @@ enum Form {
     Lines,
 }
 
-/// A taffy style as a box makes it.
+/// A taffy style as a box makes it. It lives on the stack for one node, so boxing the large
+/// variant would only add an allocation per node.
+#[allow(clippy::large_enum_variant)]
 enum Made {
     Shared(StyleIx),
     Own(Style),
@@ -841,10 +843,10 @@ impl Subject for DivSubject<'_, '_> {
 
 fn collect_styles(el: &AnyElement, css: &mut String, title: &mut Option<String>, jit: &mut TwJit) {
     let AnyElement::Element(d) = el else { return };
-    if jit.on {
-        if let Some((_, classes)) = d.attrs.iter().find(|(k, _)| k.as_ref() == "class") {
-            jit.scan(classes);
-        }
+    if jit.on
+        && let Some((_, classes)) = d.attrs.iter().find(|(k, _)| k.as_ref() == "class")
+    {
+        jit.scan(classes);
     }
     let text = || d.children.iter().filter_map(|c| match c {
         AnyElement::Text(t) => Some(t.as_ref()),
