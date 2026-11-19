@@ -292,6 +292,14 @@ double bk_image_next_due(BKContext *ctx);
  * otherwise NULL, with a decode queued (visible priority) whose arrival
  * redraws `rect` (window pixels, x0 y0 x1 y1) of the pass' context. */
 const BKImBuf *bk_image_cache_get(BKImageSource *s, const BKImageFit *target, const int rect[4]);
+/* What a box `want` decodes: the whole image (no crop) at its scale in that box, rounded up to a
+ * step of 2^(1/4) and never above intrinsic. False when the size is unknown or nothing shows. */
+bool bk_image_cache_whole(BKImageSource *s, const BKImageFit *want, BKImageFit *r_whole);
+/* bk_image_cache_get of the whole decode for `want` into `r_ib` (src_x x src_y is the intrinsic
+ * size it scales; the box crops it when drawn); while a new size decodes, the last size of it
+ * drawn. False (nothing asked) when bk_image_cache_whole is. */
+bool bk_image_cache_scaled(BKImageSource *s, const BKImageFit *want, const int rect[4],
+                           const BKImBuf **r_ib);
 void bk_image_cache_prefetch(BKImageSource *s, const BKImageFit *target);
 
 /* A private entry: one player's (a <video>), outside the shared table and

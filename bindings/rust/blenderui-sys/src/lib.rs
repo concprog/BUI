@@ -133,6 +133,8 @@ pub struct BKCanvasItem {
     pub effect_inputs: [c_int; BK_EFFECT_MAX_INPUTS],
     pub effect_floats: *const c_float,
     pub n_effect_floats: c_int,
+    /// `BK_ITEM_IMAGE`: how far the image is faded out, 0 (opaque, the default) to 1.
+    pub fade: c_float,
 }
 
 /// A `<video>` (`BKVideo`): the kit's player (OS decoders; frames in one GPU

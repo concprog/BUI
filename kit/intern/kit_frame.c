@@ -1070,10 +1070,26 @@ void BK_canvas_add_item(BKNode *n, const BKCanvasItem *item)
 
 /* Whether slot `c` already holds `it`. Image items never match: a borrowed buffer can change
  * under the same pointer. */
+/* Whether image item `it` shows what slot `c` shows: the same file, fitted,
+ * framed and faded the same. Buffers are always redrawn: copied pixels and
+ * video frames change under the same pointer, and a freed buffer's address
+ * can come back with other pixels. */
+static bool citem_image_same(const CItem *c, const BKCanvasItem *it)
+{
+  const BKImageRef *r = &c->img;
+  return it->src && !it->rgba && !it->imbuf && !it->video && r->kind == BK_IMREF_SOURCE &&
+         strcmp(bk_image_source_path(r->u.source), it->src) == 0 && c->it.fit == it->fit &&
+         c->it.frame == it->frame && c->it.fade == it->fade;
+}
+
 static bool citem_same(const CItem *c, const BKCanvasItem *it)
 {
   const BKCanvasItem *o = &c->it;
-  if (item_is_image(it) || o->type != it->type || o->id != it->id ||
+  /* an image that is the same is not redrawn either (every image was, at
+   * every render: a click anywhere repainted all the covers on screen);
+   * an effect's floats move every frame */
+  if (it->type == BK_ITEM_EFFECT || (item_is_image(it) && !citem_image_same(c, it)) ||
+      o->type != it->type || o->id != it->id ||
       o->ncoords != it->ncoords || o->hidden != it->hidden || o->anchor != it->anchor ||
       o->text_flags != it->text_flags || o->clip_on != it->clip_on || o->family != it->family ||
       o->width != it->width || o->radius != it->radius || o->size != it->size ||
@@ -1373,7 +1389,11 @@ static void canvas_item_draw(BuiRaster *r, const CItem *ci, float ox, float oy, 
     case BK_ITEM_IMAGE: {
       BKImageDraw d;
       if (prep ? prep->image.ib != NULL : citem_image_resolve(ci, ox, oy, &d)) {
-        bk_image_draw_resolved(r, prep ? &prep->image : &d, 1.0f);
+        /* `fade`: how far the image is faded out (0, the default: opaque) */
+        const float alpha = 1.0f - BK_CLAMP(it->fade, 0.0f, 1.0f);
+        if (alpha > 0.0f) {
+          bk_image_draw_resolved(r, prep ? &prep->image : &d, alpha);
+        }
       }
       break;
     }

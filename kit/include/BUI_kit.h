@@ -580,6 +580,9 @@ typedef struct BKCanvasItem {
   int effect_inputs[BK_EFFECT_MAX_INPUTS];
   const float *effect_floats;
   int n_effect_floats;
+  /* BK_ITEM_IMAGE: how far the image is faded out, 0 (opaque, the default)
+   * to 1 (not drawn): an opacity that changes without a new image. */
+  float fade;
 } BKCanvasItem;
 void BK_canvas_set_item(BKNode *canvas, const BKCanvasItem *item); /* insert or replace by id */
 void BK_canvas_add_item(BKNode *canvas, const BKCanvasItem *item);
