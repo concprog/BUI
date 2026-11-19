@@ -117,6 +117,7 @@ pub(crate) mod layout;
 pub mod paint;
 pub mod shader;
 pub mod video;
+pub mod sound;
 pub(crate) mod prof;
 mod selector;
 pub(crate) mod selection;
@@ -141,6 +142,7 @@ pub use geometry::{point, px, relative, rems, size, Bounds, Length, Pixels, Poin
 pub use paint::{image_stats, set_image_budget, Animation, Image, Painter};
 pub use shader::{GpuTarget, ShaderEffect};
 pub use video::{Video, VideoState};
+pub use sound::Sound;
 pub use styled::{FontWeight, StyleBlock, Styled};
 pub use window::*;
 pub use window_kind::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions, WindowDecorations, WindowKind};

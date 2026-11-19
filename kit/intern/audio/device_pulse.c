@@ -69,6 +69,7 @@ struct BKAudioDevice {
   pthread_t thread;
   pthread_mutex_t lock; /* the position below */
   volatile int stop;
+  volatile int waiting; /* the last try found no server (bk_audio_device_waiting) */
   double written; /* seconds given to the server */
   double latency; /* what it held after the last write (seconds) */
   double stamp;   /* when that was (monotonic seconds) */
@@ -98,7 +99,8 @@ static void *stream_thread(void *param)
   float *buf = (float *)MEM_mallocN(sizeof(float) * BLOCK * CHANNELS, "pulse block");
   pa_simple *s = NULL;
   while (!d->stop) {
-    if (!s && !(s = connect_server())) {
+    d->waiting = !s && !(s = connect_server());
+    if (d->waiting) {
       for (int i = 0; i < 10 && !d->stop; i++) {
         usleep(100000); /* no server now: try again in a second */
       }
@@ -124,6 +126,11 @@ static void *stream_thread(void *param)
   }
   MEM_freeN(buf);
   return NULL;
+}
+
+bool bk_audio_device_waiting(BKAudioDevice *d)
+{
+  return d->waiting != 0;
 }
 
 BKAudioDevice *bk_audio_device_open(BKAudioFill fill, void *data, int flags)

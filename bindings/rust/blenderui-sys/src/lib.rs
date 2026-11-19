@@ -149,6 +149,21 @@ pub const BK_VIDEO_PAUSED: c_int = 2;
 pub const BK_VIDEO_ENDED: c_int = 3;
 pub const BK_VIDEO_ERROR: c_int = 4;
 
+/// A sound (`BKSound`): an audio file or url on the default output, decoded by
+/// the video backend's audio reader on the output's thread. UI-thread object.
+#[repr(C)]
+pub struct BKSound {
+    _private: [u8; 0],
+}
+
+/// `BK_SOUND_*` states (the same values as `BK_VIDEO_*`).
+pub const BK_SOUND_LOADING: c_int = 0;
+pub const BK_SOUND_PLAYING: c_int = 1;
+pub const BK_SOUND_PAUSED: c_int = 2;
+pub const BK_SOUND_ENDED: c_int = 3;
+pub const BK_SOUND_ERROR: c_int = 4;
+pub const BK_SOUND_NO_OUTPUT: c_int = 5;
+
 /// An animation stepped by the caller (`BKAnim`): GIF, animated WebP.
 #[repr(C)]
 pub struct BKAnim {
@@ -341,6 +356,16 @@ unsafe extern "C" {
     pub fn BK_video_texture(v: *mut BKVideo, tex: c_int, max_w: c_int, max_h: c_int) -> c_int;
     pub fn BK_node_set_video(node: *mut BKNode, v: *mut BKVideo, fit: c_int);
     pub fn BK_video_backends() -> *const c_char;
+    pub fn BK_sound_new(src: *const c_char) -> *mut BKSound;
+    pub fn BK_sound_free(s: *mut BKSound);
+    pub fn BK_sound_play(s: *mut BKSound);
+    pub fn BK_sound_pause(s: *mut BKSound);
+    pub fn BK_sound_seek(s: *mut BKSound, seconds: c_double);
+    pub fn BK_sound_set_volume(s: *mut BKSound, volume: c_double);
+    pub fn BK_sound_volume(s: *const BKSound) -> c_double;
+    pub fn BK_sound_state(s: *const BKSound) -> c_int;
+    pub fn BK_sound_time(s: *const BKSound) -> c_double;
+    pub fn BK_sound_duration(s: *const BKSound) -> c_double;
     /// Allocations made through MEM_* so far (allocations per frame, in benchmarks).
     pub fn MEM_get_allocations_total() -> usize;
     /// Blender's allocator counters (bui_core): bytes and blocks held through MEM_*.

@@ -185,6 +185,9 @@ typedef struct BKImAnimCodec {
   /* The next block holds `t` or starts a little before it (audio.c skips on). */
   bool (*audio_seek)(void *state, double t);
   void (*audio_close)(void *state);
+  /* The length of the audio track in seconds, <= 0 when unknown (NULL: the backend can't
+   * tell; BK_sound_duration is then 0). Optional, unlike the hooks above. */
+  double (*audio_duration)(void *state);
 } BKImAnimCodec;
 extern const BKImAnimCodec imb_gif_codec, imb_webp_codec;
 /* The audio readers' block buffer: `*buf` (`*cap` floats) grown to hold `floats` (its old

@@ -63,6 +63,8 @@ struct BKAudio {
   int nseg;       /* the newest SEGMENTS at most, oldest first */
   bool has_track; /* the reader opened */
   bool drained;   /* the track ended (not looping): the clock stops after the last segment */
+  bool failed;     /* the reader could not open the track */
+  double duration; /* the track's length in seconds (<= 0: unknown, or not opened yet) */
 
   /* -- the reader and the conversion: the device's thread only --------------------- */
   void *reader;
@@ -242,6 +244,46 @@ bool bk_audio_has_track(BKAudio *a)
   return has;
 }
 
+bool bk_audio_failed(BKAudio *a)
+{
+  if (!a) {
+    return true;
+  }
+  BLI_mutex_lock(&a->lock);
+  const bool failed = a->failed;
+  BLI_mutex_unlock(&a->lock);
+  return failed;
+}
+
+bool bk_audio_waiting(BKAudio *a)
+{
+  return a && a->dev && bk_audio_device_waiting(a->dev);
+}
+
+double bk_audio_duration(BKAudio *a)
+{
+  if (!a) {
+    return 0.0;
+  }
+  BLI_mutex_lock(&a->lock);
+  const double duration = a->duration;
+  BLI_mutex_unlock(&a->lock);
+  return duration > 0.0 ? duration : 0.0;
+}
+
+bool bk_audio_ended(BKAudio *a)
+{
+  if (!a) {
+    return false;
+  }
+  const double heard = bk_audio_device_played(a->dev);
+  BLI_mutex_lock(&a->lock);
+  const Segment *last = a->nseg > 0 ? &a->seg[a->nseg - 1] : NULL;
+  const bool ended = a->drained && (!last || heard >= last->dev + last->len);
+  BLI_mutex_unlock(&a->lock);
+  return ended;
+}
+
 double bk_audio_clock(BKAudio *a)
 {
   if (!a) {
@@ -378,6 +420,13 @@ static bool reader_ready(BKAudio *a, int rate, int channels)
       a->codec->audio_close(a->reader);
       a->reader = NULL;
     }
+    const double duration = a->reader && a->codec->audio_duration ?
+                                a->codec->audio_duration(a->reader) :
+                                0.0;
+    BLI_mutex_lock(&a->lock);
+    a->failed = !a->reader;
+    a->duration = duration;
+    BLI_mutex_unlock(&a->lock);
   }
   return a->reader != NULL;
 }
@@ -502,5 +551,10 @@ double bk_audio_device_played(BKAudioDevice *d)
 void bk_audio_device_close(BKAudioDevice *d)
 {
   (void)d;
+}
+bool bk_audio_device_waiting(BKAudioDevice *d)
+{
+  (void)d;
+  return false;
 }
 #endif

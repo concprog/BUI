@@ -381,6 +381,7 @@ typedef struct GstSound {
   GstElement *pipeline, *sink;
   int channels;
   bool playing;
+  double duration; /* seconds, read once prerolled; 0 when the stream doesn't say */
   float *buf; /* the last block */
   size_t cap; /* floats */
 } GstSound;
@@ -429,6 +430,10 @@ static void *gst_audio_open(const char *path, int rate, int channels, int *r_rat
     return NULL;
   }
   s->channels = channels;
+  int64_t dur = 0;
+  s->duration = G.query_duration(s->pipeline, GST_FORMAT_TIME, &dur) && dur > 0 ?
+                    (double)dur / GST_SECOND :
+                    0.0;
   *r_rate = rate; /* the caps above: audioresample and audioconvert make it so */
   *r_channels = channels;
   return s;
@@ -472,9 +477,14 @@ static bool gst_audio_seek(void *state, double t)
                        (int64_t)(t * GST_SECOND)) != 0;
 }
 
+static double gst_audio_duration(void *state)
+{
+  return ((const GstSound *)state)->duration;
+}
+
 const BKImAnimCodec imb_movie_gst = {
     "gstreamer", true, imb_is_a_movie, gst_open, gst_output, gst_next, gst_seek, gst_bytes,
-    gst_close, gst_audio_open, gst_audio_read, gst_audio_seek, gst_audio_close};
+    gst_close, gst_audio_open, gst_audio_read, gst_audio_seek, gst_audio_close, gst_audio_duration};
 
 /** \} */
 
