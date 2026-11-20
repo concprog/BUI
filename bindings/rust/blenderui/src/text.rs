@@ -33,8 +33,12 @@ static FAMILIES: std::sync::Mutex<Vec<&'static std::ffi::CStr>> = std::sync::Mut
 /// generic) draws, and the others fill in the glyphs that one lacks, before
 /// the system's fallback fonts for the script. 0 = the UI font.
 pub(crate) fn font_id(list: &str) -> u16 {
+    // browsers' names for the system's UI font, which neither text backend knows: as
+    // `system-ui`, which both do (a list of UI names alone is the UI font, below)
     let names: Vec<&str> = list.split(',').map(|n| n.trim().trim_matches(['"', '\'']).trim())
-        .filter(|n| !n.is_empty()).collect();
+        .filter(|n| !n.is_empty())
+        .map(|n| if n.eq_ignore_ascii_case("-apple-system") || n.eq_ignore_ascii_case("blinkmacsystemfont") { "system-ui" } else { n })
+        .collect();
     // the UI font (Inter) by its generic names
     let ui = |n: &str| matches!(n.to_ascii_lowercase().as_str(),
         "sans-serif" | "system-ui" | "ui-sans-serif" | "-apple-system" | "blinkmacsystemfont" | "inter");

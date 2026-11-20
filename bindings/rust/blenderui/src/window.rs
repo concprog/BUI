@@ -687,7 +687,7 @@ impl App {
                 w.raster = sys::BUI_raster_create(pw, ph);
             }
             let target = if own { sys::BUI_raster_create(pw, ph) } else { w.raster };
-            let _s = span(Phase::Widgets);
+            let _s = span(Phase::HeadlessRaster);
             sys::BK_render(w.ctx, target, pw, ph, 1);
             // decodes this frame asked for: wait, then draw what arrived
             let mut st = sys::BKImageStats::default();

@@ -108,26 +108,23 @@ impl<S: ItemSource, P: Measurer + ItemPainter> IntoElement for VariableList<S, P
             let known = window.bounds_of(&id);
             let bounds = known.unwrap_or_default();
             let scale = window.scale_factor();
-            let view = state.update(cx, |s, _| {
-                s.sync(bounds, scale, window);
-                s.take_view_change()
-            });
-            // this frame's placement is only known after layout: the list fits it then, before anything is painted
+            state.update(cx, |s, _| s.sync(bounds, scale, window));
+            // this frame's placement is only known after layout: the list fits it then, before anything is
+            // painted, and the range it paints is the one reported (outside the entity's borrow)
             let (after, after_id) = (state, id.clone());
             super::after_layout(Box::new(move |frame, window, cx| {
-                if let Some(&i) = frame.by_key().get(&crate::layout::id_key(&after_id)) {
-                    let placed = frame.nodes[i].bounds;
-                    let scale = window.scale_factor();
-                    after.update(cx, |s, _| {
-                        if s.bounds != placed {
-                            s.sync(placed, scale, window);
-                        }
-                    });
+                let placed = frame.by_key().get(&crate::layout::id_key(&after_id)).map(|&i| frame.nodes[i].bounds);
+                let scale = window.scale_factor();
+                let view = after.update(cx, |s, _| {
+                    if let Some(placed) = placed.filter(|p| s.bounds != *p) {
+                        s.sync(placed, scale, window);
+                    }
+                    s.take_view_change()
+                });
+                if let (Some(f), Some(info)) = (&on_view_change, view) {
+                    f(&info);
                 }
             }));
-            if let (Some(f), Some(info)) = (&on_view_change, view) {
-                f(&info);
-            }
             let (down, mv, up, wh, key, leave) = (state, state, state, state, state, state);
             let (hover_move, hover_leave) = (on_item_hover.clone(), on_item_hover);
             let handlers = Handlers { click: on_item_click, hit: on_item_hit };

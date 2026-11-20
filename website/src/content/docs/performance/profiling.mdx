@@ -50,6 +50,7 @@ Each … is an average in milliseconds. Phases that took no time are left out. I
 | `paint` | Building the display list |
 | `flush` | Handing the display list to the kit's canvas |
 | `widgets+hover` | Updating Blender widget nodes, and the rest of the frame |
+| `headless raster` | A headless `App::draw` rasterizing the frame (tests, screenshots). It runs after its frame's line was printed, so it lands on the next line, and it isn't in the total. |
 
 ### Windows native window: raster and present
 

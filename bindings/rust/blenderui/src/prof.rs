@@ -1,6 +1,8 @@
 //! `BUI_PROFILE=1`: per-phase frame timings, averaged and printed to stderr
 //! every 60 frames (`BUI_PROFILE=each`: every frame, with its total). Costs
-//! one thread-local bool check when off.
+//! one thread-local bool check when off. A headless `App::draw` rasterizes
+//! after its frame was reported: that time is its own column, out of the
+//! total (it lands on the next line).
 
 use std::cell::Cell;
 use std::time::Instant;
@@ -18,17 +20,18 @@ pub(crate) enum Phase {
     Paint,
     Flush,
     Widgets,
+    HeadlessRaster,
 }
 
-const NAMES: [&str; 10] = [
+const NAMES: [&str; 11] = [
     "frame interval", "render", "  cascade", "build", "boxes", "taffy", "place", "paint", "flush",
-    "widgets+hover",
+    "widgets+hover", " headless raster",
 ];
 
 thread_local! {
     static ON: bool = std::env::var_os("BUI_PROFILE").is_some();
     static EACH: u32 = if std::env::var_os("BUI_PROFILE").is_some_and(|v| v == "each") { 1 } else { 60 };
-    static ACC: [Cell<f64>; 10] = const { [const { Cell::new(0.0) }; 10] };
+    static ACC: [Cell<f64>; 11] = const { [const { Cell::new(0.0) }; 11] };
     static FRAMES: Cell<u32> = const { Cell::new(0) };
 }
 
@@ -80,7 +83,8 @@ pub(crate) fn frame_done() {
             .filter(|(_, c)| c.get() > 0.0)
             .map(|(name, c)| {
                 let ms = c.replace(0.0) / per;
-                // cascade is part of render; the interval is between frames
+                // cascade is part of render; the interval is between frames; a headless
+                // raster comes after the frame it draws was reported
                 total += if name.starts_with(' ') || *name == NAMES[0] { 0.0 } else { ms };
                 format!("{name} {ms:.2}")
             })
