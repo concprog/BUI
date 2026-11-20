@@ -476,7 +476,8 @@ const char *BK_video_backends(void);
 /* -- sound (kit/intern/audio: a video's sound, without the picture) --------------------
  * An audio file or url (m4a/AAC, MP3, WAV, ... whatever the video backend of this
  * platform decodes) played on the default output. The track opens and decodes on the
- * output's own thread, so no call here waits on a decoder, a disk or the network.
+ * output's own thread, so no call here waits on a decoder, a disk or the network (but
+ * BK_sound_free when the system can't start a thread: see there).
  * UI-thread API; poll BK_sound_state for changes (an ended sound reports BK_SOUND_ENDED).
  * BK_SOUND_NO_OUTPUT: playing, but there is no output to play to (none connected, the
  * sound server down); the sound plays from where it is once one is there. */
@@ -491,7 +492,9 @@ enum {
 };
 /* Autoplays. NULL for an empty src, or when this build has no sound backend or output. */
 BKSound *BK_sound_new(const char *src);
-void BK_sound_free(BKSound *s);       /* returns at once; the output closes on its own thread */
+/* Returns at once: the output closes on a thread of its own. When the system can't start
+ * one, it closes here, waiting for the output's thread (which may be in a decoder call). */
+void BK_sound_free(BKSound *s);
 void BK_sound_play(BKSound *s);       /* an ended sound starts over */
 void BK_sound_pause(BKSound *s);
 void BK_sound_seek(BKSound *s, double seconds); /* clamped to the duration when it is known */

@@ -63,6 +63,7 @@ struct BKAudio {
   int nseg;       /* the newest SEGMENTS at most, oldest first */
   bool has_track; /* the reader opened */
   bool drained;   /* the track ended (not looping): the clock stops after the last segment */
+  bool broke;     /* ... on a read error, not at its end: a failure once it is heard */
   bool failed;     /* the reader could not open the track */
   double duration; /* the track's length in seconds (<= 0: unknown, or not opened yet) */
 
@@ -70,6 +71,7 @@ struct BKAudio {
   void *reader;
   bool tried; /* the reader was opened (or failed to) */
   bool ended;
+  bool read_error; /* `ended` by a read that failed (since the last seek) */
   int src_rate, src_channels;
   const float *block; /* the reader's block, `pos` of `n` frames used */
   int pos, n;
@@ -140,7 +142,11 @@ static DWORD WINAPI reap_main(LPVOID a)
 static bool reap_spawn(BKAudio *a)
 {
   HANDLE h = CreateThread(NULL, 0, reap_main, a, 0, NULL);
-  return h && CloseHandle(h); /* detached */
+  if (!h) {
+    return false;
+  }
+  CloseHandle(h); /* detached: the thread reaps `a` whatever this returns */
+  return true;
 }
 #else
 static void *reap_main(void *a)
@@ -151,7 +157,11 @@ static void *reap_main(void *a)
 static bool reap_spawn(BKAudio *a)
 {
   pthread_t t;
-  return pthread_create(&t, NULL, reap_main, a) == 0 && pthread_detach(t) == 0;
+  if (pthread_create(&t, NULL, reap_main, a) != 0) {
+    return false;
+  }
+  pthread_detach(t); /* the thread reaps `a` whatever this returns */
+  return true;
 }
 #endif
 
@@ -206,6 +216,7 @@ void bk_audio_seek(BKAudio *a, double t)
     a->seeks++;
     a->nseg = 0; /* what the device still plays is from before: not the clock */
     a->drained = false;
+    a->broke = false;
     BLI_mutex_unlock(&a->lock);
   }
 }
@@ -244,13 +255,21 @@ bool bk_audio_has_track(BKAudio *a)
   return has;
 }
 
+/* The track ended and the device has played all of it (`lock` held). */
+static bool heard_all(const BKAudio *a, double heard)
+{
+  const Segment *last = a->nseg > 0 ? &a->seg[a->nseg - 1] : NULL;
+  return a->drained && (!last || heard >= last->dev + last->len);
+}
+
 bool bk_audio_failed(BKAudio *a)
 {
   if (!a) {
     return true;
   }
+  const double heard = bk_audio_device_played(a->dev);
   BLI_mutex_lock(&a->lock);
-  const bool failed = a->failed;
+  const bool failed = a->failed || (a->broke && heard_all(a, heard));
   BLI_mutex_unlock(&a->lock);
   return failed;
 }
@@ -278,8 +297,7 @@ bool bk_audio_ended(BKAudio *a)
   }
   const double heard = bk_audio_device_played(a->dev);
   BLI_mutex_lock(&a->lock);
-  const Segment *last = a->nseg > 0 ? &a->seg[a->nseg - 1] : NULL;
-  const bool ended = a->drained && (!last || heard >= last->dev + last->len);
+  const bool ended = heard_all(a, heard);
   BLI_mutex_unlock(&a->lock);
   return ended;
 }
@@ -363,6 +381,7 @@ static bool next_frame(BKAudio *a, float *out, double *r_t, bool loop, bool *r_j
     a->n = a->pos = 0;
     if (got < 0 || !loop || !a->codec->audio_seek(a->reader, 0.0)) {
       a->ended = true;
+      a->read_error = got < 0;
       return false;
     }
     a->block_t = 0.0; /* looped: from the top */
@@ -449,6 +468,7 @@ static void fill(void *data, float *out, int frames, int rate, int channels)
   }
   if (seek >= 0.0) {
     a->ended = !a->codec->audio_seek(a->reader, seek);
+    a->read_error = false;
     a->n = a->pos = 0;
     a->skip_to = seek;
     a->block_t = seek;
@@ -528,6 +548,7 @@ static void fill(void *data, float *out, int frames, int rate, int channels)
   if (a->ended) {
     BLI_mutex_lock(&a->lock);
     a->drained = seeks == a->seeks; /* a seek asked for meanwhile: what ended is from before */
+    a->broke = a->drained && a->read_error;
     BLI_mutex_unlock(&a->lock);
   }
 }

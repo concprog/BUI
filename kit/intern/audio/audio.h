@@ -77,11 +77,13 @@ double bk_audio_clock(BKAudio *a);
  * and after it failed). */
 bool bk_audio_has_track(BKAudio *a);
 /* The reader could not open the track (no audio, a codec the system lacks, a
- * file or url that doesn't answer). False until it tried; true for NULL. */
+ * file or url that doesn't answer), or a read failed mid-track and the device
+ * has played what came before it. False until it tried; true for NULL. */
 bool bk_audio_failed(BKAudio *a);
 /* The device has no output to play to now (bk_audio_device_waiting). */
 bool bk_audio_waiting(BKAudio *a);
 /* The track's length in seconds once the reader opened it; 0 when unknown. */
 double bk_audio_duration(BKAudio *a);
-/* The track played to its end (not looping) and the device has played it all. */
+/* The track played to its end, or to a read that failed (not looping), and the
+ * device has played it all. */
 bool bk_audio_ended(BKAudio *a);
