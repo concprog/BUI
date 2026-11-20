@@ -412,12 +412,17 @@ BKRect bk_node_rect(const BKNode *n)
   return bk_rect(n->x, n->y, n->w, n->h);
 }
 
-/* What a node draws outside its rect: a popup's shadow, its class's overhang, else a few pixels
- * of outline. */
+/* What a node draws outside its rect: its class's overhang, else a few pixels of outline. */
+static int class_margin(const BKNode *n)
+{
+  return BK_MAX(3, (int)ceilf(n->cls->overhang * (float)bk_unit()) + 1);
+}
+
+/* The same, and a popup's shadow. */
 static int damage_margin(const BKNode *n, bool in_popup)
 {
-  const int m = in_popup ? (int)(bk_theme.menu_shadow_width * bk_scale_fac) + 6 : 3;
-  return BK_MAX(m, (int)ceilf(n->cls->overhang * (float)bk_unit()) + 1);
+  const int shadow = (int)(bk_theme.menu_shadow_width * bk_scale_fac) + 6;
+  return in_popup ? BK_MAX(shadow, class_margin(n)) : class_margin(n);
 }
 
 static void damage_grown(BKContext *ctx, BKRect r, int m)
@@ -554,7 +559,8 @@ static void draw_tree_in(BKNode *n)
   }
   /* Skip whole subtrees outside the redrawn region (children stay inside
    * their parent's rect; emboss/outlines spill by a pixel or two). */
-  BKRect r = bk_rect(n->x - 3, n->y - 3, n->w + 6, n->h + 6);
+  const int m = class_margin(n);
+  BKRect r = bk_rect(n->x - m, n->y - m, n->w + 2 * m, n->h + 2 * m);
   if (!bk_clip_visible(&r)) {
     return;
   }
@@ -3959,6 +3965,7 @@ static void anim_step(BKContext *ctx)
     fac = BK_MIN(time > 0.0 ? BK_MAX(fac, 0.0f) : sqrtf(BK_MAX(fac, 0.0f)), 1.0f);
     n->anim = fac >= 1.0f ? target : ctx->anim_from[i] + (target - ctx->anim_from[i]) * fac;
     bk_stale(n); /* its size follows `anim` */
+    bk_invalidate(n); /* its pixels follow it, even when its rect stays */
     if (n->anim == target) {
       const int last = --ctx->nanim;
       ctx->anim[i] = ctx->anim[last];
