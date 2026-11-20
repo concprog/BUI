@@ -749,6 +749,18 @@ static void size_request(BKWindow *win)
   host_request(win);
 }
 
+/* A client rect `r` (pixels) made the window rect of the window's frame: AdjustWindowRect on its
+ * style, without the top inset when the app draws the title bar (WM_NCCALCSIZE takes the caption
+ * and top frame out unless the window is maximized). */
+static void client_to_window(const BKWindow *win, RECT *r)
+{
+  const LONG top = r->top;
+  AdjustWindowRect(r, (DWORD)GetWindowLongPtrW(win->hwnd, GWL_STYLE), FALSE);
+  if (win->override == 2 && !IsZoomed(win->hwnd)) {
+    r->top = top;
+  }
+}
+
 /* -- input mapping -- */
 
 static int mods_now(WPARAM wp, int mouse)
@@ -1001,16 +1013,15 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
       }
-      const DWORD style = (DWORD)GetWindowLongPtrW(hwnd, GWL_STYLE);
       if (win->min_w || win->min_h) {
         RECT r = {0, 0, (LONG)(win->min_w * win->scale), (LONG)(win->min_h * win->scale)};
-        AdjustWindowRect(&r, style, FALSE);
+        client_to_window(win, &r);
         mm->ptMinTrackSize.x = win->min_w ? r.right - r.left : mm->ptMinTrackSize.x;
         mm->ptMinTrackSize.y = win->min_h ? r.bottom - r.top : mm->ptMinTrackSize.y;
       }
       if (win->max_w || win->max_h) {
         RECT r = {0, 0, (LONG)(win->max_w * win->scale), (LONG)(win->max_h * win->scale)};
-        AdjustWindowRect(&r, style, FALSE);
+        client_to_window(win, &r);
         mm->ptMaxTrackSize.x = win->max_w ? r.right - r.left : mm->ptMaxTrackSize.x;
         mm->ptMaxTrackSize.y = win->max_h ? r.bottom - r.top : mm->ptMaxTrackSize.y;
       }

@@ -522,7 +522,8 @@ impl App {
         self.flush();
     }
 
-    /// Call `f` whenever the user closes a window.
+    /// Call `f` whenever a window closes: by the user, its title bar's Close control or
+    /// [`close_window`](Self::close_window).
     pub fn on_window_closed(&mut self, f: impl FnMut(WindowId, &mut App) + 'static) {
         self.close_hooks.push(Box::new(f));
     }
@@ -535,9 +536,7 @@ impl App {
 
     /// Close a window (as if the user had).
     pub fn close_window(&mut self, id: WindowId) {
-        if let Some(w) = self.windows.get_mut(id.0).and_then(|w| w.as_deref_mut()) {
-            w.remove_window();
-        }
+        self.with_window(id.0, |w, _| w.remove_window());
     }
 
     /// The title-bar part under (x, y) (logical pixels) of a window whose title bar the app draws.
@@ -578,8 +577,21 @@ impl App {
     fn with_window<R>(&mut self, id: usize, f: impl FnOnce(&mut Window, &mut App) -> R) -> Option<R> {
         let mut w = self.windows.get_mut(id)?.take()?;
         let r = f(&mut w, self);
+        // closed by the app (`remove_window`): its close hooks, now that it is back
+        let closing = w.life == Life::Closing;
+        if closing {
+            w.life = Life::Closed;
+        }
         self.windows[id] = Some(w);
+        if closing {
+            self.window_closed(id);
+        }
         Some(r)
+    }
+
+    /// Window `id` has closed: the close hooks.
+    fn window_closed(&mut self, id: usize) {
+        run_hooks(self, |a| &mut a.close_hooks, |h, app| h(WindowId(id), app));
     }
 
     /// Handle queued kit events, then re-render what changed.
@@ -926,9 +938,9 @@ unsafe extern "C" fn on_close(data: *mut c_void, _win: *mut sys::BKWindow) -> c_
     let id = data as usize;
     with_running_app(|app| {
         if let Some(w) = app.windows.get_mut(id).and_then(|w| w.as_deref_mut()) {
-            w.closed = true;
+            w.life = Life::Closed;
         }
-        run_hooks(app, |a| &mut a.close_hooks, |h, app| h(WindowId(id), app));
+        app.window_closed(id);
     });
     1
 }
@@ -991,6 +1003,15 @@ unsafe extern "C" {
 // ==========================================================================
 // Windows
 
+/// Where a window is in its life.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Life {
+    Open,
+    /// Closed by the app; its close hooks have not run yet.
+    Closing,
+    Closed,
+}
+
 type ViewFn = Box<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 
 /// A window (gpui's `Window`): its kit context, layout and interaction state.
@@ -1035,7 +1056,7 @@ pub struct Window {
     /// CSS animation time (virtual in headless windows).
     clock: crate::anim::Clock,
     vsync: bool,
-    closed: bool,
+    life: Life,
     title: String,
     cursor: i32,
     pointer: (f32, f32),
@@ -1113,7 +1134,7 @@ impl Window {
                 motion_frame: false,
                 clock: crate::anim::Clock::new(!headless),
                 vsync: true,
-                closed: false,
+                life: Life::Open,
                 title: title.to_owned(),
                 cursor: 0,
                 pointer: (-1.0, -1.0),
@@ -1233,9 +1254,13 @@ impl Window {
         }
     }
 
-    /// Close this window, as if the user had (gpui's `remove_window`).
+    /// Close this window, as if the user had (gpui's `remove_window`). The close hooks run once
+    /// the event that asked has been handled (`BK_window_close` does not ask `on_close`).
     pub fn remove_window(&mut self) {
-        self.closed = true;
+        if self.life != Life::Open {
+            return;
+        }
+        self.life = Life::Closing;
         if let Some(n) = self.native {
             unsafe { sys::BK_window_close(n) };
         }
@@ -1288,6 +1313,17 @@ impl Window {
             cur = n.parent;
         }
         None
+    }
+
+    /// A click on element `key`: what the title-bar control it is part of does.
+    fn run_control_area(&mut self, key: Key) {
+        let hit = self.frame.as_ref().and_then(|f| f.by_key().get(&key).copied());
+        match self.control_area(hit) {
+            Some(WindowControlArea::Min) => self.minimize_window(),
+            Some(WindowControlArea::Max) => self.zoom_window(),
+            Some(WindowControlArea::Close) => self.remove_window(),
+            Some(WindowControlArea::Drag) | None => {}
+        }
     }
 
     /// The title-bar part under (x, y), in logical pixels.
@@ -1930,13 +1966,7 @@ impl Window {
                     let down = MouseDownEvent { button, position: point(px(x), px(y)), modifiers, click_count: 1 };
                     let e = ClickEvent { down, up };
                     self.emit(app, target, &e, |l| l.click.iter().collect());
-                    let hit = self.frame.as_ref().and_then(|f| f.by_key().get(&target).copied());
-                    match self.control_area(hit) {
-                        Some(WindowControlArea::Min) => self.minimize_window(),
-                        Some(WindowControlArea::Max) => self.zoom_window(),
-                        Some(WindowControlArea::Close) => self.remove_window(),
-                        Some(WindowControlArea::Drag) | None => {}
-                    }
+                    self.run_control_area(target);
                 }
             }
             sys::BK_EV_WHEEL => {
@@ -2112,6 +2142,7 @@ impl Window {
                 let up = MouseUpEvent { button: MouseButton::Left, position: point(px(x), px(y)),
                                         modifiers: Modifiers::default() };
                 self.emit(app, key, &ClickEvent { down, up }, |l| l.click.iter().collect());
+                self.run_control_area(key);
                 self.dirty = true;
             }
             _ => {}

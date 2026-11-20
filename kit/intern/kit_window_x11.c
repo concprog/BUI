@@ -198,6 +198,7 @@ struct BKWindow {
   Colormap cmap;   /* for the ARGB visual, else None */
   char *title;
   bool frameless, above; /* "override", "topmost": kept for a new X window */
+  bool moving;           /* "move" asked the window manager, until Button1 is released */
   int render_pending, frames, cursor, tip_id, next_timer, full;
   int want_frame, frame_vsync;
   double frame_start, frame_due;
@@ -335,6 +336,25 @@ static void host_warp(void *data, int x, int y)
 }
 
 static void handle_event(XEvent *ev);
+
+/* An EWMH client message about the window, to the window manager (through the root). */
+static void wm_message(BKWindow *win, const char *type, long l0, long l1, long l2, long l3, long l4)
+{
+  XEvent xev;
+  memset(&xev, 0, sizeof(xev));
+  xev.xclient.type = ClientMessage;
+  xev.xclient.send_event = True;
+  xev.xclient.window = win->xid;
+  xev.xclient.message_type = XInternAtom(g_dpy, type, False);
+  xev.xclient.format = 32;
+  xev.xclient.data.l[0] = l0;
+  xev.xclient.data.l[1] = l1;
+  xev.xclient.data.l[2] = l2;
+  xev.xclient.data.l[3] = l3;
+  xev.xclient.data.l[4] = l4;
+  XSendEvent(g_dpy, RootWindow(g_dpy, DefaultScreen(g_dpy)), False,
+             SubstructureRedirectMask | SubstructureNotifyMask, &xev);
+}
 
 /* GHOST_SystemX11::getClipboard: ask the owner, wait for its answer. */
 static char *host_clipboard_get(void *data)
@@ -626,6 +646,7 @@ static void handle_event(XEvent *ev)
       const int mods = mods_of(b->state);
       switch (b->button) {
         case Button1:
+          win->moving = false; /* a move's release went to the window manager */
           XSetInputFocus(g_dpy, win->xid, RevertToParent, CurrentTime);
           BK_press(ctx, b->x, b->y, mods | BK_BUTTON1);
           break;
@@ -651,6 +672,11 @@ static void handle_event(XEvent *ev)
       const XButtonEvent *b = &ev->xbutton;
       const int mods = mods_of(b->state) & ~BK_BUTTON1;
       if (b->button == Button1) {
+        if (win->moving) { /* released before the window manager took the pointer */
+          win->moving = false;
+          wm_message(win, "_NET_WM_MOVERESIZE", b->x_root, b->y_root,
+                     11 /* _NET_WM_MOVERESIZE_CANCEL */, Button1, 1);
+        }
         BK_release(ctx, b->x, b->y, mods);
       }
       else if (b->button == Button2 || b->button == Button3) {
@@ -706,18 +732,9 @@ static void net_wm_state(BKWindow *win, bool add, const char *prop1, const char 
     }
     return;
   }
-  XEvent xev;
-  memset(&xev, 0, sizeof(xev));
-  xev.xclient.type = ClientMessage;
-  xev.xclient.send_event = True;
-  xev.xclient.window = win->xid;
-  xev.xclient.message_type = XInternAtom(g_dpy, "_NET_WM_STATE", False);
-  xev.xclient.format = 32;
-  xev.xclient.data.l[0] = add ? 1 : 0; /* _NET_WM_STATE_ADD / _REMOVE */
-  xev.xclient.data.l[1] = (long)XInternAtom(g_dpy, prop1, False);
-  xev.xclient.data.l[2] = prop2 ? (long)XInternAtom(g_dpy, prop2, False) : 0;
-  XSendEvent(g_dpy, RootWindow(g_dpy, DefaultScreen(g_dpy)), False,
-             SubstructureRedirectMask | SubstructureNotifyMask, &xev);
+  wm_message(win, "_NET_WM_STATE", add ? 1 : 0 /* _NET_WM_STATE_ADD / _REMOVE */,
+             (long)XInternAtom(g_dpy, prop1, False),
+             prop2 ? (long)XInternAtom(g_dpy, prop2, False) : 0, 0, 0);
 }
 
 /* GHOST_WindowX11::motifShowWindowFrame: _MOTIF_WM_HINTS decorations on or off. */
@@ -995,19 +1012,9 @@ void BK_window_wm(BKWindow *win, const char *key, double a, double b)
     unsigned int mask;
     XQueryPointer(g_dpy, win->xid, &root, &child, &rx, &ry, &wx, &wy, &mask);
     XUngrabPointer(g_dpy, CurrentTime); /* the press's grab: the window manager takes it */
-    XEvent xev;
-    memset(&xev, 0, sizeof(xev));
-    xev.xclient.type = ClientMessage;
-    xev.xclient.send_event = True;
-    xev.xclient.window = win->xid;
-    xev.xclient.message_type = XInternAtom(g_dpy, "_NET_WM_MOVERESIZE", False);
-    xev.xclient.format = 32;
-    xev.xclient.data.l[0] = rx;
-    xev.xclient.data.l[1] = ry;
-    xev.xclient.data.l[2] = 8; /* _NET_WM_MOVERESIZE_MOVE */
-    xev.xclient.data.l[3] = Button1;
-    xev.xclient.data.l[4] = 1; /* a normal application */
-    XSendEvent(g_dpy, root, False, SubstructureRedirectMask | SubstructureNotifyMask, &xev);
+    win->moving = true;
+    wm_message(win, "_NET_WM_MOVERESIZE", rx, ry, 8 /* _NET_WM_MOVERESIZE_MOVE */, Button1,
+               1 /* a normal application */);
     XFlush(g_dpy);
   }
   else if (!strcmp(key, "topmost")) {
