@@ -186,6 +186,15 @@ static void lru_front(Entry *e)
   C.lru_head = e;
 }
 
+/* `e` used now: to the front, so eviction (from the tail) finds the oldest first. */
+static void lru_touch(Entry *e)
+{
+  if (e != C.lru_head) {
+    lru_unlink(e);
+    lru_front(e);
+  }
+}
+
 static void pend_unlink(Entry *e)
 {
   *(e->pend_prev ? &e->pend_prev->pend_next : &C.pending) = e->pend_next;
@@ -313,10 +322,7 @@ static Entry *lookup(BKImageSource *s, const BKImageFit *target, bool create, in
     request(e, priority, false);
   }
   else if (e) {
-    if (e != C.lru_head) {
-      lru_unlink(e);
-      lru_front(e);
-    }
+    lru_touch(e);
     if (e->req && (priority > e->req->priority || e->used != C.gen)) {
       bk_loader_touch(e->req, BK_MAX(priority, e->req->priority), C.gen);
     }
@@ -360,11 +366,13 @@ bool bk_image_cache_whole(BKImageSource *s, const BKImageFit *want, BKImageFit *
   if (dst[2] < 0.5f || dst[3] < 0.5f) {
     return false; /* nothing of it shows */
   }
-  /* the largest scale it is drawn at (fill stretches), as a step, never above intrinsic */
+  /* the largest scale it is drawn at (fill stretches), as a step; never above intrinsic but for
+   * a vector image, which the loader rasterizes sharp at any size */
   const double scale = fmax(dst[2] / src[2], dst[3] / src[3]);
-  const double step = fmin(1.0, exp2(ceil(log2(scale) * SCALE_STEPS - 1e-6) / SCALE_STEPS));
-  *r_whole = (BKImageFit){BK_FIT_FILL, BK_MAX(1, (int)lround(info.width * step)),
-                          BK_MAX(1, (int)lround(info.height * step)), 0.5f, 0.5f, want->frame};
+  const double step = exp2(ceil(log2(scale) * SCALE_STEPS - 1e-6) / SCALE_STEPS);
+  const double cap = info.format == BK_IMAGE_SVG ? step : fmin(1.0, step);
+  *r_whole = (BKImageFit){BK_FIT_FILL, BK_MAX(1, (int)lround(info.width * cap)),
+                          BK_MAX(1, (int)lround(info.height * cap)), 0.5f, 0.5f, want->frame};
   return true;
 }
 
@@ -381,7 +389,8 @@ bool bk_image_cache_scaled(BKImageSource *s, const BKImageFit *want, const int r
     s->shown = e;
   }
   else if (!e->ib && s->shown && s->shown->ib && s->shown->target.frame == whole.frame) {
-    s->shown->used = C.gen; /* on screen until the new size comes */
+    lru_touch(s->shown); /* on screen until the new size comes */
+    s->shown->used = C.gen;
     *r_ib = s->shown->ib;
   }
   return true;

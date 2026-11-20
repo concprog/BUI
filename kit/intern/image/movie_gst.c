@@ -8,6 +8,7 @@
  *
  * The pipeline decodes, converts and scales to NV12 at the size drawn:
  *   filesrc ! decodebin ! videoconvert ! videoscale ! capsfilter ! appsink
+ * (urisourcebin in place of filesrc for a url).
  * The appsink holds at most two frames and blocks the pipeline when they
  * aren't pulled: a video that isn't shown costs nothing. Its sound is a
  * second pipeline, pulled by the audio device's thread (audio/audio.c):
@@ -174,16 +175,16 @@ static void gst_close(void *state)
   MEM_freeN(m);
 }
 
-/* A launch line reading `path` (quoted with gst_parse_launch's escapes),
- * then `tail` (from the closing quote on). */
+/* A launch line reading `path`, a file or a url (quoted with gst_parse_launch's
+ * escapes), then `tail` (from the closing quote on). */
 static char *pipeline_desc(const char *path, const char *tail)
 {
-  static const char head[] = "filesrc location=\"";
-  const size_t n = strlen(path), tail_n = strlen(tail) + 1;
-  char *s = (char *)MEM_mallocN(sizeof(head) + 2 * n + tail_n, "gst pipeline");
+  const char *head = imb_path_is_url(path) ? "urisourcebin uri=\"" : "filesrc location=\"";
+  const size_t head_n = strlen(head), n = strlen(path), tail_n = strlen(tail) + 1;
+  char *s = (char *)MEM_mallocN(head_n + 2 * n + tail_n, "gst pipeline");
   char *p = s;
-  memcpy(p, head, sizeof(head) - 1);
-  p += sizeof(head) - 1;
+  memcpy(p, head, head_n);
+  p += head_n;
   for (size_t i = 0; i < n; i++) {
     if (path[i] == '"' || path[i] == '\\') {
       *p++ = '\\';

@@ -1223,11 +1223,18 @@ typedef struct ItemPrep {
   BKImageDraw image; /* image items: resolved (ib NULL: nothing to draw yet) */
 } ItemPrep;
 
-/* An image item placed in window space (ox, oy: the canvas origin). */
+/* An image item's opacity: `fade` is how far it is faded out (0, the default: opaque). */
+static float citem_image_alpha(const BKCanvasItem *it)
+{
+  return 1.0f - BK_CLAMP(it->fade, 0.0f, 1.0f);
+}
+
+/* An image item placed in window space (ox, oy: the canvas origin). False when
+ * nothing of it draws: a faded-out file is not decoded either. */
 static bool citem_image_resolve(const CItem *ci, float ox, float oy, BKImageDraw *r)
 {
   float b[4];
-  if (!citem_image_box(ci, b)) {
+  if (!(citem_image_alpha(&ci->it) > 0.0f) || !citem_image_box(ci, b)) {
     return false;
   }
   b[0] += ox;
@@ -1389,11 +1396,7 @@ static void canvas_item_draw(BuiRaster *r, const CItem *ci, float ox, float oy, 
     case BK_ITEM_IMAGE: {
       BKImageDraw d;
       if (prep ? prep->image.ib != NULL : citem_image_resolve(ci, ox, oy, &d)) {
-        /* `fade`: how far the image is faded out (0, the default: opaque) */
-        const float alpha = 1.0f - BK_CLAMP(it->fade, 0.0f, 1.0f);
-        if (alpha > 0.0f) {
-          bk_image_draw_resolved(r, prep ? &prep->image : &d, alpha);
-        }
+        bk_image_draw_resolved(r, prep ? &prep->image : &d, citem_image_alpha(it));
       }
       break;
     }

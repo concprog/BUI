@@ -194,6 +194,9 @@ extern const BKImAnimCodec imb_gif_codec, imb_webp_codec;
  * contents are not kept); returns it. A block is then `floats / channels` frames; a block of
  * none is skipped by the reader, not taken for the end. */
 float *imb_audio_block_reserve(float **buf, size_t *cap, size_t floats);
+/* `path` is a url ("scheme://..."), not a file: the backends that open files and urls apart
+ * (AVFoundation, GStreamer) ask. */
+bool imb_path_is_url(const char *path);
 /* Video backends (movie_*.c), each compiled when the build has it. */
 extern const BKImAnimCodec imb_movie_mf, imb_movie_avf, imb_movie_gst;
 /* Those compiled in (movie.c: the build's choice), tried in order; NULL-ended. */
