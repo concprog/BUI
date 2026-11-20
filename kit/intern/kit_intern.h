@@ -498,6 +498,9 @@ void bk_draw_tree(BKNode *n);
 BKNode *bk_hit(BKNode *n, int x, int y);
 /* Window hosts: the window got or lost the keyboard focus. Calls cb->on_focus. */
 void bk_window_focus(BKContext *ctx, BKWindow *win, const BKWindowCallbacks *cb, int active);
+/* Window hosts: the window manager took the pointer from a press ("move"), so its release won't
+ * come. Ends the press with no click, release or BK_EV_RELEASE. */
+void bk_cancel_press(BKContext *ctx);
 bool bk_contains(const BKNode *n, int x, int y);
 BKRect bk_node_rect(const BKNode *n);
 bool bk_hovered(const BKNode *n);

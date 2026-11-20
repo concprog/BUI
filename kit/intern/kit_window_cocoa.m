@@ -1634,6 +1634,7 @@ void BK_window_wm(BKWindow *win, const char *key, double a, double b)
     else if (!strcmp(key, "move")) { /* from the press being handled (macOS 10.11) */
       NSEvent *ev = [NSApp currentEvent];
       if (ev.type == NSEventTypeLeftMouseDown) {
+        bk_cancel_press(win->ctx); /* the drag takes the release */
         [nw performWindowDragWithEvent:ev];
       }
     }

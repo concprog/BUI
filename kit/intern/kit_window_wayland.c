@@ -1604,7 +1604,7 @@ void bk_wl_window_wm(BKWindow *win, const char *key, double a, double b)
       xdg_toplevel_move(win->toplevel, g.seat, g.serial);
       if (g.buttons & BK_BUTTON1) { /* the compositor has the pointer: its release won't come */
         g.buttons &= ~BK_BUTTON1;
-        BK_release(win->ctx, (int)g.px, (int)g.py, mods_now());
+        bk_cancel_press(win->ctx);
       }
     }
   }

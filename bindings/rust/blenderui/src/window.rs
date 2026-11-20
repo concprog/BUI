@@ -187,14 +187,14 @@ impl<V: 'static> WindowHandle<V> {
     /// Update the root view with its window.
     pub fn update<R>(&self, cx: &mut App,
                      f: impl FnOnce(&mut V, &mut Window, &mut Context<V>) -> R) -> Option<R> {
-        let mut w = cx.windows.get_mut(self.id.0)?.take()?;
         let notified = cx.notified;
-        let r = self.entity.update(cx, |v, cx| f(v, &mut w, cx));
-        if cx.notified != notified {
-            w.refresh(); // `cx.notify()` ran while this window was out of the list
-        }
-        cx.windows[self.id.0] = Some(w);
-        Some(r)
+        cx.with_window(self.id.0, |w, cx| {
+            let r = self.entity.update(cx, |v, cx| f(v, w, cx));
+            if cx.notified != notified {
+                w.refresh(); // `cx.notify()` ran while this window was out of the list
+            }
+            r
+        })
     }
 }
 
@@ -379,6 +379,8 @@ pub struct App {
     remote: Option<(std::sync::mpsc::Sender<RemoteJob>, std::sync::mpsc::Receiver<RemoteJob>)>,
     /// Called when the user closes a window.
     close_hooks: Vec<Box<dyn FnMut(WindowId, &mut App)>>,
+    /// While the close hooks run: windows a hook closed, whose hooks run next.
+    closed_later: Option<VecDeque<usize>>,
     /// Called when a window gets or loses the keyboard focus.
     activation_hooks: Vec<Box<dyn FnMut(WindowId, bool, &mut App)>>,
     /// Counts `notify_all` calls (see `WindowHandle::update`).
@@ -419,7 +421,7 @@ impl App {
     fn create(headless: bool) -> App {
         crate::motion::start_clock(!headless);
         App { windows: Vec::new(), entities: Vec::new(), headless, globals: HashMap::new(), propagate: true,
-              remote: None, close_hooks: Vec::new(),
+              remote: None, close_hooks: Vec::new(), closed_later: None,
               activation_hooks: Vec::new(), notified: 0 }
     }
 
@@ -589,9 +591,20 @@ impl App {
         Some(r)
     }
 
-    /// Window `id` has closed: the close hooks.
+    /// Window `id` has closed: the close hooks. A window a hook closes (the hooks are out of
+    /// the list then) has its hooks run after this round, once the list is back.
     fn window_closed(&mut self, id: usize) {
-        run_hooks(self, |a| &mut a.close_hooks, |h, app| h(WindowId(id), app));
+        if let Some(later) = &mut self.closed_later {
+            later.push_back(id);
+            return;
+        }
+        self.closed_later = Some(VecDeque::new());
+        let mut next = Some(id);
+        while let Some(id) = next {
+            run_hooks(self, |a| &mut a.close_hooks, |h, app| h(WindowId(id), app));
+            next = self.closed_later.as_mut().and_then(VecDeque::pop_front);
+        }
+        self.closed_later = None;
     }
 
     /// Handle queued kit events, then re-render what changed.

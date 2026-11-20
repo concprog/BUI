@@ -133,3 +133,38 @@ fn rsx_marks_the_bar_with_app_region() {
         assert_eq!(at(cx, "close"), Some(WindowControlArea::Close));
     });
 }
+
+#[test]
+fn a_close_from_an_update_runs_the_close_hooks() {
+    Application::headless().run(|cx| {
+        let h = cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| NativeClose)).unwrap();
+        let closed = Rc::new(Cell::new(0));
+        let seen = closed.clone();
+        cx.on_window_closed(move |_, _| seen.set(seen.get() + 1));
+        h.update(cx, |_, window, _| window.remove_window());
+        assert_eq!(closed.get(), 1, "an update that asks no render still finishes the close");
+    });
+}
+
+/// The close hooks' calls: (hook, window).
+struct Closed(Vec<(u8, WindowId)>);
+
+#[test]
+fn a_window_a_close_hook_closes_gets_its_hooks_once() {
+    Application::headless().run(|cx| {
+        let a = cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| NativeClose)).unwrap();
+        let b = cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| NativeClose)).unwrap();
+        cx.set_global(Closed(Vec::new()));
+        cx.on_window_closed(move |id, cx| {
+            cx.global_mut::<Closed>().0.push((1, id));
+            if id == a.id {
+                cx.close_window(b.id); // the other window, from inside a hook
+            }
+        });
+        cx.on_window_closed(|id, cx| cx.global_mut::<Closed>().0.push((2, id)));
+        cx.close_window(a.id);
+        assert_eq!(cx.global::<Closed>().0, [(1, a.id), (2, a.id), (1, b.id), (2, b.id)]);
+        cx.close_window(b.id);
+        assert_eq!(cx.global::<Closed>().0.len(), 4, "a closed window does not close again");
+    });
+}

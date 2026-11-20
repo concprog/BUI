@@ -819,7 +819,8 @@ void *BK_window_handle(BKWindow *win);       /* HWND / X11 Window / NSWindow * *
  * (0 normal, 1 iconic, 2 withdrawn, 3 zoomed), "lift", "lower", "focus".
  * "override" 1 has no frame (pop-ups); 2 is a window whose title bar the app draws: on Windows it
  * keeps the system's resize edges, snap and shadow and asks `hit_test` for the rest, elsewhere it
- * has no frame. "move" (from a press): the window manager moves the window with the pointer.
+ * has no frame. "move" (from a press): the window manager moves the window with the pointer, and
+ * the press ends there: its release clicks and releases nothing.
  * "transparent" (a): per-pixel alpha, no region background. On Linux set it
  * before show (X11 makes the window again; the OpenGL renderer uses its 32-bit visual). On Windows
  * the window has no frame: with the Direct3D 11 renderer DWM blends the alpha of its frames

@@ -1550,6 +1550,7 @@ void BK_window_wm(BKWindow *win, const char *key, double a, double b)
   }
   else if (!strcmp(key, "move")) { /* DefWindowProc's title-bar drag, once the press is handled */
     ReleaseCapture();
+    bk_cancel_press(win->ctx); /* the move loop takes the release */
     PostMessageW(h, WM_NCLBUTTONDOWN, HTCAPTION, (LPARAM)GetMessagePos());
   }
   else if (!strcmp(key, "transparent")) {

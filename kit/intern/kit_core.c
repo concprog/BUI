@@ -2766,6 +2766,19 @@ static int in_BK_release(BKContext *ctx, int x, int y, int mods)
   return 1;
 }
 
+void bk_cancel_press(BKContext *ctx)
+{
+  /* Blender's button_activate_exit with data->cancel: the press ends, nothing is applied */
+  if (ctx->grab) {
+    bk_invalidate(ctx->grab);
+  }
+  ctx->grab = NULL;
+  ctx->dragging = false;
+  ctx->has_ungrab = false;
+  ctx->dt_active = 0;
+  update_cursor(ctx);
+}
+
 static void raw_event(BKNode *n, int kind, int mods, const BKEvent *e, int button);
 
 static BKNode *buttons_target(BKContext *ctx, int x, int y)

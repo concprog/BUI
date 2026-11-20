@@ -144,9 +144,9 @@ div().flex().h(px(32.0)).window_control_area(WindowControlArea::Drag)
 </Tabs>
 
 - **`Drag`** moves the window, and a double click maximizes it. An element inside it that takes clicks (a listener or a form control) stays yours, like "File" above.
-- **`Min`, `Max` and `Close`** do what they say when clicked, on any element including a form control such as `button()`. You don't need a listener for that. Closing runs the `on_window_closed` hooks, as when the user closes the window.
+- **`Min`, `Max` and `Close`** do what they say when clicked, on any element including a form control such as `button()`. You don't need a listener for that. Closing runs the `on_window_closed` hooks once, as when the user closes the window, and so does `remove_window()` or `cx.close_window(id)` anywhere, a close hook closing another window included.
 - **In CSS**, it's `app-region` (or `-webkit-app-region`), as in Electron: `drag`, `no-drag`, and BUI's `minimize`, `maximize` and `close`.
-- **On `Window`**: `minimize_window()`, `zoom_window()` (maximize or restore), `is_maximized()`, `start_window_move()` (from a press, for your own drag handling) and `remove_window()`.
+- **On `Window`**: `minimize_window()`, `zoom_window()` (maximize or restore), `is_maximized()`, `start_window_move()` (from a press, for your own drag handling; the window manager takes the pointer, so the press clicks nothing) and `remove_window()`.
 
 On Windows, the system's own parts stay: the resize edges, Aero Snap, the shadow and rounded corners, and Windows 11's snap layouts when you hover the maximize button. On Linux and macOS, the window has no frame at all: the drag area and the buttons work, but there are no resize edges yet. `cargo run --example titlebar` shows a complete bar.
 

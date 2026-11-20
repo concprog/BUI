@@ -1012,6 +1012,7 @@ void BK_window_wm(BKWindow *win, const char *key, double a, double b)
     unsigned int mask;
     XQueryPointer(g_dpy, win->xid, &root, &child, &rx, &ry, &wx, &wy, &mask);
     XUngrabPointer(g_dpy, CurrentTime); /* the press's grab: the window manager takes it */
+    bk_cancel_press(win->ctx);          /* and its release, if it comes, clicks nothing */
     win->moving = true;
     wm_message(win, "_NET_WM_MOVERESIZE", rx, ry, 8 /* _NET_WM_MOVERESIZE_MOVE */, Button1,
                1 /* a normal application */);
