@@ -17,7 +17,7 @@ static void host_schedule(void *data, int ms, int timer)
 
 static void host_emit(void *data, BKNode *node, int kind, void *ref, double a, double b)
 {
-  goHostEmit((uintptr_t)data, node, kind, ref, a, b);
+  goHostEmit((uintptr_t)data, node, kind, (uintptr_t)ref, a, b);
 }
 
 void bui_go_set_host(BKContext *ctx, uintptr_t id)

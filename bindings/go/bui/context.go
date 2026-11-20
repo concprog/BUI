@@ -140,10 +140,9 @@ func (c *Context) Timer(id int) { C.BK_timer(c.h, C.int(id)) }
 // false when the context holds no more bindings (the kit keeps 64).
 func (c *Context) Bind(combo string, fn func()) bool {
 	ref := newAction(fn)
-	withCstr(combo, func(s *C.char) { C.BK_bind(c.h, s, ref) })
-	id := uintptr(ref)
-	if a := actions[id]; a != nil && a.refs == 0 { // the kit did not take it
-		delete(actions, id)
+	withCstr(combo, func(s *C.char) { C.bui_go_bind(c.h, s, ref) })
+	if a := actions[uintptr(ref)]; a != nil && a.refs == 0 { // the kit did not take it
+		delete(actions, uintptr(ref))
 		return false
 	}
 	return true

@@ -247,9 +247,9 @@ func numControl(c *Context, k kind, typ string, v *float64, lo, hi, step float64
 		s.setNum("precision", s.defPrecision)
 	}
 	c.bindNum(s, "value", *v, func(x float64) {
-		if step > 0 { // the nearest step inside lo..hi
-			last := math.Floor((hi - lo) / step)
-			x = lo + step*min(max(math.Round((x-lo)/step), 0), last)
+		if step > 0 { // the nearest step inside lo..hi (0..0.3 by 0.1 is 2.9999...)
+			last := math.Floor((hi-lo)/step + 1e-9)
+			x = min(lo+step*min(max(math.Round((x-lo)/step), 0), last), hi)
 		}
 		*v = x
 	})

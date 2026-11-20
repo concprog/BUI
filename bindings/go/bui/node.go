@@ -92,7 +92,7 @@ func wrap(h *C.BKNode) *Node {
 	nodes[h] = n
 	id := newID()
 	nodeRefs[id] = h
-	C.BK_node_set_borrowed_ref(h, C.bui_go_token(C.uintptr_t(id)))
+	C.bui_go_set_borrowed_ref(h, C.uintptr_t(id))
 	return n
 }
 

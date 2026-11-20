@@ -406,14 +406,18 @@ func (c *Context) arrange(s *slot) {
 
 	// the order: Justify's spacers around and between the children
 	grows := false // a growing child takes the free space: no spacers then
+	shown := 0     // hidden children keep their place but get no spacers
 	for _, k := range s.kids {
-		grows = grows || !k.look.hidden && (k.lay.grow > 0 || k.kind == kindSpacer ||
-			(row && k.lay.fillW) || (!row && k.lay.fillH))
+		if k.look.hidden {
+			continue
+		}
+		shown++
+		grows = grows || k.lay.grow > 0 || k.kind == kindSpacer || (row && k.lay.fillW) || (!row && k.lay.fillH)
 	}
 	// spacers share the free space equally: one at an end and two between
 	// children make SpaceAround's half gaps at the ends
 	before, between, after := 0, 0, 0
-	if !grows && lay.hasJustify && len(s.kids) > 0 {
+	if !grows && lay.hasJustify && shown > 0 {
 		switch lay.justify {
 		case Center:
 			before, after = 1, 1
@@ -445,9 +449,13 @@ func (c *Context) arrange(s *slot) {
 		}
 	}
 	space(before)
-	for i, k := range s.kids {
-		if i > 0 {
-			space(between)
+	placed := 0
+	for _, k := range s.kids {
+		if !k.look.hidden {
+			if placed > 0 {
+				space(between)
+			}
+			placed++
 		}
 		order = append(order, k.node)
 	}

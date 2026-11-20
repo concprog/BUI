@@ -43,8 +43,9 @@ func (m *menuSpecs) build(items []MenuItem) *C.BKMenuSpec {
 	}
 	p := (*C.BKMenuSpec)(C.calloc(C.size_t(len(items)), C.size_t(unsafe.Sizeof(C.BKMenuSpec{}))))
 	m.subs = append(m.subs, p)
-	for i, it := range unsafe.Slice(p, len(items)) {
-		item := items[i]
+	specs := unsafe.Slice(p, len(items))
+	for i, item := range items {
+		it := &specs[i] // written in place: the kit's ref is set from C
 		if item.Text != "" {
 			it.text = m.str(item.Text)
 		}
@@ -58,11 +59,10 @@ func (m *menuSpecs) build(items []MenuItem) *C.BKMenuSpec {
 		}
 		it.enabled = cbool(!item.Disabled)
 		if item.Action != nil {
-			it.ref = newAction(item.Action)
+			C.bui_go_menu_ref(it, newAction(item.Action))
 		}
 		it.sub = m.build(item.Sub)
 		it.nsub = C.int(len(item.Sub))
-		unsafe.Slice(p, len(items))[i] = it
 	}
 	return p
 }

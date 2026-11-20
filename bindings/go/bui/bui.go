@@ -121,10 +121,10 @@ type action struct {
 }
 
 // newAction returns the ref for fn. The kit's first retain keeps it.
-func newAction(fn func()) unsafe.Pointer {
+func newAction(fn func()) C.uintptr_t {
 	id := newID()
 	actions[id] = &action{fn: fn}
-	return C.bui_go_token(C.uintptr_t(id))
+	return C.uintptr_t(id)
 }
 
 //export goRefRetain
@@ -152,10 +152,10 @@ func goRefRelease(ref C.uintptr_t) {
 }
 
 //export goHostEmit
-func goHostEmit(id C.uintptr_t, n *C.BKNode, kind C.int, ref unsafe.Pointer, a, b C.double) {
+func goHostEmit(id C.uintptr_t, n *C.BKNode, kind C.int, ref C.uintptr_t, a, b C.double) {
 	ctx := contexts[uintptr(id)]
 	k := EventKind(kind)
-	if k == EventCall && ref != nil {
+	if k == EventCall && ref != 0 {
 		if act := actions[uintptr(ref)]; act != nil {
 			act.fn()
 		}
@@ -167,8 +167,8 @@ func goHostEmit(id C.uintptr_t, n *C.BKNode, kind C.int, ref unsafe.Pointer, a, 
 	e := Event{Node: wrap(n), Kind: k, A: float64(a), B: float64(b)}
 	switch k {
 	case EventKey, EventKeyRelease:
-		if ref != nil {
-			e.Text = C.GoString((*C.char)(ref))
+		if ref != 0 {
+			e.Text = C.GoString(C.bui_go_text(ref))
 		}
 	case EventRename:
 		if n != nil {

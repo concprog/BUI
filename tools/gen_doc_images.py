@@ -252,6 +252,8 @@ def site(only, themes, example=None):
             site_native(theme, "c")
         if only in (None, "lua"):
             site_lua(theme)
+        if only in (None, "go"):
+            site_go(theme)
     # lossless recompression of what other toolchains wrote
     import pngopt
     for f in sorted(os.listdir(SITE_OUT)):

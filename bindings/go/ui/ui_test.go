@@ -247,6 +247,31 @@ func TestStepSliderStaysInRange(t *testing.T) {
 	if v != 6 {
 		t.Errorf("value %v after 10 with steps of 6 up to 10, want 6", v)
 	}
+
+	d := 0.0
+	td := NewTester(func(c *Context) { StepSlider(c, &d, 0, 0.3, 0.1).Label("D") }, 200, 60)
+	defer td.Close()
+	edit(td, "D", 0.3)
+	if d != 0.3 {
+		t.Errorf("value %v after 0.3 with steps of 0.1 up to 0.3, want 0.3", d)
+	}
+}
+
+func TestHiddenChildrenGetNoSpacers(t *testing.T) {
+	tt := NewTester(func(c *Context) {
+		Row(c).Width(300).Justify(SpaceBetween).Children(func() {
+			Button(c, "A")
+			Button(c, "Gone").Hidden(true)
+			Button(c, "B")
+		})
+	}, 300, 60)
+	defer tt.Close()
+	if n := len(tt.c.root.kids[0].spaces); n != 1 {
+		t.Errorf("%d spacers between two shown children, want 1", n)
+	}
+	if a, b := tt.find("A").node.Rect(), tt.find("B").node.Rect(); a.X != 0 || b.X+b.W != 300 {
+		t.Errorf("SpaceBetween: A at %v, B at %v", a, b)
+	}
 }
 
 func TestLateKeyKeepsSiblings(t *testing.T) {

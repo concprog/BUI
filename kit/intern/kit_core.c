@@ -352,6 +352,9 @@ int BK_node_move(BKNode *parent, BKNode *child, int index)
   while (from < parent->nkids && parent->kids[from] != child) {
     from++;
   }
+  if (from == parent->nkids) {
+    return 0;
+  }
   index = (index < 0 || index >= parent->nkids) ? parent->nkids - 1 : index;
   if (from == index) {
     return 1;

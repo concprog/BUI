@@ -50,8 +50,11 @@ func LoadImage(path string, maxW, maxH int) (*ImBuf, error) {
 
 // ImageFromRGBA copies straight RGBA pixels (stride bytes per row).
 func ImageFromRGBA(rgba []byte, w, h, stride int) *ImBuf {
-	// every row holds its w pixels, and the last ends inside the slice
-	if w <= 0 || h <= 0 || stride < w*4 || len(rgba) < (h-1)*stride+w*4 {
+	// the kit takes C ints; every row holds its w pixels, and the last ends
+	// inside the slice ((h-1)*stride + w*4 <= len, divided: no overflow)
+	const maxInt32 = 1<<31 - 1
+	if w <= 0 || h <= 0 || w > maxInt32/4 || h > maxInt32 || stride < w*4 || stride > maxInt32 ||
+		len(rgba) < w*4 || (len(rgba)-w*4)/stride < h-1 {
 		return nil
 	}
 	return &ImBuf{C.BK_imbuf_from_rgba((*C.uchar)(unsafe.Pointer(&rgba[0])), C.int(w), C.int(h), C.int(stride))}

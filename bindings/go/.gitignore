@@ -1,3 +1,4 @@
 .bui/
 *.exe
 *.png
+bui/kit_hash.go
