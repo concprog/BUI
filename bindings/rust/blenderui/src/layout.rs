@@ -2479,7 +2479,7 @@ pub(crate) fn layout(root: AnyElement, viewport: (f32, f32), state: &UiState, ca
     let avail = Size { width: AvailableSpace::Definite(viewport.0),
                        height: AvailableSpace::Definite(viewport.1) };
     let laid = Some((root_id, (viewport.0.to_bits(), viewport.1.to_bits())));
-    let stale = b.changed || std::mem::replace(&mut b.recon.laid, laid) != laid;
+    let stale = std::mem::replace(&mut b.recon.laid, laid) != laid || b.changed;
     let Builder { nodes, els, taffy, styles, text: tc, title, text_box, widgets, .. } = b;
     if stale {
         taffy.compute(root_id, avail, |known, available, ctx| {

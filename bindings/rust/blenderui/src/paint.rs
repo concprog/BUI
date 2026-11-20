@@ -982,6 +982,8 @@ fn paint_reach(c: &Computed) -> f32 {
 /// Text can spill past its box: one em per byte across, one line per byte down.
 fn spill(n: &BoxNode, c: &Computed) -> Option<(f32, f32)> {
     match &n.content {
+        // a placeholder draws its label as wide as the label is: no bound
+        Content::Replaced(Replaced::Placeholder(_)) => None,
         Content::Element | Content::Replaced(_) if n.taffy.is_some() && n.marker.is_none() => {
             Some((paint_reach(c), paint_reach(c)))
         }
