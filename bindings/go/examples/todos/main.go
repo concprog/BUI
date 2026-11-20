@@ -9,6 +9,8 @@ package main
 
 import (
 	"log"
+	"sort"
+	"strings"
 
 	"github.com/ppmpreetham/BUI/bindings/go/bui"
 	"github.com/ppmpreetham/BUI/bindings/go/ui"
@@ -28,6 +30,7 @@ type todoList struct {
 	showDone    bool
 	sortBy      string
 	optionsOpen bool
+	order       []int // shown's, reused
 }
 
 func (app *todoList) add() {
@@ -48,6 +51,21 @@ func (app *todoList) remove(id int) {
 	}
 }
 
+// shown is the order the rows show in: as added, or by title. The rows keep
+// their keys, so sorting moves them rather than making new ones.
+func (app *todoList) shown() []int {
+	app.order = app.order[:0]
+	for i := range app.todos {
+		app.order = append(app.order, i)
+	}
+	if app.sortBy == "Title" {
+		sort.SliceStable(app.order, func(a, b int) bool {
+			return strings.ToLower(app.todos[app.order[a]].title) < strings.ToLower(app.todos[app.order[b]].title)
+		})
+	}
+	return app.order
+}
+
 // view builds the interface from the state.
 func (app *todoList) view(c *ui.Context) {
 	t := c.Theme()
@@ -62,7 +80,7 @@ func (app *todoList) view(c *ui.Context) {
 		left := 0
 		ui.Scroll(c).Grow(1).Children(func() {
 			ui.Column(c).Gap(2).Children(func() {
-				for i := range app.todos {
+				for _, i := range app.shown() {
 					item := &app.todos[i]
 					if !item.done {
 						left++
@@ -96,7 +114,9 @@ func main() {
 	}
 	app.todos[0].done = true
 	bui.App.WhenReady(func() {
-		bui.NewWindow(bui.WindowOptions{Title: "To-dos", Width: 380, Height: 420, Content: ui.View(app.view)})
+		if bui.NewWindow(bui.WindowOptions{Title: "To-dos", Width: 380, Height: 420, Content: ui.View(app.view)}) == nil {
+			log.Fatal("bui: the window could not be made")
+		}
 	})
 	if err := bui.App.Run(); err != nil {
 		log.Fatal(err)

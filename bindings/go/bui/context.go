@@ -111,14 +111,11 @@ func (c *Context) Scroll(x, y int, dx, dy float32, mods int) bool {
 // Key presses a key: the text it types and its X11 keysym ("Return", "a",
 // "Up"); either may be empty.
 func (c *Context) Key(text, keysym string, mods int) bool {
-	t := C.CString(text)
-	defer C.free(unsafe.Pointer(t))
-	var k *C.char
-	if keysym != "" {
-		k = C.CString(keysym)
-		defer C.free(unsafe.Pointer(k))
-	}
-	return C.BK_key(c.h, t, k, C.int(mods)) != 0
+	changed := false
+	withCstr(text, func(t *C.char) {
+		withOptCstr(keysym, func(k *C.char) { changed = C.BK_key(c.h, t, k, C.int(mods)) != 0 })
+	})
+	return changed
 }
 
 // KeyRelease releases a key (raw events only).
@@ -139,10 +136,17 @@ func (c *Context) ContextMenu(x, y, mods int) bool {
 // Timer fires a timer the context scheduled.
 func (c *Context) Timer(id int) { C.BK_timer(c.h, C.int(id)) }
 
-// Bind runs fn for a key combination, as "ctrl+s" or "shift+F1".
-func (c *Context) Bind(combo string, fn func()) {
+// Bind runs fn for a key combination, as "ctrl+s" or "shift+F1". It reports
+// false when the context holds no more bindings (the kit keeps 64).
+func (c *Context) Bind(combo string, fn func()) bool {
 	ref := newAction(fn)
-	cstr(combo, func(s *C.char) struct{} { C.BK_bind(c.h, s, ref); return struct{}{} })
+	withCstr(combo, func(s *C.char) { C.BK_bind(c.h, s, ref) })
+	id := uintptr(ref)
+	if a := actions[id]; a != nil && a.refs == 0 { // the kit did not take it
+		delete(actions, id)
+		return false
+	}
+	return true
 }
 
 // ClosePopups closes menus and popups.
@@ -207,7 +211,7 @@ func (c *Context) Clipboard() string {
 
 // SetClipboard writes the clipboard through the context's host.
 func (c *Context) SetClipboard(text string) {
-	cstr(text, func(s *C.char) struct{} { C.BK_clipboard_set(c.h, s); return struct{}{} })
+	withCstr(text, func(s *C.char) { C.BK_clipboard_set(c.h, s) })
 }
 
 // MenuRows are the texts of a menu popup's rows.

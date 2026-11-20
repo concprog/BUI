@@ -78,7 +78,9 @@ type Node struct {
 var nodes = map[*C.BKNode]*Node{}
 
 // wrap returns the Go value of a kit node, making one for nodes the kit built
-// (a panel's body, a popup).
+// (a panel's body, a popup). The node gets a borrowed ref, which the kit
+// releases as it frees the node, whoever frees it: that drops the value, so a
+// later node at the same address never finds a stale one.
 func wrap(h *C.BKNode) *Node {
 	if h == nil {
 		return nil
@@ -88,6 +90,9 @@ func wrap(h *C.BKNode) *Node {
 	}
 	n := &Node{h: h}
 	nodes[h] = n
+	id := newID()
+	nodeRefs[id] = h
+	C.BK_node_set_borrowed_ref(h, C.bui_go_token(C.uintptr_t(id)))
 	return n
 }
 
@@ -107,24 +112,17 @@ func NewNode(typ string) *Node {
 }
 
 // Free frees the node and everything under it; it leaves its parent first.
+// The Go values of the freed nodes let go of them as the kit releases their
+// refs, so a second Free does nothing.
 func (n *Node) Free() {
 	if n == nil || n.h == nil {
 		return
 	}
-	forget(n.h)
 	C.BK_node_free(n.h)
 }
 
-// forget drops the Go values of a subtree about to be freed.
-func forget(h *C.BKNode) {
-	for i, count := 0, int(C.BK_node_child_count(h)); i < count; i++ {
-		forget(C.BK_node_child(h, C.int(i)))
-	}
-	if n := nodes[h]; n != nil {
-		n.h = nil
-		delete(nodes, h)
-	}
-}
+// Freed reports a node the kit has freed.
+func (n *Node) Freed() bool { return n == nil || n.h == nil }
 
 // Type is the node's type name.
 func (n *Node) Type() string { return C.GoString(C.BK_node_type(n.h)) }
@@ -142,6 +140,12 @@ func (n *Node) Insert(child *Node, index int) {
 
 // Remove takes child out of n without freeing it.
 func (n *Node) Remove(child *Node) { C.BK_node_remove(n.h, child.h) }
+
+// Move moves one of n's children to index (-1: last) without taking it out,
+// so it keeps the keyboard focus and a text edit; false when child is not n's.
+func (n *Node) Move(child *Node, index int) bool {
+	return C.BK_node_move(n.h, child.h, C.int(index)) != 0
+}
 
 // ChildCount is the number of children.
 func (n *Node) ChildCount() int { return int(C.BK_node_child_count(n.h)) }
@@ -198,11 +202,25 @@ func (n *Node) Set(key string, value any) *Node {
 		n.SetNum(key, float64(v))
 	case int:
 		n.SetNum(key, float64(v))
+	case int8:
+		n.SetNum(key, float64(v))
+	case int16:
+		n.SetNum(key, float64(v))
 	case int32:
 		n.SetNum(key, float64(v))
 	case int64:
 		n.SetNum(key, float64(v))
+	case uint:
+		n.SetNum(key, float64(v))
+	case uint8:
+		n.SetNum(key, float64(v))
+	case uint16:
+		n.SetNum(key, float64(v))
 	case uint32:
+		n.SetNum(key, float64(v))
+	case uint64:
+		n.SetNum(key, float64(v))
+	case uintptr:
 		n.SetNum(key, float64(v))
 	default:
 		panic(fmt.Sprintf("bui: Set(%q) with a %T", key, value))

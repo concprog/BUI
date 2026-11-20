@@ -51,6 +51,12 @@ func main() {
 }
 ```
 
+<Figure
+  shot="go-counter"
+  alt="The counter: a large bold 3 in the middle, a row of three buttons below it (minus, Reset and a blue plus), and a line saying the arrow keys count too"
+  caption="The counter at 3 (<code>bindings/go/examples/counter</code>, rendered with <code>--screenshot</code>)."
+/>
+
 The window shows the count in Blender's dark theme. Reset is grayed out at 0, and `+` is drawn as Blender's default button.
 
 ## How a view becomes widgets
@@ -86,7 +92,7 @@ ui.Column(c).Padding(16).Gap(8).Children(func() {
 
 ## Input
 
-Controls take a pointer to what they edit. They write the user's edit through it before their constructor returns, so the next statement reads the new value, as in MyGo, Dear ImGui and egui. A value the app changes shows in the control at the next build.
+Controls take a pointer to what they edit. They write the user's edit through it before their constructor returns, so the next statement reads the new value, as in MyGo. A value the app changes shows in the control at the next build.
 
 ```go
 if ui.Checkbox(c, &app.showHidden, "Show hidden files").Changed() {
@@ -124,7 +130,7 @@ Rows place their children left to right, centered vertically. Columns stack thei
 - `Gap`, `Padding` (one, two or four values, as in CSS), `Width`, `Height` and `Size`.
 - `Grow(f)` takes the free space along the parent's direction. Any factor above 0 takes an equal share. `Spacer(c)` is an empty element that grows.
 - `Fill`, `FillWidth` and `FillHeight` take the parent's box.
-- `Justify` takes `Start`, `Center`, `End`, `SpaceBetween`, `SpaceAround` or `SpaceEvenly`. `SpaceAround` spaces like `SpaceEvenly`.
+- `Justify` takes `Start`, `Center`, `End`, `SpaceBetween`, `SpaceAround` or `SpaceEvenly`. `SpaceAround` gives the ends half the space between children, as in CSS.
 - `AlignItems` and `AlignSelf` take `Start`, `Center`, `End` or `Stretch`, and `Center()` centers both ways. As in CSS, an element's own size across the direction wins over `Stretch`.
 
 The kit's packer (Tk's) does the layout, so only what changed is laid out again.

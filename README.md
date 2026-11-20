@@ -2009,9 +2009,9 @@ ctest --test-dir build                      # C, C++, ImGui and Python test suit
 export PYTHONPATH=$PWD/bindings/python      # Windows: set PYTHONPATH=%CD%\bindings\python
 python examples/components_demo.py
 
-cd bindings/rust && cargo test              # Rust: CSS, Tailwind, rsx!, hooks, effects, headless windows
-cd bindings/d && dub run --config=test      # D: raw kit, wrappers, HTML/CSS/RSX, menus, canvas, trees
-cd bindings/go && go generate ./bui && go test ./...   # Go: the kit, MyGo-style views, headless
+(cd bindings/rust && cargo test)            # Rust: CSS, Tailwind, rsx!, hooks, effects, headless windows
+(cd bindings/d && dub run --config=test)    # D: raw kit, wrappers, HTML/CSS/RSX, menus, canvas, trees
+(cd bindings/go && go generate ./bui && go test ./...)   # Go: the kit, MyGo-style views, headless
 ```
 
 | Option                      | Default                  | What it does                                                                                        |

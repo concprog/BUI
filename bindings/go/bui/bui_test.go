@@ -148,3 +148,52 @@ func TestCanvasAndTheme(t *testing.T) {
 		t.Errorf("no FILE_FOLDER icon")
 	}
 }
+
+func TestFreeReleasesTheTree(t *testing.T) {
+	before := len(nodes)
+	root := NewNode("column")
+	child := NewNode("button").Set("text", "x")
+	root.Add(child)
+	root.Child(0) // a wrapper looked up again is the same one
+	root.Free()
+	if !root.Freed() || !child.Freed() {
+		t.Errorf("Free left the root (%v) or its child (%v) alive", root.Freed(), child.Freed())
+	}
+	if len(nodes) != before {
+		t.Errorf("%d wrappers left after Free", len(nodes)-before)
+	}
+	root.Free() // a second Free does nothing
+}
+
+func TestBoundaryChecks(t *testing.T) {
+	if ImageFromRGBA(make([]byte, 16), 2, 2, 4) != nil {
+		t.Errorf("a stride shorter than a row was taken")
+	}
+	img := ImageFromRGBA(make([]byte, 2*8+4*2), 2, 2, 16) // a tight last row
+	if img == nil {
+		t.Fatalf("a buffer ending with a tight last row was refused")
+	}
+	img.Free()
+	n := NewNode("slider")
+	defer n.Free()
+	n.Set("max", uint8(7)).Set("value", uint16(3))
+	if n.Num("value") != 3 {
+		t.Errorf("Set with small unsigned types")
+	}
+}
+
+func TestMoveKeepsTheChild(t *testing.T) {
+	root := NewNode("column")
+	defer root.Free()
+	a, b, c := NewNode("label"), NewNode("label"), NewNode("label")
+	root.Add(a).Add(b).Add(c)
+	if !root.Move(c, 0) || root.Child(0) != c || root.Child(1) != a || root.Child(2) != b {
+		t.Errorf("Move to the front")
+	}
+	if !root.Move(c, -1) || root.Child(2) != c {
+		t.Errorf("Move to the end")
+	}
+	if NewNode("label").Move(a, 0) {
+		t.Errorf("Move of another node's child")
+	}
+}

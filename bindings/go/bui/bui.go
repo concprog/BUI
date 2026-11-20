@@ -26,7 +26,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 package bui
 
-//go:generate go run ../internal/buildkit
+//go:generate go run ../internal/kitgen
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../.bui/include
@@ -67,11 +67,28 @@ func ckey(key string) *C.char {
 	return k
 }
 
-// cstr runs fn with s as a C string.
+// cstr runs fn with s as a C string and returns what fn returns.
 func cstr[T any](s string, fn func(*C.char) T) T {
 	c := C.CString(s)
 	defer C.free(unsafe.Pointer(c))
 	return fn(c)
+}
+
+// withCstr runs fn with s as a C string.
+func withCstr(s string, fn func(*C.char)) {
+	c := C.CString(s)
+	defer C.free(unsafe.Pointer(c))
+	fn(c)
+}
+
+// withOptCstr runs fn with s as a C string, or NULL when s is empty (an
+// optional title, a keysym).
+func withOptCstr(s string, fn func(*C.char)) {
+	if s == "" {
+		fn(nil)
+		return
+	}
+	withCstr(s, fn)
 }
 
 // -- ids ---------------------------------------------------------------------
@@ -85,6 +102,9 @@ var (
 	contexts         = map[uintptr]*Context{}
 	windows          = map[uintptr]*Window{}
 	actions          = map[uintptr]*action{}
+	// nodeRefs: the borrowed ref of each wrapped node, released by the kit
+	// when it frees the node (whoever frees it), which drops the wrapper.
+	nodeRefs = map[uintptr]*C.BKNode{}
 )
 
 func newID() uintptr {
@@ -116,6 +136,14 @@ func goRefRetain(ref C.uintptr_t) {
 
 //export goRefRelease
 func goRefRelease(ref C.uintptr_t) {
+	if h, ok := nodeRefs[uintptr(ref)]; ok {
+		delete(nodeRefs, uintptr(ref))
+		if n := nodes[h]; n != nil {
+			n.h = nil
+			delete(nodes, h)
+		}
+		return
+	}
 	if a := actions[uintptr(ref)]; a != nil {
 		if a.refs--; a.refs <= 0 {
 			delete(actions, uintptr(ref))

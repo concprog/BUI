@@ -4,7 +4,10 @@ package ui
 
 import (
 	"fmt"
+	"math"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/ppmpreetham/BUI/bindings/go/bui"
 )
@@ -181,7 +184,14 @@ func Radio[T comparable](c *Context, selected *T, value T, label string) Element
 // Select chooses one of options into *selected, from Blender's drop-down menu.
 func Select(c *Context, selected *string, options []string) Element {
 	s := c.child(kindSelect, "dropdown")
+	picked := false
 	if !slices.Equal(s.options, options) {
+		// a choice the user made among the old options that no build has read yet
+		if cur := s.node.Num("value"); s.bound && cur != s.num {
+			if i := int(cur); i >= 0 && i < len(s.options) {
+				*selected, picked = s.options[i], true
+			}
+		}
 		s.options = slices.Clone(options)
 		s.node.SetStrs("items", options)
 		s.bound = false
@@ -200,6 +210,9 @@ func Select(c *Context, selected *string, options []string) Element {
 			s.text = options[i]
 		}
 	})
+	if picked {
+		s.changed, c.consumed = true, true
+	}
 	return c.elem(s)
 }
 
@@ -221,21 +234,35 @@ func NumberInput(c *Context, value *float64, lo, hi, step float64) Element {
 
 func numControl(c *Context, k kind, typ string, v *float64, lo, hi, step float64) Element {
 	s := c.child(k, typ)
+	if !s.bound { // the kit's own step and precision, for when none is given
+		s.defStep, s.defPrecision = s.node.Num("step"), s.node.Num("precision")
+	}
 	s.setNum("min", lo)
 	s.setNum("max", hi)
 	if step > 0 {
 		s.setNum("step", step)
-		if step == float64(int64(step)) {
-			s.setNum("precision", 0)
-		}
+		s.setNum("precision", float64(decimals(step)))
+	} else {
+		s.setNum("step", s.defStep)
+		s.setNum("precision", s.defPrecision)
 	}
 	c.bindNum(s, "value", *v, func(x float64) {
-		if step > 0 {
-			x = lo + step*float64(int64((x-lo)/step+0.5))
+		if step > 0 { // the nearest step inside lo..hi
+			last := math.Floor((hi - lo) / step)
+			x = lo + step*min(max(math.Round((x-lo)/step), 0), last)
 		}
 		*v = x
 	})
 	return c.elem(s)
+}
+
+// decimals is how many decimals step shows: 0 for 1, 2 for 0.25.
+func decimals(step float64) int {
+	s := strconv.FormatFloat(step, 'f', -1, 64)
+	if i := strings.IndexByte(s, '.'); i >= 0 {
+		return len(s) - i - 1
+	}
+	return 0
 }
 
 // TextInput edits *value on one line; Submitted reports Return.
@@ -276,6 +303,14 @@ func DecodeBitmap(data []byte) (*Bitmap, error) {
 		return nil, err
 	}
 	return &Bitmap{b}, nil
+}
+
+// Release frees the bitmap's pixels. Every Image showing it must be gone first
+// (not built again, or built with another bitmap).
+func (b *Bitmap) Release() {
+	if b != nil {
+		b.b.Free()
+	}
 }
 
 // Size is the bitmap's size in pixels.

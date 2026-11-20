@@ -23,7 +23,7 @@ func Unit() int { return int(C.BK_unit()) }
 
 // SetFont sets the UI font family.
 func SetFont(family string) {
-	cstr(family, func(s *C.char) struct{} { C.BK_set_font(s); return struct{}{} })
+	withCstr(family, func(s *C.char) { C.BK_set_font(s) })
 }
 
 // SetFontSize sets the UI text size in points (Blender's default is 11).

@@ -4,6 +4,9 @@ package ui
 
 import (
 	"fmt"
+	"image"
+	"image/png"
+	"os"
 	"strings"
 
 	"github.com/ppmpreetham/BUI/bindings/go/bui"
@@ -113,7 +116,7 @@ func (t *Tester) Texts() []string {
 		if s.text != "" && !s.look.hidden {
 			out = append(out, s.text)
 		}
-		return !s.look.hidden
+		return shows(s)
 	})
 	return out
 }
@@ -124,9 +127,15 @@ func (t *Tester) find(text string) *slot {
 		if found == nil && !s.look.hidden && (s.text == text || s.label == text) {
 			found = s
 		}
-		return found == nil && !s.look.hidden
+		return found == nil && shows(s)
 	})
 	return found
+}
+
+// shows reports whether what s holds shows: not when it is hidden, nor in a
+// closed panel.
+func shows(s *slot) bool {
+	return !s.look.hidden && !(s.kind == kindCollapsible && s.node.Num("collapsed") != 0)
 }
 
 func walk(s *slot, fn func(*slot) bool) {
@@ -135,4 +144,22 @@ func walk(s *slot, fn func(*slot) bool) {
 			walk(k, fn)
 		}
 	}
+}
+
+// SavePNG writes what the view last rendered to a PNG file.
+func (t *Tester) SavePNG(path string) error {
+	w, h := t.raster.Size()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for i, p := range t.raster.Pixels() { // 0x00RRGGBB
+		img.Pix[i*4], img.Pix[i*4+1], img.Pix[i*4+2], img.Pix[i*4+3] = uint8(p>>16), uint8(p>>8), uint8(p), 255
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }

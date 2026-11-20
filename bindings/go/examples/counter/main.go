@@ -7,7 +7,10 @@
 package main
 
 import (
+	"flag"
 	"log"
+	"os"
+	"strconv"
 
 	"github.com/ppmpreetham/BUI/bindings/go/bui"
 	"github.com/ppmpreetham/BUI/bindings/go/ui"
@@ -44,14 +47,32 @@ func (s *counter) view(c *ui.Context) {
 }
 
 func main() {
+	shot := flag.String("screenshot", "", "render the window into this PNG, without a window (BUI_THEME, BUI_UI_SCALE), and exit")
+	flag.Parse()
 	s := &counter{}
+	if *shot != "" {
+		scale := 1.0
+		if v, err := strconv.ParseFloat(os.Getenv("BUI_UI_SCALE"), 64); err == nil && v > 0 {
+			scale = v
+		}
+		bui.SetScale(float32(scale))
+		s.n = 3
+		tt := ui.NewTester(s.view, int(360*scale), int(260*scale))
+		defer tt.Close()
+		if err := tt.SavePNG(*shot); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	bui.App.WhenReady(func() {
-		bui.NewWindow(bui.WindowOptions{
+		if bui.NewWindow(bui.WindowOptions{
 			Title:   "Counter",
 			Width:   360,
 			Height:  260,
 			Content: ui.View(s.view),
-		})
+		}) == nil {
+			log.Fatal("bui: the window could not be made")
+		}
 	})
 	if err := bui.App.Run(); err != nil {
 		log.Fatal(err)

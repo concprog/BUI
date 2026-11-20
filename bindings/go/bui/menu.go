@@ -93,26 +93,20 @@ func (n *Node) SetMenu(items []MenuItem) {
 func (c *Context) OpenMenu(owner *Node, title string, items []MenuItem, x, y int) {
 	m := buildMenu(items)
 	defer m.free()
-	var t *C.char
-	if title != "" {
-		t = C.CString(title)
-		defer C.free(unsafe.Pointer(t))
-	}
 	var o *C.BKNode
 	if owner != nil {
 		o = owner.h
 	}
-	C.BK_open_menu(c.h, o, m.p, C.int(len(items)), t, C.int(x), C.int(y))
+	withOptCstr(title, func(t *C.char) {
+		C.BK_open_menu(c.h, o, m.p, C.int(len(items)), t, C.int(x), C.int(y))
+	})
 }
 
 // OpenPie opens a pie menu centred at (x, y); x or y -100000 centres it on the pointer.
 func (c *Context) OpenPie(title string, items []MenuItem, x, y int) {
 	m := buildMenu(items)
 	defer m.free()
-	var t *C.char
-	if title != "" {
-		t = C.CString(title)
-		defer C.free(unsafe.Pointer(t))
-	}
-	C.BK_open_pie(c.h, m.p, C.int(len(items)), t, C.int(x), C.int(y))
+	withOptCstr(title, func(t *C.char) {
+		C.BK_open_pie(c.h, m.p, C.int(len(items)), t, C.int(x), C.int(y))
+	})
 }

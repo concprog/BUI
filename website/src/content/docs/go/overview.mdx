@@ -5,7 +5,7 @@ description: A Go module with the C kit's nodes, contexts, native windows, headl
 section: Go
 order: 10
 languages: ["go"]
-sources: ["bindings/go/README.md", "bindings/go/bui/bui.go", "bindings/go/bui/node.go", "bindings/go/bui/context.go", "bindings/go/bui/window.go", "bindings/go/bui/menu.go", "bindings/go/bui/canvas.go", "bindings/go/bui/theme.go", "bindings/go/internal/buildkit/main.go", "bindings/go/examples/hello/main.go", "bindings/go/examples/headless/main.go"]
+sources: ["bindings/go/README.md", "bindings/go/bui/bui.go", "bindings/go/bui/node.go", "bindings/go/bui/context.go", "bindings/go/bui/window.go", "bindings/go/bui/menu.go", "bindings/go/bui/canvas.go", "bindings/go/bui/theme.go", "bindings/go/internal/kitgen/main.go", "bindings/go/examples/hello/main.go", "bindings/go/examples/headless/main.go"]
 ---
 
 **The `bindings/go` module gives Go programs Blender's widget drawing, layout and interaction rules.** It has two packages:
@@ -15,7 +15,7 @@ sources: ["bindings/go/README.md", "bindings/go/bui/bui.go", "bindings/go/bui/no
 
 ## Setup
 
-You need Go 1.22 or newer with cgo, CMake, and a C compiler cgo can use: gcc or clang. On Windows that means MinGW-w64 gcc (MSYS2's `ucrt64`, for one), because cgo does not work with MSVC or `clang-cl`. If your `CC` names another compiler, set `CC=gcc CXX=g++` for the build.
+You need Go 1.22 or newer with cgo, CMake, and a C compiler cgo can use: gcc or clang. On Windows that means MinGW-w64 gcc (MSYS2's `ucrt64`, for one), because cgo does not work with MSVC or `clang-cl`. On Linux you also need the X11 development headers (`libx11-dev`, or `libX11-devel`). If your `CC` names another compiler, set `CC=gcc CXX=g++` for the build.
 
 The module lives in the repository, next to the C sources it builds. Use it from your module with a `replace`:
 
@@ -70,6 +70,7 @@ A window is optional. A `Raster` is a frame buffer, and `Context.Render` draws t
 
 ```go
 root := bui.NewNode("column").Set("padding", 12)
+clicks := 0
 button := bui.NewNode("button").Set("text", "Click me")
 button.OnClick(func(bui.Event) { clicks++ })
 root.Add(button)
@@ -104,7 +105,7 @@ go func() {
 | Events | `OnClick`, `OnChange`, `OnSubmit`, `On(kind, fn)`, `Context.OnEvent` |
 | Geometry | `Pack`, `Grid`, `Place` (Tk's managers in a `frame`), `GridWeight` |
 | Contexts | `NewContext`, `Render`, `Configure`, `Press`, `Release`, `Motion`, `Click`, `Wheel`, `Scroll`, `Key`, `ContextMenu`, `Bind`, `HitAt`, `Hover`, `Focus`, `FocusNode`, `Popups`, `Undo`, `Redo`, clipboard |
-| Windows | `NewWindow`, `Show`, `Close`, `SetTitle`, `SetSize`, `SetGPU`, `Timer`, `RequestFrame`, `OnFrame`, `OnClose`, `OnFocus`, `WM`, `WMGet`, `Update`, `Invalidate`; `Run`, `Pump`, `Quit`, `RunOnMain`, `App.WhenReady`, `App.Run` |
+| Windows | `NewWindow`, `Show`, `Close`, `SetTitle`, `SetSize`, `Size`, `UseGPU`, `Timer`, `RequestFrame`, `OnFrame`, `OnClose`, `OnFocus`, `WM`, `WMGet`, `Update`, `Invalidate`; `Run`, `Pump`, `Quit`, `RunOnMain`, `App.WhenReady`, `App.Run` |
 | Menus | `SetMenu` on a `menubutton`, `Context.OpenMenu`, `Context.OpenPie`; items run Go functions |
 | Images | `DecodeImage`, `LoadImage`, `ImageFromRGBA`; `SetImage`, `SetImBuf`, `SetImageSource` |
 | Canvas | `AddItem`, `SetItem`, `PutItem`, `TruncateItems`, `DeleteItem` |

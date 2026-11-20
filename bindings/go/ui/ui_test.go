@@ -3,6 +3,8 @@
 package ui
 
 import (
+	"fmt"
+	"math"
 	"testing"
 )
 
@@ -213,5 +215,89 @@ func TestHex(t *testing.T) {
 	}
 	if comboName(Ctrl|Shift, KeyS) != "ctrl+shift+s" {
 		t.Errorf("comboName %q", comboName(Ctrl|Shift, KeyS))
+	}
+}
+
+func TestOddKeys(t *testing.T) {
+	type holder struct{ V any }
+	keys := []any{[]int{1}, holder{[]int{2}}, float32(math.NaN()), "[1]"}
+	tt := NewTester(func(c *Context) {
+		Column(c).Children(func() {
+			for i, k := range keys {
+				Button(c.Key(k), fmt.Sprint("b", i))
+			}
+		})
+	}, 200, 200)
+	defer tt.Close()
+	if n := tt.c.root.kids[0].node.ChildCount(); n != 4 {
+		t.Fatalf("%d buttons for 4 distinct keys", n)
+	}
+	keys = keys[:1]
+	tt.Frame()
+	if n := tt.c.root.kids[0].node.ChildCount(); n != 1 {
+		t.Errorf("%d buttons left, want 1", n)
+	}
+}
+
+func TestStepSliderStaysInRange(t *testing.T) {
+	v := 0.0
+	tt := NewTester(func(c *Context) { StepSlider(c, &v, 0, 10, 6).Label("Q") }, 200, 60)
+	defer tt.Close()
+	edit(tt, "Q", 10)
+	if v != 6 {
+		t.Errorf("value %v after 10 with steps of 6 up to 10, want 6", v)
+	}
+}
+
+func TestLateKeyKeepsSiblings(t *testing.T) {
+	tt := NewTester(func(c *Context) {
+		r := Row(c).Gap(8)
+		Button(c, "Sibling")
+		r.Key("row")
+	}, 200, 100)
+	defer tt.Close()
+	tt.Frame()
+	tt.Frame()
+	if tt.find("Sibling") == nil || len(tt.c.root.kids) != 2 {
+		t.Errorf("a late Key replaced a sibling: texts %q", tt.Texts())
+	}
+	if tt.c.root.kids[0].lay.gap != 8 {
+		t.Errorf("the keyed row lost its gap")
+	}
+}
+
+func TestShortcutsOnlyWhileAsked(t *testing.T) {
+	ask, hits := true, 0
+	tt := NewTester(func(c *Context) {
+		if ask && c.Shortcut(0, KeyUp) {
+			hits++
+		}
+	}, 100, 100)
+	defer tt.Close()
+	ask = false
+	tt.Frame()
+	tt.Key(0, KeyUp) // nobody asks now
+	ask = true
+	tt.Frame()
+	if hits != 0 {
+		t.Errorf("a press while no view asked fired later")
+	}
+	for i := 0; i < 6; i++ { // more presses than one build's passes
+		tt.ctx.Key("", string(KeyUp), 0)
+	}
+	tt.settle()
+	if hits != 6 {
+		t.Errorf("%d of 6 presses taken", hits)
+	}
+}
+
+func TestClosedPanelHidesItsTexts(t *testing.T) {
+	open := false
+	tt := NewTester(func(c *Context) {
+		Collapsible(c, "More", &open, func() { Text(c, "Secret") })
+	}, 200, 100)
+	defer tt.Close()
+	if tt.HasText("Secret") || tt.Click("Secret") == nil {
+		t.Errorf("a closed panel's text is found")
 	}
 }

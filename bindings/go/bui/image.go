@@ -50,7 +50,8 @@ func LoadImage(path string, maxW, maxH int) (*ImBuf, error) {
 
 // ImageFromRGBA copies straight RGBA pixels (stride bytes per row).
 func ImageFromRGBA(rgba []byte, w, h, stride int) *ImBuf {
-	if len(rgba) < stride*h || w <= 0 || h <= 0 {
+	// every row holds its w pixels, and the last ends inside the slice
+	if w <= 0 || h <= 0 || stride < w*4 || len(rgba) < (h-1)*stride+w*4 {
 		return nil
 	}
 	return &ImBuf{C.BK_imbuf_from_rgba((*C.uchar)(unsafe.Pointer(&rgba[0])), C.int(w), C.int(h), C.int(stride))}
@@ -92,7 +93,7 @@ func (n *Node) SetImBuf(b *ImBuf) {
 // SetImageSource shows an image file, decoded in the background at the size
 // it is drawn, fitted by fit (Fit*).
 func (n *Node) SetImageSource(src string, fit int) {
-	cstr(src, func(s *C.char) struct{} { C.BK_node_set_image_source(n.h, s, C.int(fit)); return struct{}{} })
+	withCstr(src, func(s *C.char) { C.BK_node_set_image_source(n.h, s, C.int(fit)) })
 }
 
 // SetImageFrame shows frame n-1 of an animated source (0 plays it).

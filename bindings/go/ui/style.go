@@ -19,9 +19,10 @@ var Transparent = Color{}
 func RGB(r, g, b uint8) Color { return Color{r, g, b, 255} }
 
 // RGBA is a color with alpha from 0 to 1.
-func RGBA(r, g, b uint8, alpha float32) Color {
-	return Color{r, g, b, uint8(min(max(alpha, 0), 1)*255 + 0.5)}
-}
+func RGBA(r, g, b uint8, alpha float32) Color { return Color{r, g, b, channel(alpha)} }
+
+// channel is a 0..1 value as 0..255, clamped and rounded.
+func channel(v float32) uint8 { return uint8(min(max(v, 0), 1)*255 + 0.5) }
 
 // Hex parses "#rgb", "#rgba", "#rrggbb" or "#rrggbbaa"; Transparent when it
 // cannot.
@@ -54,8 +55,7 @@ func (c Color) color() bui.Color {
 }
 
 func fromKit(c bui.Color) Color {
-	b := func(v float32) uint8 { return uint8(min(max(v, 0), 1)*255 + 0.5) }
-	return Color{b(c.R), b(c.G), b(c.B), b(c.A)}
+	return Color{channel(c.R), channel(c.G), channel(c.B), channel(c.A)}
 }
 
 // Align places children along (Justify) or across (AlignItems, AlignSelf) a

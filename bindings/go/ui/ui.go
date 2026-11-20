@@ -61,7 +61,9 @@ type Context struct {
 	themeGen int
 }
 
-type shortcut struct{ pending int }
+// shortcut is a key combination a view asked about: presses count while the
+// last build asked, and wait for the next one.
+type shortcut struct{ pending, asked int }
 
 // Content is a window's user interface, for bui.WindowOptions.Content. Make it
 // with View.
@@ -79,11 +81,9 @@ func View(view func(c *Context)) *Content { return &Content{view: view} }
 // AttachContent builds the view into the window's tree (bui.NewWindow calls it).
 func (v *Content) AttachContent(w *bui.Window) {
 	c := newContext(v.view, w.Context(), w)
-	w.OnFrame(func() {
-		if c.dirty {
-			c.build()
-		}
-	})
+	// a frame is asked for after input, c.Invalidate, or Window.Update and
+	// Invalidate, which change the state the view reads: build it again
+	w.OnFrame(c.build)
 	c.build()
 }
 
@@ -99,14 +99,20 @@ func newContext(view func(*Context), ctx *bui.Context, win *bui.Window) *Context
 // outcome.
 func (c *Context) build() {
 	c.building = true
-	defer func() { c.building = false }()
+	more := false
+	defer func() {
+		c.building = false
+		if more { // what the last pass took shows after one more build
+			c.markDirty()
+		}
+	}()
 	c.dirty = false
 	c.scale = float32(bui.Unit()) / 20
 	if g := bui.ThemeGeneration(); g != c.themeGen || c.pass == 0 {
 		c.themeGen = g
 		c.theme = currentTheme()
 	}
-	for i := 0; i < 4; i++ {
+	for i := 0; i < maxPasses; i++ {
 		c.pass++
 		c.consumed = false
 		c.parent = c.root
@@ -119,11 +125,15 @@ func (c *Context) build() {
 		for _, fn := range actions {
 			fn()
 		}
-		if !c.consumed && len(actions) == 0 {
+		if more = c.consumed || len(actions) > 0; !more {
 			break
 		}
 	}
 }
+
+// maxPasses bounds the passes of one build; input left after them gets
+// another build.
+const maxPasses = 4
 
 // markDirty asks for a build after input.
 func (c *Context) markDirty() {
@@ -169,10 +179,13 @@ func (c *Context) Shortcut(mods Modifiers, key Key) bool {
 		sc = &shortcut{}
 		c.keys[combo] = sc
 		c.ctx.Bind(combo, func() {
-			sc.pending++
-			c.markDirty()
+			if sc.asked == c.pass { // a view that no longer asks takes no presses
+				sc.pending++
+				c.markDirty()
+			}
 		})
 	}
+	sc.asked = c.pass
 	if sc.pending == 0 {
 		return false
 	}
@@ -189,15 +202,17 @@ type ident struct {
 	key  any
 }
 
+// printedKey is a key Go cannot compare (a slice, a value holding one) or that
+// is not equal to itself (NaN), by its value printed: a type of its own, so it
+// never equals a string key.
+type printedKey struct{ s string }
+
 func keyOf(k any) any {
 	if k == nil {
 		return nil
 	}
-	if t := reflect.TypeOf(k); !t.Comparable() {
-		return fmt.Sprint(k)
-	}
-	if f, ok := k.(float64); ok && f != f { // NaN equals nothing
-		return fmt.Sprint(k)
+	if !reflect.ValueOf(k).Comparable() || k != k {
+		return printedKey{fmt.Sprint(k)}
 	}
 	return k
 }
@@ -259,8 +274,12 @@ func (c *Context) newSlot(k kind, typ string, p *slot) *slot {
 	return s
 }
 
-// begin starts a container's children for this pass.
+// begin starts a container's children for this pass; a second Children call
+// in the same pass adds to them.
 func (c *Context) begin(s *slot) {
+	if s.begun == c.pass {
+		return
+	}
 	s.begun = c.pass
 	s.kids = s.kids[:0]
 	s.ord = [kindCount]int{}

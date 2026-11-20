@@ -46,6 +46,7 @@ type slot struct {
 	ord    [kindCount]int
 	begun  int
 	spaces []*bui.Node // Justify's spacers
+	order  []*bui.Node // the host's children in order, reused each pass
 
 	// input since the last build, and what this pass reports
 	clicks, submits             int
@@ -58,11 +59,13 @@ type slot struct {
 	str   string
 	bound bool
 
-	options     []string // a Select's, as last given
-	bitmap      *Bitmap
-	text, label string // for Tester lookups
-	nums        map[string]float64
-	strs        map[string]string
+	options      []string // a Select's, as last given
+	defStep      float64  // a number control's kit step and precision
+	defPrecision float64
+	bitmap       *Bitmap
+	text, label  string // for Tester lookups
+	nums         map[string]float64
+	strs         map[string]string
 
 	look, shown look
 	lookSet     bool
@@ -135,10 +138,16 @@ func (e Element) Key(key any) Element {
 	}
 	id := ident{kind: e.s.kind, n: -1, key: keyOf(key)}
 	if old := p.index[id]; old != nil && old != e.s && old.pass != e.c.pass {
-		// the keyed element of last time takes this place
+		// the keyed element of last time takes this one's place, with the look and
+		// layout its modifiers set so far
+		for i, k := range p.kids {
+			if k == e.s {
+				p.kids[i] = old
+				break
+			}
+		}
+		old.pass, old.look, old.lay = e.c.pass, e.s.look, e.s.lay
 		e.c.freeSlot(e.s)
-		p.kids[len(p.kids)-1] = old
-		old.pass, old.look, old.lay = e.c.pass, look{}, layout{}
 		p.index[id] = old
 		return Element{c: e.c, s: old, pass: e.pass}
 	}
@@ -396,64 +405,68 @@ func (c *Context) arrange(s *slot) {
 	}
 
 	// the order: Justify's spacers around and between the children
-	grows := false
+	grows := false // a growing child takes the free space: no spacers then
 	for _, k := range s.kids {
-		grows = grows || k.lay.grow > 0 || k.kind == kindSpacer ||
-			(row && k.lay.fillW) || (!row && k.lay.fillH)
+		grows = grows || !k.look.hidden && (k.lay.grow > 0 || k.kind == kindSpacer ||
+			(row && k.lay.fillW) || (!row && k.lay.fillH))
 	}
-	before, between, after := false, false, false
+	// spacers share the free space equally: one at an end and two between
+	// children make SpaceAround's half gaps at the ends
+	before, between, after := 0, 0, 0
 	if !grows && lay.hasJustify && len(s.kids) > 0 {
 		switch lay.justify {
 		case Center:
-			before, after = true, true
+			before, after = 1, 1
 		case End:
-			before = true
+			before = 1
 		case SpaceBetween:
-			between = true
-		case SpaceAround, SpaceEvenly:
-			before, between, after = true, true, true
+			between = 1
+		case SpaceAround:
+			before, between, after = 1, 2, 1
+		case SpaceEvenly:
+			before, between, after = 1, 1, 1
 		}
 	}
-	order := make([]*bui.Node, 0, 2*len(s.kids)+1)
+	order := s.order[:0]
 	used := 0
-	space := func() {
-		if used == len(s.spaces) {
-			s.spaces = append(s.spaces, bui.NewNode("frame"))
+	space := func(n int) {
+		for ; n > 0; n-- {
+			if used == len(s.spaces) {
+				s.spaces = append(s.spaces, bui.NewNode("frame"))
+			}
+			sp := s.spaces[used]
+			used++
+			side := 0
+			if row {
+				side = 2
+			}
+			sp.Pack("side", float64(side)).Pack("expand", 1).Pack("fill", 3)
+			order = append(order, sp)
 		}
-		sp := s.spaces[used]
-		used++
-		side := 0
-		if row {
-			side = 2
-		}
-		sp.Pack("side", float64(side)).Pack("expand", 1).Pack("fill", 3)
-		order = append(order, sp)
 	}
-	if before {
-		space()
-	}
+	space(before)
 	for i, k := range s.kids {
-		if i > 0 && between {
-			space()
+		if i > 0 {
+			space(between)
 		}
 		order = append(order, k.node)
 	}
-	if after {
-		space()
+	space(after)
+	for _, sp := range s.spaces[used:] { // spacers no longer needed go
+		sp.Free()
 	}
-	for _, sp := range s.spaces[used:] {
-		if sp.Parent() != nil {
-			s.host.Remove(sp)
-		}
-	}
+	s.spaces = s.spaces[:used]
 	for i, n := range order {
-		if s.host.ChildCount() <= i || s.host.Child(i) != n {
-			if n.Parent() != nil {
-				s.host.Remove(n)
-			}
+		if s.host.ChildCount() > i && s.host.Child(i) == n {
+			continue
+		}
+		if n.Parent() == s.host {
+			s.host.Move(n, i) // in place: it keeps the focus and a text edit
+		} else {
 			s.host.Insert(n, i)
 		}
 	}
+	s.order = order
 
 	// the box itself
 	px := func(v float32) int { return int(v*c.scale + 0.5) }

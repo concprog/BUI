@@ -47,6 +47,7 @@ func main() {
   (MSYS2's `ucrt64` or `mingw64`, or the one on GitHub's runners); MSVC and
   `clang-cl` don't work with cgo. If `CC` names another compiler, set
   `CC=gcc CXX=g++` for the build.
+- **On Linux**, the X11 development headers (`libx11-dev`, or `libX11-devel`).
 - **CMake**, and Ninja if you have it (on Windows without Ninja, MinGW's
   `mingw32-make`).
 - No separate BUI install: `go generate` builds the C kit into `.bui/`.
@@ -65,7 +66,7 @@ go run ./examples/headless   # render and click without a window
 go test ./...                # both packages' tests, headless
 ```
 
-`go generate` runs `internal/buildkit`, which configures CMake once in
+`go generate` runs `internal/kitgen`, which configures CMake once in
 `.bui/build` with the compiler cgo uses (`go env CC`, a launcher such as
 `ccache gcc` included), builds `bui_kit`, and copies the libraries to
 `.bui/lib` and the headers to `.bui/include`, only when they changed. Set
@@ -139,9 +140,8 @@ ui.Column(c).Padding(16).Gap(8).Children(func() {
 ### Input
 
 Controls take a pointer to what they edit and write the user's edit through
-it as their constructor returns, so the next statement reads it, as in Dear
-ImGui, egui and MyGo. A value the app changes shows in the control on the
-next build.
+it as their constructor returns, so the next statement reads it, as in MyGo. A value the app
+changes shows in the control on the next build.
 
 ```go
 if ui.Checkbox(c, &app.showHidden, "Show hidden files").Changed() {
@@ -196,7 +196,7 @@ window.
 - `Justify(Start | Center | End | SpaceBetween | SpaceAround | SpaceEvenly)`,
   `AlignItems(Start | Center | End | Stretch)`, `AlignSelf`, and `Center()`
   for both. A size of its own across the direction wins over `Stretch`, as
-  in CSS. SpaceAround spaces as SpaceEvenly.
+  in CSS.
 
 They are laid out by the kit's packer (Tk's), so only what changed is laid
 out again.
@@ -259,7 +259,7 @@ bui.Run()
   `ContextMenu`), `Bind("ctrl+s", fn)`, `HitAt`, `Hover`, `Focus`,
   `FocusNode`, `Popups`, `Undo`, `Redo`, the clipboard.
 - **Windows**: `NewWindow(WindowOptions)` with a `Root`, a `Context` or a
-  `Content`, `Show`, `Close`, `SetTitle`, `SetSize`, `SetGPU`, `Timer`,
+  `Content`, `Show`, `Close`, `SetTitle`, `SetSize`, `Size`, `UseGPU`, `Timer`,
   `RequestFrame`, `OnFrame`, `OnClose`, `OnFocus`, `WM` and `WMGet` (Tk's
   `wm`), `Update`, `Invalidate`; `Run`, `Pump`, `Quit`, `RunOnMain`, and
   `App.WhenReady` / `App.Run`.

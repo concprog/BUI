@@ -56,18 +56,13 @@ func withItem(it *CanvasItem, fn func(*C.BKCanvasItem)) {
 	ci.outline = [4]C.float{C.float(it.Outline.R), C.float(it.Outline.G), C.float(it.Outline.B), C.float(it.Outline.A)}
 	ci.width, ci.radius, ci.size = C.float(it.Width), C.float(it.Radius), C.float(it.Size)
 	ci.start, ci.extent = C.float(it.Start), C.float(it.Extent)
-	if it.Text != "" {
-		t := C.CString(it.Text)
-		defer C.free(unsafe.Pointer(t))
-		ci.text = t
-	}
-	if it.Src != "" {
-		s := C.CString(it.Src)
-		defer C.free(unsafe.Pointer(s))
-		ci.src = s
-	}
 	ci.anchor, ci.fit, ci.hidden = C.int(it.Anchor), C.int(it.Fit), cbool(it.Hidden)
-	fn(&ci)
+	withOptCstr(it.Text, func(t *C.char) {
+		withOptCstr(it.Src, func(s *C.char) {
+			ci.text, ci.src = t, s
+			fn(&ci)
+		})
+	})
 }
 
 // SetItem inserts or replaces a canvas item by its ID.
@@ -101,7 +96,7 @@ func (n *Node) ItemCount() int { return int(C.BK_canvas_count(n.h)) }
 
 // TextInsert inserts text at a byte offset.
 func (n *Node) TextInsert(offset int, text string) {
-	cstr(text, func(s *C.char) struct{} { C.BK_textarea_insert(n.h, C.int(offset), s); return struct{}{} })
+	withCstr(text, func(s *C.char) { C.BK_textarea_insert(n.h, C.int(offset), s) })
 }
 
 // TextDelete deletes the bytes start..end.
@@ -149,7 +144,7 @@ func (t *TreeItem) Label() string { return C.GoString(C.BK_tree_item_label(t.h))
 
 // SetLabel sets it.
 func (t *TreeItem) SetLabel(label string) {
-	cstr(label, func(s *C.char) struct{} { C.BK_tree_item_set_label(t.h, s); return struct{}{} })
+	withCstr(label, func(s *C.char) { C.BK_tree_item_set_label(t.h, s) })
 }
 
 // Set sets a number of the item ("open", "selected", ...).

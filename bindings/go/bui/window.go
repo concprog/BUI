@@ -44,6 +44,9 @@ type Window struct {
 	onFrame func()
 	onClose func() bool
 	onFocus func(active bool)
+	// a callback of the window is running: Free waits for it to return
+	dispatching int
+	freeLater   bool
 }
 
 // ErrNoWindows is returned where the platform has no window host (or, on
@@ -60,6 +63,7 @@ func NewWindow(o WindowOptions) *Window {
 		return nil
 	}
 	ctx, owns := o.Context, false
+	var made *Node // a root made here, freed with the window
 	if ctx == nil {
 		root := o.Root
 		if root == nil {
@@ -68,6 +72,7 @@ func NewWindow(o WindowOptions) *Window {
 				typ = "frame"
 			}
 			root = NewNode(typ)
+			made = root
 		}
 		ctx, owns = NewContext(root), true
 	}
@@ -81,6 +86,7 @@ func NewWindow(o WindowOptions) *Window {
 		if owns {
 			ctx.Free()
 		}
+		made.Free()
 		return nil
 	}
 	w := &Window{h: h, id: newID(), ctx: ctx, ownsCtx: owns}
@@ -114,9 +120,14 @@ func (w *Window) Close() { C.BK_window_close(w.h) }
 func (w *Window) IsOpen() bool { return w.h != nil && C.BK_window_is_open(w.h) != 0 }
 
 // Free frees a closed window, and its context and tree when NewWindow made
-// them.
+// them. Called from one of the window's own callbacks, it frees the window
+// once that callback has returned.
 func (w *Window) Free() {
 	if w.h == nil {
+		return
+	}
+	if w.dispatching > 0 {
+		w.freeLater = true
 		return
 	}
 	delete(windows, w.id)
@@ -131,21 +142,27 @@ func (w *Window) Free() {
 
 // SetTitle sets the title.
 func (w *Window) SetTitle(title string) {
-	cstr(title, func(t *C.char) struct{} { C.BK_window_set_title(w.h, t); return struct{}{} })
+	withCstr(title, func(t *C.char) { C.BK_window_set_title(w.h, t) })
 }
 
 // SetSize sets the size in logical pixels.
 func (w *Window) SetSize(width, height int) { C.BK_window_set_size(w.h, C.int(width), C.int(height)) }
 
-// Size is the size in logical pixels.
+// Size is the size in logical pixels, as SetSize takes it (the kit reports
+// device pixels).
 func (w *Window) Size() (width, height int) {
 	var a, b C.int
 	C.BK_window_get_size(w.h, &a, &b)
-	return int(a), int(b)
+	scale, _, ok := w.WMGet("scale")
+	if !ok || scale <= 0 {
+		scale = 1
+	}
+	return int(float64(a)/scale + 0.5), int(float64(b)/scale + 0.5)
 }
 
-// SetGPU renders the window on the GPU (true) or in software.
-func (w *Window) SetGPU(on bool) { C.BK_window_set_gpu(w.h, cbool(on)) }
+// UseGPU moves the window to the GPU renderer (Direct3D 11, OpenGL); it
+// stays in software where the GPU cannot start. A window does not go back.
+func (w *Window) UseGPU() { C.BK_window_set_gpu(w.h, 1) }
 
 // GPU reports frames drawn on the GPU.
 func (w *Window) GPU() bool { return C.BK_window_gpu(w.h) != 0 }
@@ -175,9 +192,13 @@ func (w *Window) WMGet(key string) (a, b float64, ok bool) {
 	return float64(x), float64(y), ok
 }
 
-// Timer runs fn once after ms milliseconds; it returns the timer's id.
+// Timer runs fn once after ms milliseconds; it returns the timer's id, or -1
+// when the window can hold no more timers.
 func (w *Window) Timer(ms int, fn func()) int {
 	id := int(C.BK_window_timer(w.h, C.int(ms)))
+	if id < 0 {
+		return -1
+	}
 	if w.timers == nil {
 		w.timers = map[int]func(){}
 	}
@@ -219,35 +240,48 @@ func (w *Window) Update(fn func()) {
 	})
 }
 
+// dispatch runs one of the window's callbacks; a Free asked for inside it
+// happens once it has returned, when the kit no longer uses the window.
+func (w *Window) dispatch(fn func()) {
+	w.dispatching++
+	fn()
+	w.dispatching--
+	if w.dispatching == 0 && w.freeLater {
+		w.freeLater = false
+		w.Free()
+	}
+}
+
 //export goWindowTimer
 func goWindowTimer(id C.uintptr_t, timer C.int) {
 	if w := windows[uintptr(id)]; w != nil {
 		if fn := w.timers[int(timer)]; fn != nil {
 			delete(w.timers, int(timer))
-			fn()
+			w.dispatch(fn)
 		}
 	}
 }
 
 //export goWindowClose
 func goWindowClose(id C.uintptr_t) C.int {
-	if w := windows[uintptr(id)]; w != nil && w.onClose != nil && !w.onClose() {
-		return 0
+	keep := false
+	if w := windows[uintptr(id)]; w != nil && w.onClose != nil {
+		w.dispatch(func() { keep = !w.onClose() })
 	}
-	return 1
+	return cbool(!keep)
 }
 
 //export goWindowFrame
 func goWindowFrame(id C.uintptr_t) {
 	if w := windows[uintptr(id)]; w != nil && w.onFrame != nil {
-		w.onFrame()
+		w.dispatch(w.onFrame)
 	}
 }
 
 //export goWindowFocus
 func goWindowFocus(id C.uintptr_t, active C.int) {
 	if w := windows[uintptr(id)]; w != nil && w.onFocus != nil {
-		w.onFocus(active != 0)
+		w.dispatch(func() { w.onFocus(active != 0) })
 	}
 }
 
