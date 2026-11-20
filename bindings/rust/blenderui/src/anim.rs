@@ -1271,9 +1271,10 @@ struct RunPaint {
 fn paint_field(f: Field, leaf: bool) -> bool {
     use Field::*;
     match f {
-        Opacity | Background | BorderColor(_) | OutlineColor | DecorationColor | BoxShadow | Filter | Backdrop
-        | Rotate | Scale | Transform | Translate => true,
-        Color | TextShadow | Visibility | Accent => leaf,
+        Opacity | Background | BorderColor(_) | OutlineColor | BoxShadow | Filter | Backdrop | Rotate | Scale
+        | Transform | Translate => true,
+        // inherited (text-decoration reaches inline descendants)
+        Color | DecorationColor | TextShadow | Visibility | Accent => leaf,
         _ => false,
     }
 }
@@ -1612,6 +1613,10 @@ impl Animations {
                     }
                 }
             }
+            // Motion's values go over these (its redraw is next), not over the last full frame's
+            for f in st.fields() {
+                self.motion.rebase(key, f, style);
+            }
             let after = at(style);
             if before != after {
                 shift[p.node] = (after.0 - before.0, after.1 - before.1);
@@ -1845,7 +1850,10 @@ fn apply_discrete(list: &[Discrete], p: f32, before: bool, timing: &Timing, out:
         let bo = b.map_or(1.0, |b| b.0);
         let local = if bo > ao { (p - ao) / (bo - ao) } else { 1.0 };
         let eased = at.unwrap_or(timing).apply(local, before);
-        if let Some(d) = if eased < 0.5 { a } else { b }.map(|e| e.1) {
+        // past an explicit 100% key there is no next one: that key holds (a missing one, the
+        // underlying value, takes over halfway)
+        let next = if b.is_none() && ao >= 1.0 { a } else { b };
+        if let Some(d) = if eased < 0.5 { a } else { next }.map(|e| e.1) {
             apply_decl(out, d, env, u);
         }
     }

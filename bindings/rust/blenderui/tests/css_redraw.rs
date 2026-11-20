@@ -103,3 +103,28 @@ fn layout_animations_still_render() {
         assert_eq!(pixel(cx, w, 65, 10), (0, 0, 0));
     });
 }
+
+struct Over;
+
+impl Render for Over {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        body().child(style().child("html, body { margin: 0; background: #000 }
+            #g { position: absolute; left: 0; top: 0; width: 200px; height: 50px; display: flex;
+                 animation: over 0.5s linear forwards }
+            #k { width: 50px; height: 50px; background: #fff }
+            @keyframes over { 0% { justify-content: flex-start } 100% { justify-content: flex-end } }"))
+            .child(div().id("g").child(div().id("k")))
+    }
+}
+
+/// A discrete value at an explicit 100% key is the one that holds at the end
+/// (`forwards`), not the underlying one.
+#[test]
+fn an_explicit_last_discrete_key_holds() {
+    Application::headless().run(|cx| {
+        let w = open(cx, Over);
+        assert_eq!(pixel(cx, w, 25, 25), (255, 255, 255), "at the start");
+        run_to(cx, w, 0, 700);
+        assert_eq!(pixel(cx, w, 175, 25), (255, 255, 255), "justify-content: flex-end at 100% holds");
+    });
+}

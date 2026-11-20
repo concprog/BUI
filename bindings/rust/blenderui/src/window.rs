@@ -1613,19 +1613,8 @@ impl Window {
     /// A frame of moving values alone (CSS animations', then Motion's): the last frame's elements, with
     /// their values set again and painted (no render, cascade or layout).
     fn redraw(&mut self, app: &mut App) {
-        self.motion_frame = false;
-        let css = std::mem::take(&mut self.css_frame);
         let Some(mut frame) = self.frame.take() else { return };
-        let vp = self.viewport();
-        // CSS animations' values first, Motion's on top (as at a full frame)
-        let moved_css = if css {
-            self.caches.anim.redraw_css(self.clock.now(), &mut frame, &mut self.caches.styles, vp)
-        } else {
-            Some((Vec::new(), false))
-        };
-        let Some((css_dirty, css_running)) =
-            moved_css.filter(|_| self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp))
-        else {
+        let Some((css_dirty, css_running)) = self.sample_values(&mut frame) else {
             self.frame = Some(frame);
             self.dirty = true;
             return self.rebuild(app);
@@ -1644,6 +1633,26 @@ impl Window {
         dirty.iter_mut().zip(&css_dirty).filter(|(_, c)| **c).for_each(|(d, _)| *d = false);
         self.caches.anim.give_redrawn(dirty);
         self.caches.anim.give_css_dirty(css_dirty);
+        self.request_more_values(css_running);
+    }
+
+    /// The moving values of `frame` set again for now: CSS animations' first,
+    /// Motion's on top (as at a full frame). The boxes CSS changed and whether
+    /// its animations run on; `None` when a value changes layout (a render then).
+    fn sample_values(&mut self, frame: &mut Frame) -> Option<(Vec<bool>, bool)> {
+        self.motion_frame = false;
+        let css = std::mem::take(&mut self.css_frame);
+        let vp = self.viewport();
+        let moved_css = if css {
+            self.caches.anim.redraw_css(self.clock.now(), frame, &mut self.caches.styles, vp)
+        } else {
+            Some((Vec::new(), false))
+        };
+        moved_css.filter(|_| self.caches.anim.redraw_motion(frame, &mut self.caches.styles, vp))
+    }
+
+    /// Another frame of values when CSS animations (`css_running`) or Motion's run on.
+    fn request_more_values(&mut self, css_running: bool) {
         if css_running {
             self.request_css_frame();
         }
@@ -1683,9 +1692,24 @@ impl Window {
         if in_view {
             self.dirty = true;
         }
+        // what animates moves on under the scroll (a glide scrolls every frame for
+        // as long as it runs): this frame's values, over the new placement
+        let mut sampled = None;
+        if self.motion_frame {
+            let Some((css_dirty, css_running)) = self.sample_values(&mut frame) else {
+                self.frame = Some(frame);
+                self.dirty = true;
+                return self.rebuild(app);
+            };
+            self.caches.anim.give_css_dirty(css_dirty);
+            sampled = Some(css_running);
+        }
         self.widgets.keep(); // no layout ran: the widgets are the last frame's
         self.same_frame = true; // the same boxes: the selection's index of them stays
         self.present(app, frame, None);
+        if let Some(css_running) = sampled {
+            self.request_more_values(css_running);
+        }
     }
 
     /// Draw again on the next display refresh, for Motion's values alone.

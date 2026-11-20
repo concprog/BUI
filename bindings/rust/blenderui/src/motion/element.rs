@@ -596,6 +596,17 @@ impl Elements {
         }
     }
 
+    /// A CSS redraw moved field `f` of element `key` (`css`: its style now):
+    /// the base this element's values go over takes it, so they compose with
+    /// the CSS value (a CSS rotation under a Motion scale) rather than put back
+    /// the last full frame's.
+    pub(crate) fn rebase(&mut self, key: u64, f: Field, css: &Computed) {
+        let Some(&i) = self.els.keys.get(&key) else { return };
+        if let Some(base) = &mut self.els.at(i).base {
+            crate::anim::copy_field(f, css, base);
+        }
+    }
+
     /// A frame where only moving values changed (no render, cascade or
     /// layout): each element's values go over its style again, and boxes
     /// moved by `x` / `y` move with their contents. False when that can't do
