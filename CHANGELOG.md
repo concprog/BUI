@@ -119,7 +119,8 @@ All notable changes to **blenderui** (BUI). The format follows
 - **Rust: layers out of view, fading or under a clip cost nothing.**
   - A layer off the window or outside its clip is not drawn.
   - A layer's opacity is applied when its image is drawn: a new `BKCanvasItem::fade` field, 0 by default (the D binding initializes it: D's floats start as NaN), fades an image item. A fully faded file is not decoded.
-  - A layer's outer clip is applied to its image, not its raster.
+  - A layer's outer clip is applied to its image, not its raster, where it draws: under a scaled ancestor that is the scaled clip (a blurred child of a scaled scroller was cut at the unscaled size).
+  - A layer's raster has a size of the content's alone (a pixel over its span), not of where it falls on the device grid: a raster kept from another position of a fractional scroll or glide could be a pixel short and cut its last row or column. A glide still reuses it.
   - Layer results are kept for three paints without use.
   - A box with no area no longer stretches its layer to the page's corner. That bug made every blurred line of a list as big as the page.
   - Subtree tests use an Euler tour instead of walking up from each box, which was quadratic.
@@ -180,7 +181,9 @@ All notable changes to **blenderui** (BUI). The format follows
   `clipw` / `cliph` in `BK_geom_set`), and an overlay with `pointer-events: none` lets the pointer through to the widget
   below it (`BKCanvasItem.no_hit`).
 - **Rust: `whileInView`** counts what a scroller clips as out of view, so a row below a scroller's edge animates when
-  it is scrolled in, not at mount.
+  it is scrolled in, not at mount. A CSS or Motion translate that moves an element into view (or out of it) in a
+  frame of moving values alone now switches its in-view state too (an element starting at `opacity: 0` stayed
+  hidden); that frame is still a redraw, and only a change renders.
 - **Rust: widgets and Motion.** A frame of moving values (no layout) freed every form widget; it keeps them now.
 - **Windows: a window that animates for ever ignored the mouse, the keyboard and its title bar.** The frames of an animation are
   posted messages (`WM_BK_RENDER`, one after another), and Windows hands a thread its posted messages before hardware input and

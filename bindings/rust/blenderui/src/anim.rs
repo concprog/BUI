@@ -1343,9 +1343,10 @@ impl Animations {
     }
 
     /// A frame of Motion's values alone (see [`Elements::redraw`](crate::motion::Elements)):
-    /// false when a full render is needed.
+    /// whether an in-view state changed with the boxes it moved (render again); `None` when a
+    /// full render is needed.
     pub(crate) fn redraw_motion(&mut self, frame: &mut crate::layout::Frame, styles: &mut crate::layout::StyleStore,
-                                viewport: (f32, f32)) -> bool {
+                                viewport: (f32, f32)) -> Option<bool> {
         crate::motion::tick();
         self.motion.redraw(frame, styles, viewport)
     }

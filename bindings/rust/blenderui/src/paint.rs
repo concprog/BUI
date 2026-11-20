@@ -1068,6 +1068,11 @@ impl Mats {
             p.map_items(from, &self.m[i], self.outer[i]);
         }
     }
+
+    /// Where clip `c` of box `i`'s items draws, as [`map`](Self::map) leaves it.
+    fn clip(&self, c: Option<Bounds<f32>>, i: usize) -> Option<Bounds<f32>> {
+        if self.m[i] == crate::effects::IDENTITY { c } else { clip_through(c, &self.m[i], self.outer[i]) }
+    }
 }
 
 /// The effects of box `i`, when it owns them (see [`owns_style`](crate::layout::owns_style)).
@@ -1429,7 +1434,7 @@ fn out_of_view(cx: &LayerCx, root: usize, list: &[usize], e: &crate::effects::Ef
         .fold(crate::effects::filter_outset(&e.filter), |g, f| g + crate::effects::filter_outset(&f.filter));
     let area = rect(boxes.origin.x - g, boxes.origin.y - g, boxes.size.width + 2.0 * g, boxes.size.height + 2.0 * g);
     let window = rect(0.0, 0.0, cx.vp.0, cx.vp.1);
-    let seen = cx.frame.nodes[root].clip.map_or(window, |c| c.intersect(&window));
+    let seen = cx.mats.clip(cx.frame.nodes[root].clip, root).map_or(window, |c| c.intersect(&window));
     let visible = area.intersect(&seen);
     visible.size.width * visible.size.height <= 0.0
 }
@@ -1472,9 +1477,11 @@ fn paint_layer_inner(cx: &mut LayerCx, root: usize, list: &[usize], p: &mut Pain
     inside.append(&mut sub.widgets);
     // the clip the layer is under is applied when its image is drawn: its
     // pixels don't depend on where it sits under it (a line gliding past the
-    // edge of a list is drawn once)
-    sub.unclip(cx.frame.nodes[root].clip);
+    // edge of a list is drawn once). Where it draws: through the transforms
+    // above, as its items carry it
     let n = &cx.frame.nodes[root];
+    let clip = cx.mats.clip(n.clip, root);
+    sub.unclip(clip);
     let c = &cx.styles[n.style];
     let screen = rect(-cx.vp.0, -cx.vp.1, cx.vp.0 * 3.0, cx.vp.1 * 3.0);
     // the content's own area, and the layer's: as far as its filters spread
@@ -1486,10 +1493,19 @@ fn paint_layer_inner(cx: &mut LayerCx, root: usize, list: &[usize], p: &mut Pain
     // resolution, and its image is drawn stretched (bilinear, by the renderer)
     let scale = cx.scale / low_res(&e, cx.scale) as f32;
     let (x0, y0, w, h) = device_rect(area, scale);
-    let (ix0, iy0, iw, ih) = device_rect(inner, scale);
-    if w == 0 || h == 0 || iw == 0 || ih == 0 {
+    let (ix0, iy0, ..) = device_rect(inner, scale);
+    // the raster's size from the content's alone, a pixel over its span (it fits at any phase
+    // of the device grid): a raster found by its key is the size asked for, and a layer
+    // gliding or scrolling a fraction of a pixel a frame reuses it
+    // (of its size as the key has it: a moving layer's size wavers in the last bits)
+    let span = |v: f32| (quantize(v) as f32 / 64.0 * scale).ceil() as usize;
+    let (iw, ih) = (span(inner.size.width) + 1, span(inner.size.height) + 1);
+    if w == 0 || h == 0 || iw == 1 || ih == 1 {
         return;
     }
+    // where the raster sits in the layer (both on the same device grid), which holds it whole
+    let at_inner = ((ix0 - x0) as usize, (iy0 - y0) as usize);
+    let (w, h) = (w.max(at_inner.0 + iw), h.max(at_inner.1 + ih));
     let b = n.bounds;
     let u = Units { font_size: c.font_size, viewport: cx.vp };
     // the root's own transform (a layer's: more than a move and a scale), about
@@ -1509,11 +1525,10 @@ fn paint_layer_inner(cx: &mut LayerCx, root: usize, list: &[usize], p: &mut Pain
     let content = {
         let mut hh = key_hasher();
         sub.content_hash(&mut hh, inner, inner.origin.x, inner.origin.y);
+        // its size and resolution make the raster's size (whatever the grid phase)
         (scale.to_bits(), q(inner.size.width), q(inner.size.height)).hash(&mut hh);
         hh.finish()
     };
-    // where the raster sits in the layer (both on the same device grid)
-    let at_inner = ((ix0 - x0) as usize, (iy0 - y0) as usize);
     let filtered = {
         let mut hh = key_hasher();
         content.hash(&mut hh);
@@ -1543,7 +1558,7 @@ fn paint_layer_inner(cx: &mut LayerCx, root: usize, list: &[usize], p: &mut Pain
         // the layer's own opacity is the image's, not its pixels': a fade
         // draws the same layer (a blend has it in its pixels already)
         p.opacity = if cached { rel_opacity } else { 1.0 };
-        p.clip = n.clip;
+        p.clip = clip;
         p.image(rect(at.origin.x + ox, at.origin.y + oy, at.size.width, at.size.height), img);
     };
     if cached && let Some((img, at)) = LAYERS.with(|l| l.borrow_mut().images.get(placed)) {
@@ -1580,7 +1595,7 @@ fn paint_layer_inner(cx: &mut LayerCx, root: usize, list: &[usize], p: &mut Pain
     // a GPU window turns it on the GPU: the cached layer as a texture, drawn
     // through the matrix (nothing turned on the CPU, nothing uploaded again)
     if transformed && cached && p.is_gpu()
-        && gpu_turn(p, &px, filtered, (x0, y0), &m_dev, (scale, cx.scale), n.clip, rel_opacity)
+        && gpu_turn(p, &px, filtered, (x0, y0), &m_dev, (scale, cx.scale), clip, rel_opacity)
     {
         return;
     }

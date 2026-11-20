@@ -1559,12 +1559,12 @@ impl Window {
         let (css, motion) = self.caches.anim.end();
         // `@container`: sizes changed under a query, or an element came into
         // view (`whileInView`): render once more
-        let (in_view, flipped) = self.caches.anim.after_layout(&frame, &self.caches.styles, vp);
+        let (mut in_view, flipped) = self.caches.anim.after_layout(&frame, &self.caches.styles, vp);
         // useScroll: the values follow the scroll; what they move draws again
         let scrolled = crate::motion::update_scroll(&frame);
         if flipped {
             // a layout animation starts where the element was seen: this frame too
-            self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp);
+            in_view |= self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp) == Some(true);
         }
         let container_changed = self.caches.after_layout(&frame) | in_view;
         // `data-stick="bottom"`: a scroll container that grew goes to its end
@@ -1639,6 +1639,8 @@ impl Window {
     /// The moving values of `frame` set again for now: CSS animations' first,
     /// Motion's on top (as at a full frame). The boxes CSS changed and whether
     /// its animations run on; `None` when a value changes layout (a render then).
+    /// A box they moved into view or out of it (`whileInView`) renders next; the
+    /// frame is a redraw still.
     fn sample_values(&mut self, frame: &mut Frame) -> Option<(Vec<bool>, bool)> {
         self.motion_frame = false;
         let css = std::mem::take(&mut self.css_frame);
@@ -1647,8 +1649,9 @@ impl Window {
             self.caches.anim.redraw_css(self.clock.now(), frame, &mut self.caches.styles, vp)
         } else {
             Some((Vec::new(), false))
-        };
-        moved_css.filter(|_| self.caches.anim.redraw_motion(frame, &mut self.caches.styles, vp))
+        }?;
+        self.dirty |= self.caches.anim.redraw_motion(frame, &mut self.caches.styles, vp)?;
+        Some(moved_css)
     }
 
     /// Another frame of values when CSS animations (`css_running`) or Motion's run on.
@@ -1682,9 +1685,9 @@ impl Window {
         // what follows placement: Motion's in-view states (a change renders
         // next), its layout animations and the scroll-linked values (redraws).
         // Animations alone don't: their values are in the styles placement reads
-        let (in_view, flipped) = self.caches.anim.after_layout(&frame, &self.caches.styles, vp);
+        let (mut in_view, flipped) = self.caches.anim.after_layout(&frame, &self.caches.styles, vp);
         if flipped {
-            self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp);
+            in_view |= self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp) == Some(true);
         }
         if crate::motion::update_scroll(&frame) {
             self.request_motion_frame();
