@@ -9,6 +9,9 @@
 #pragma once
 
 #define GPU_FONT_PATH 260
+/* Room for every font folder of any platform (Linux: BUI_FONT_DIR, 14 system
+ * folders and 2 of the user's). */
+#define GPU_FONT_DIRS_MAX 20
 
 /* The font folders, most specific first (BUI_FONT_DIR, then the platform's);
  * returns how many were written. */

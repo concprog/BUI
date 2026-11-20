@@ -23,7 +23,9 @@
 #  include <windows.h>
 #else
 #  include <dirent.h>
+#  include <fcntl.h>
 #  include <sys/stat.h>
+#  include <unistd.h>
 #endif
 
 int gpu_font_dirs(char dirs[][GPU_FONT_PATH], int max)
@@ -65,8 +67,10 @@ int gpu_font_dirs(char dirs[][GPU_FONT_PATH], int max)
     snprintf(dirs[n++], GPU_FONT_PATH, "%s", nix[i]);
   }
   const char *home = getenv("HOME");
-  if (home && n + 1 < max) {
+  if (home && n < max) {
     snprintf(dirs[n++], GPU_FONT_PATH, "%s/.local/share/fonts", home);
+  }
+  if (home && n < max) {
     snprintf(dirs[n++], GPU_FONT_PATH, "%s/.fonts", home);
   }
 #endif
@@ -83,7 +87,7 @@ typedef struct Named {
 } Named;
 
 static Named *g_named = NULL;
-static int g_named_n = 0, g_named_cap = 0, g_named_built = 0;
+static int g_named_n = 0, g_named_cap = 0;
 
 static unsigned rd16(const unsigned char *p)
 {
@@ -112,14 +116,9 @@ static int same_name(const char *a, const char *b)
   return *a == *b;
 }
 
-static void named_add(const char *family, const char *path, int index, int style)
+/* Appends a record (a saved index's are distinct already: see named_add). */
+static void named_push(const char *family, const char *path, int index, int style)
 {
-  for (int i = 0; i < g_named_n; i++) {
-    const Named *e = &g_named[i];
-    if (e->index == index && e->style == style && same_name(e->family, family) && strcmp(e->path, path) == 0) {
-      return;
-    }
-  }
   if (g_named_n == g_named_cap) {
     const int cap = g_named_cap ? g_named_cap * 2 : 256;
     Named *grown = (Named *)realloc(g_named, sizeof(Named) * (size_t)cap);
@@ -134,6 +133,18 @@ static void named_add(const char *family, const char *path, int index, int style
   snprintf(e->path, sizeof(e->path), "%s", path);
   e->index = index;
   e->style = style;
+}
+
+/* Adds a record read from a font, once (family 1 and 16 are often the same name). */
+static void named_add(const char *family, const char *path, int index, int style)
+{
+  for (int i = 0; i < g_named_n; i++) {
+    const Named *e = &g_named[i];
+    if (e->index == index && e->style == style && same_name(e->family, family) && strcmp(e->path, path) == 0) {
+      return;
+    }
+  }
+  named_push(family, path, index, style);
 }
 
 /* A `name` record's string as UTF-8: UTF-16BE (Windows / Unicode
@@ -187,7 +198,7 @@ static void named_face(FILE *fp, const char *path, int index, unsigned long off)
   if (!read_at(fp, off + 12, dir, (size_t)nt * 16)) {
     return;
   }
-  unsigned long name_off = 0, name_len = 0, os2_off = 0;
+  unsigned long name_off = 0, name_len = 0, os2_off = 0, os2_len = 0;
   for (unsigned k = 0; k < nt; k++) {
     const unsigned char *t = dir + k * 16;
     if (memcmp(t, "name", 4) == 0) {
@@ -196,16 +207,19 @@ static void named_face(FILE *fp, const char *path, int index, unsigned long off)
     }
     else if (memcmp(t, "OS/2", 4) == 0) {
       os2_off = rd32(t + 8);
+      os2_len = rd32(t + 12);
     }
   }
   if (!name_off || name_len < 6 || name_len > (1ul << 20)) {
     return;
   }
+  /* only the fields the table holds: usWeightClass (bytes 4-5), fsSelection (62-63) */
   int style = 0;
   unsigned char os2[64];
-  if (os2_off && read_at(fp, os2_off, os2, sizeof(os2))) {
+  const size_t os2_read = os2_len < sizeof(os2) ? (size_t)os2_len : sizeof(os2);
+  if (os2_off && os2_read >= 6 && read_at(fp, os2_off, os2, os2_read)) {
     style |= rd16(os2 + 4) >= 600 ? BUI_FONT_BOLD : 0;
-    style |= (rd16(os2 + 62) & 1) ? BUI_FONT_ITALIC : 0;
+    style |= (os2_read >= 64 && (rd16(os2 + 62) & 1)) ? BUI_FONT_ITALIC : 0;
   }
   unsigned char *nm = (unsigned char *)malloc(name_len);
   if (!nm || !read_at(fp, name_off, nm, name_len)) {
@@ -233,7 +247,18 @@ static void named_face(FILE *fp, const char *path, int index, unsigned long off)
 
 static void named_file(const char *path)
 {
+#ifdef _WIN32
   FILE *fp = fopen(path, "rb");
+#else
+  /* nonblocking, and a regular file only: a FIFO named like a font (or put in one's place
+   * since the folder was read) would stall the open or the reads */
+  const int fd = open(path, O_RDONLY | O_NONBLOCK);
+  struct stat st;
+  FILE *fp = fd >= 0 && fstat(fd, &st) == 0 && S_ISREG(st.st_mode) ? fdopen(fd, "rb") : NULL;
+  if (!fp && fd >= 0) {
+    close(fd);
+  }
+#endif
   if (!fp) {
     return;
   }
@@ -265,6 +290,36 @@ static int font_file(const char *name)
   return same_name(e, "ttf") || same_name(e, "otf") || same_name(e, "ttc");
 }
 
+static long long dir_stamp(const char *dir);
+
+/* The folders read below the font folders, with when each last changed: a
+ * font added to one changes its stamp, not the font folder's, so the saved
+ * index keeps them all (index_save). */
+typedef struct SubDir {
+  long long stamp;
+  char dir[GPU_FONT_PATH];
+} SubDir;
+static SubDir *g_subdirs = NULL;
+static int g_subdir_n = 0, g_subdir_cap = 0;
+static int g_subdir_lost = 0; /* one couldn't be kept: the index isn't saved */
+
+static void subdir_add(const char *dir)
+{
+  if (g_subdir_n == g_subdir_cap) {
+    const int cap = g_subdir_cap ? g_subdir_cap * 2 : 64;
+    SubDir *grown = (SubDir *)realloc(g_subdirs, sizeof(SubDir) * (size_t)cap);
+    if (!grown) {
+      g_subdir_lost = 1;
+      return;
+    }
+    g_subdirs = grown;
+    g_subdir_cap = cap;
+  }
+  SubDir *s = &g_subdirs[g_subdir_n++];
+  s->stamp = dir_stamp(dir);
+  snprintf(s->dir, sizeof(s->dir), "%s", dir);
+}
+
 /* Every font file under `dir`, `depth` folders deep. */
 static void named_dir(const char *dir, int depth)
 {
@@ -284,6 +339,7 @@ static void named_dir(const char *dir, int depth)
     snprintf(path, sizeof(path), "%s/%s", dir, fd.cFileName);
     if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
       if (depth > 0) {
+        subdir_add(path);
         named_dir(path, depth - 1);
       }
     }
@@ -309,10 +365,11 @@ static void named_dir(const char *dir, int depth)
     }
     if (S_ISDIR(st.st_mode)) {
       if (depth > 0) {
+        subdir_add(path);
         named_dir(path, depth - 1);
       }
     }
-    else if (font_file(ent->d_name)) {
+    else if (S_ISREG(st.st_mode) && font_file(ent->d_name)) {
       named_file(path);
     }
   }
@@ -322,8 +379,7 @@ static void named_dir(const char *dir, int depth)
 
 /* -- the saved index ------------------------------------------------------------------- */
 
-#define INDEX_MAGIC "BUI font index 1"
-#define MAX_DIRS 16
+#define INDEX_MAGIC "BUI font index 2"
 
 /* When `dir` last changed (a font added or removed changes it); 0 when absent. */
 static long long dir_stamp(const char *dir)
@@ -386,7 +442,8 @@ static int index_path(char r_path[GPU_FONT_PATH])
 }
 
 /* The saved index, when it was made from these folders as they are now. Lines:
- * the magic, "D <stamp> <folder>" per folder, then "F <index> <style> <family>\t<path>". */
+ * the magic, "D <stamp> <folder>" per font folder, "S <stamp> <folder>" per
+ * folder read below them, then "F <index> <style> <family>\t<path>". */
 static int index_load(char dirs[][GPU_FONT_PATH], const long long *stamps, int nd)
 {
   char path[GPU_FONT_PATH];
@@ -405,14 +462,19 @@ static int index_load(char dirs[][GPU_FONT_PATH], const long long *stamps, int n
   }
   while (ok && fgets(line, sizeof(line), fp)) {
     line[strcspn(line, "\r\n")] = 0;
+    long long stamp = 0;
     int index = 0, style = 0, at = 0;
+    if (line[0] == 'S' && sscanf(line, "S %lld %n", &stamp, &at) == 1) {
+      ok = stamp == dir_stamp(line + at); /* a font added to or removed from it */
+      continue;
+    }
     char *tab = strchr(line, '\t');
-    if (line[0] == 'D' || !tab || sscanf(line, "F %d %d %n", &index, &style, &at) != 2) {
+    if (line[0] != 'F' || !tab || sscanf(line, "F %d %d %n", &index, &style, &at) != 2) {
       ok = 0; /* a folder more than now, or a broken line */
       break;
     }
     *tab = 0;
-    named_add(line + at, tab + 1, index, style);
+    named_push(line + at, tab + 1, index, style);
   }
   fclose(fp);
   if (!ok) {
@@ -421,14 +483,21 @@ static int index_load(char dirs[][GPU_FONT_PATH], const long long *stamps, int n
   return ok;
 }
 
-/* Written whole to a temporary file, then put in place: a reader never sees half of it. */
+/* Written whole to a temporary file of this process's own (another process
+ * may be writing the index too), then put in place: a reader never sees half
+ * of it. */
 static void index_save(char dirs[][GPU_FONT_PATH], const long long *stamps, int nd)
 {
-  char path[GPU_FONT_PATH], tmp[GPU_FONT_PATH + 8];
-  if (!index_path(path)) {
+  char path[GPU_FONT_PATH], tmp[GPU_FONT_PATH + 24];
+  if (g_subdir_lost || !index_path(path)) {
     return;
   }
-  snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+#ifdef _WIN32
+  const unsigned long pid = (unsigned long)GetCurrentProcessId();
+#else
+  const unsigned long pid = (unsigned long)getpid();
+#endif
+  snprintf(tmp, sizeof(tmp), "%s.%lu.tmp", path, pid);
   FILE *fp = fopen(tmp, "w");
   if (!fp) {
     return;
@@ -436,6 +505,9 @@ static void index_save(char dirs[][GPU_FONT_PATH], const long long *stamps, int 
   fprintf(fp, "%s\n", INDEX_MAGIC);
   for (int i = 0; i < nd; i++) {
     fprintf(fp, "D %lld %s\n", stamps[i], dirs[i]);
+  }
+  for (int i = 0; i < g_subdir_n; i++) {
+    fprintf(fp, "S %lld %s\n", g_subdirs[i].stamp, g_subdirs[i].dir);
   }
   for (int i = 0; i < g_named_n; i++) {
     fprintf(fp, "F %d %d %s\t%s\n", g_named[i].index, g_named[i].style, g_named[i].family, g_named[i].path);
@@ -454,9 +526,9 @@ static void index_save(char dirs[][GPU_FONT_PATH], const long long *stamps, int 
 
 static void index_build(void)
 {
-  char dirs[MAX_DIRS][GPU_FONT_PATH];
-  long long stamps[MAX_DIRS];
-  const int nd = gpu_font_dirs(dirs, MAX_DIRS);
+  char dirs[GPU_FONT_DIRS_MAX][GPU_FONT_PATH];
+  long long stamps[GPU_FONT_DIRS_MAX];
+  const int nd = gpu_font_dirs(dirs, GPU_FONT_DIRS_MAX);
   for (int i = 0; i < nd; i++) {
     stamps[i] = dir_stamp(dirs[i]);
   }
@@ -467,13 +539,20 @@ static void index_build(void)
     named_dir(dirs[i], 3);
   }
   index_save(dirs, stamps, nd);
+  free(g_subdirs); /* only the saved index needs them */
+  g_subdirs = NULL;
+  g_subdir_n = g_subdir_cap = 0;
 }
 
 /* -- built off the UI thread ------------------------------------------------------------ */
 
-/* g_named_built: 0 not started, 1 building on its thread, 2 built (g_named is touched only by
- * the builder until a lookup has waited for it). */
+/* Two run-once steps, so text calls on several threads still build the index exactly once
+ * and every lookup sees it whole: `warm` decides whether a thread builds it (started by
+ * gpu_font_index_warm, or never once a lookup came first), `ready` waits for that thread or
+ * builds it in place. g_named is written only before `ready` completes, read only after. */
+static int g_index_started = 0;
 #ifdef _WIN32
+static INIT_ONCE g_warm_once = INIT_ONCE_STATIC_INIT, g_ready_once = INIT_ONCE_STATIC_INIT;
 static HANDLE g_index_thread = NULL;
 static DWORD WINAPI index_main(LPVOID arg)
 {
@@ -481,8 +560,43 @@ static DWORD WINAPI index_main(LPVOID arg)
   index_build();
   return 0;
 }
+static BOOL CALLBACK warm_start(PINIT_ONCE once, PVOID start, PVOID *ctx)
+{
+  (void)once, (void)ctx;
+  if (start) {
+    g_index_thread = CreateThread(NULL, 0, index_main, NULL, 0, NULL);
+    g_index_started = g_index_thread != NULL;
+  }
+  return TRUE;
+}
+static BOOL CALLBACK ready_main(PINIT_ONCE once, PVOID arg, PVOID *ctx)
+{
+  (void)once, (void)arg, (void)ctx;
+  InitOnceExecuteOnce(&g_warm_once, warm_start, NULL, NULL); /* no thread from now on */
+  if (g_index_started) {
+    WaitForSingleObject(g_index_thread, INFINITE);
+    CloseHandle(g_index_thread);
+  }
+  else {
+    index_build();
+  }
+  return TRUE;
+}
+
+void gpu_font_index_warm(void)
+{
+  InitOnceExecuteOnce(&g_warm_once, warm_start, (PVOID)1, NULL);
+}
+
+/* The index, waiting for its thread if it is still reading (built here when
+ * nothing started it). */
+static void index_ready(void)
+{
+  InitOnceExecuteOnce(&g_ready_once, ready_main, NULL, NULL);
+}
 #else
 #  include <pthread.h>
+static pthread_once_t g_warm_once = PTHREAD_ONCE_INIT, g_ready_once = PTHREAD_ONCE_INIT;
 static pthread_t g_index_thread;
 static void *index_main(void *arg)
 {
@@ -490,41 +604,34 @@ static void *index_main(void *arg)
   index_build();
   return NULL;
 }
-#endif
+static void warm_start(void)
+{
+  g_index_started = pthread_create(&g_index_thread, NULL, index_main, NULL) == 0;
+}
+static void warm_none(void) {}
+static void ready_main(void)
+{
+  pthread_once(&g_warm_once, warm_none); /* no thread from now on */
+  if (g_index_started) {
+    pthread_join(g_index_thread, NULL);
+  }
+  else {
+    index_build();
+  }
+}
 
 void gpu_font_index_warm(void)
 {
-  if (g_named_built) {
-    return;
-  }
-#ifdef _WIN32
-  g_index_thread = CreateThread(NULL, 0, index_main, NULL, 0, NULL);
-  g_named_built = g_index_thread ? 1 : 0;
-#else
-  g_named_built = pthread_create(&g_index_thread, NULL, index_main, NULL) == 0 ? 1 : 0;
-#endif
+  pthread_once(&g_warm_once, warm_start);
 }
 
 /* The index, waiting for its thread if it is still reading (built here when
  * nothing started it). */
 static void index_ready(void)
 {
-  if (g_named_built == 2) {
-    return;
-  }
-  if (g_named_built == 1) {
-#ifdef _WIN32
-    WaitForSingleObject(g_index_thread, INFINITE);
-    CloseHandle(g_index_thread);
-#else
-    pthread_join(g_index_thread, NULL);
-#endif
-  }
-  else {
-    index_build();
-  }
-  g_named_built = 2;
+  pthread_once(&g_ready_once, ready_main);
 }
+#endif
 
 int gpu_font_named(const char *family, int style, char r_path[GPU_FONT_PATH], int *r_index, int *r_have)
 {
