@@ -91,13 +91,17 @@ GPU). An animated scale costs what an animated colour does, and keeps the
 partial repaint.
 
 A turn, a skew or a mirror still takes a layer, because the canvas has no
-rotated text or images. The layer is turned on the GPU, though: it is
-rasterized and filtered once, uploaded as a BUI texture, and drawn through
-the matrix by a small shader (`TURN_SHADER`, a `BK_ITEM_EFFECT` canvas item
-over the turned box from `turn_box`, sampled bilinearly). A turning frame
-moves four corners and samples once per pixel on the GPU, with no CPU
-resample and no upload. The texture is kept with the layer's image and
-freed with it. Without a GPU (the software renderer, headless) the CPU turn
+rotated text or images, and so does a scale that is not the same on both
+axes over text (a text item has one size). The layer is turned on the GPU,
+though: it is rasterized and filtered once, uploaded as a BUI texture of
+its premultiplied texels (`turn_texture`: mixed straight, the faded edges
+of a turned layer darkened), and drawn through the matrix by a small shader
+(`TURN_SHADER`, a `BK_ITEM_EFFECT` canvas item over the turned box from
+`turn_box`, sampled bilinearly). A turning frame moves four corners and
+samples once per pixel on the GPU, with no CPU resample and no upload. The
+texture is held by the layer cache and by every display list that draws it,
+and freed when neither does (another window's paints can drop it from the
+cache while an idle window still shows it). Without a GPU (the software renderer, headless) the CPU turn
 runs. A layer covers what its content painted, so content scaled inside a
 layer is no longer cut at the layer's box (`layer_area`).
 
