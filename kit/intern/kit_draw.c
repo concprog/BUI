@@ -1059,8 +1059,11 @@ void bk_widget_tooltip_back(const BKRect *rect)
 /** \name Text
  * \{ */
 
+/* A width, kept while the text engine's fonts and runs are (BUI_text_generation: a font
+ * added or the run cache flushed may change it). */
 typedef struct MeasureSlot {
   uint64_t hash;
+  unsigned gen;
   float size;
   float width;
 } MeasureSlot;
@@ -1096,7 +1099,8 @@ float bk_text_width(const char *s, int len, bool bold)
   const char *fam = text_family();
   const uint64_t h = hash_str(s, len, bold) ^ (fam != g_font_family ? 0x9e3779b97f4a7c15ull : 0);
   MeasureSlot *slot = &g_measure[h & (MEASURE_SLOTS - 1)];
-  if (slot->hash == h && slot->size == size) {
+  const unsigned gen = BUI_text_generation();
+  if (slot->hash == h && slot->gen == gen && slot->size == size) {
     return slot->width;
   }
   float w = 0.0f;
@@ -1104,6 +1108,7 @@ float bk_text_width(const char *s, int len, bool bold)
     w = len * size * 0.55f;
   }
   slot->hash = h;
+  slot->gen = BUI_text_generation(); /* measuring may have flushed the runs */
   slot->size = size;
   slot->width = w;
   return w;

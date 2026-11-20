@@ -488,4 +488,7 @@ unsafe extern "C" {
     pub fn BK_window_gpu(win: *mut BKWindow) -> c_int;
     pub fn BUI_text_add_font(family: *const c_char, flags: c_int, data: *const c_void,
                              len: c_int) -> c_int;
+    /// Font folder `i` the text engine reads font files from (BUI_FONT_DIR, then the
+    /// platform's), written to `r_dir` (`cap` bytes); its length, 0 past the last.
+    pub fn BUI_text_font_dir(i: c_int, r_dir: *mut c_char, cap: c_int) -> c_int;
 }

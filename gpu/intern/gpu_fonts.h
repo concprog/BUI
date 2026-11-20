@@ -24,8 +24,8 @@ int gpu_font_dirs(char dirs[][GPU_FONT_PATH], int max);
  * ready waits for it. 0 when no installed font has that family. */
 int gpu_font_named(const char *family, int style, char r_path[GPU_FONT_PATH], int *r_index, int *r_have);
 
-/* Starts reading the font folders (or the index saved from them, kept until a
- * folder changes) on a thread of its own; the text engine calls it when it
+/* Starts reading the font folders (or the index saved from them, kept until a font
+ * folder or file changes) on a thread of its own; the text engine calls it when it
  * opens its first font, so a later lookup by name finds it ready. Once. */
 void gpu_font_index_warm(void);
 

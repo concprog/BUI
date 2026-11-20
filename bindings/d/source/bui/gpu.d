@@ -229,6 +229,7 @@ const(uint8_t)* BUI_text_run_mask(const(BuiTextRun)* run,
                                   int* r_ascent);
 int BUI_text_add_font(const(char)* family, int flags, const(void)* data, int len);
 const(void)* BUI_text_default_font(int* r_len);
+int BUI_text_font_dir(int i, char* r_dir, int cap);
 
 /* -- GPU renderers --------------------------------------------------------- */
 int BUI_raster_gpu_attach(BuiRaster* r, void* window_handle, int wait);

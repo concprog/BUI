@@ -1294,7 +1294,8 @@ Blender's:
 
 Characters the font lacks (Hangul, kana, Han, Thai, Indic, symbols) are drawn
 glyph by glyph from the rest of the `font-family` list, then the system's font
-for the script, and installed fonts are found by their own family names. Limits
+for the script, and installed fonts are found by their own family names (an
+installed Arial before the sans stand-ins). Limits
 worth knowing: IME on Windows only (X11 and macOS are coming), right-to-left
 text is reordered but not shaped, no OpenType features. More:
 [Text and fonts](https://bui.preetham.top/docs/concepts/text-and-fonts/).

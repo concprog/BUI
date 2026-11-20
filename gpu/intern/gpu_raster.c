@@ -2732,6 +2732,7 @@ typedef struct FontSlot {
   float opsz;      /* FreeType: optical size (Blender: the text size) */
   int fb[MAX_FALLBACKS]; /* the faces of the rest of the list, for glyphs the face lacks */
   int fb_n;
+  int fb_at; /* where in `family` the entries not looked up yet start (list_fallback) */
 #endif
 } FontSlot;
 
@@ -3069,15 +3070,22 @@ static int gpu_text_glyphs(BuiRaster *r, TextRun *e, float x, float y, const flo
   }
   int face;
   float scale, embolden, shear;
-  if (!glyph_draw_info(e, 0, &face, &scale, &embolden, &shear)) {
-    return 0;
-  }
   const FontSlot *fs = &g_fonts[e->font];
   const float ox = floorf(x + 0.5f), base = floorf(y + 0.5f);
-  const int slug = slug_for((float)fs->px, shear) && bui_gpu_slug_on(r->gpu);
+  const int slug_on = bui_gpu_slug_on(r->gpu);
+  /* the atlas has upright glyphs only: a run with a slanted glyph (synthetic italic, of any
+   * glyph's face) that Slug won't draw takes the run's mask, slanted by the CPU (build_glyph) */
+  if (!(slug_on && slug_for((float)fs->px, 1.0f))) {
+    for (int i = 0; i < (e->gslot ? e->ng : 1); i++) {
+      if (glyph_draw_info(e, i, &face, &scale, &embolden, &shear) && shear != 0.0f) {
+        return 0;
+      }
+    }
+  }
   for (int i = 0; i < e->ng; i++) {
     /* each glyph's own face: a fallback's for a character the run's lacks */
     glyph_draw_info(e, i, &face, &scale, &embolden, &shear);
+    const int slug = slug_on && slug_for((float)fs->px, shear);
     const int passes = embolden > 0.0f ? 1 + (int)(embolden + 0.5f) : 1; /* synthetic bold */
     const FontSlot *gs = &g_fonts[glyph_slot(e, i)];
     const float pen = ox + e->gx[i];
@@ -3482,6 +3490,13 @@ typedef struct Face {
 } Face;
 
 #  define MAX_FACES 64
+/* Kept for embedded Inter's regular and bold (face_inter): the default face opens when font
+ * files have filled the rest. */
+#  ifdef BUI_NO_INTER
+#    define FACES_KEPT 0
+#  else
+#    define FACES_KEPT 2
+#  endif
 static Face g_faces[MAX_FACES];
 static int g_face_count = 0;
 
@@ -3701,7 +3716,7 @@ static int face_load(const char *path, int index)
       same_file = &g_faces[i];
     }
   }
-  if (g_face_count == MAX_FACES || plen + 12 >= sizeof(g_faces[0].key)) {
+  if (g_face_count >= MAX_FACES - FACES_KEPT || plen + 12 >= sizeof(g_faces[0].key)) {
     return -1;
   }
   unsigned char *data = same_file ? same_file->data : NULL;
@@ -3775,7 +3790,7 @@ const void *BUI_text_default_font(int *r_len)
 
 int BUI_text_add_font(const char *family, int flags, const void *data, int len)
 {
-  if (!data || len <= 0 || g_face_count == MAX_FACES || g_reg_count == MAX_FACES) {
+  if (!data || len <= 0 || g_face_count >= MAX_FACES - FACES_KEPT || g_reg_count == MAX_FACES) {
     return 0;
   }
   unsigned char *copy = (unsigned char *)malloc((size_t)len);
@@ -3835,11 +3850,9 @@ static const FamilyFiles g_families[] = {
       "BoldItalic.ttf|Times New Roman Bold Italic.ttf"}},
 };
 
-static int family_index(const char *family)
+/* Whether `family` (case-insensitive) is one of `names`, '|'-separated with one around. */
+static int family_listed(const char *names, const char *family)
 {
-  if (!family[0]) {
-    return 0;
-  }
   char probe[72];
   snprintf(probe, sizeof(probe), "|%s|", family);
   for (int i = 0; probe[i]; i++) {
@@ -3847,8 +3860,16 @@ static int family_index(const char *family)
       probe[i] = (char)(probe[i] + 32);
     }
   }
+  return strstr(names, probe) != NULL;
+}
+
+static int family_index(const char *family)
+{
+  if (!family[0]) {
+    return 0;
+  }
   for (int i = 0; i < (int)(sizeof(g_families) / sizeof(g_families[0])); i++) {
-    if (strstr(g_families[i].names, probe)) {
+    if (family_listed(g_families[i].names, family)) {
       return i;
     }
   }
@@ -3859,20 +3880,19 @@ static int family_index(const char *family)
  * a named system family. */
 static int family_generic(const char *family)
 {
-  static const char *names =
-      "|sans|sans-serif|inter|system-ui|ui-sans-serif|tkdefaultfont|tktextfont|tkheadingfont|"
-      "tkcaptionfont|tkmenufont|tksmallcaptionfont|tkiconfont|tktooltipfont|";
-  char probe[72];
-  if (!family[0]) {
-    return 1;
-  }
-  snprintf(probe, sizeof(probe), "|%s|", family);
-  for (int i = 0; probe[i]; i++) {
-    if (probe[i] >= 'A' && probe[i] <= 'Z') {
-      probe[i] = (char)(probe[i] + 32);
-    }
-  }
-  return strstr(names, probe) != NULL;
+  return !family[0] ||
+         family_listed("|sans|sans-serif|inter|system-ui|ui-sans-serif|tkdefaultfont|tktextfont|"
+                       "tkheadingfont|tkcaptionfont|tkmenufont|tksmallcaptionfont|tkiconfont|"
+                       "tktooltipfont|",
+                       family);
+}
+
+/* A generic family (CSS's, Tk's), named for no installed font: its substitutes draw it.
+ * Any other name is a family of its own ("Arial"), looked for first by that name. */
+static int family_keyword(const char *family)
+{
+  return family_generic(family) ||
+         family_listed("|serif|ui-serif|mono|monospace|ui-monospace|tkfixedfont|", family);
 }
 
 /* The font file `name` (`n` bytes) from the first font folder that has it. */
@@ -3938,20 +3958,11 @@ static int face_lookup(const char *family, int style, int *r_have, int strict)
   }
   char dirs[GPU_FONT_DIRS_MAX][GPU_FONT_PATH];
   const int nd = gpu_font_dirs(dirs, GPU_FONT_DIRS_MAX);
-  /* 3. BUI_FONT overrides the default face */
-  const char *env = (!family[0] || family_index(family) == 0) ? getenv("BUI_FONT") : NULL;
-  if (env && env[0]) {
-    const int f = face_load_file(env);
-    if (f >= 0) {
-      *r_have = 0;
-      return f;
-    }
-  }
-  /* 4. a known generic family, then an installed font of that name (its own
-   * family names), then "<family>.ttf", then the default */
   int fam = family_index(family);
   int generic = family_generic(family);
-  if (fam < 0) {
+  /* 3. a family of its own name, installed (its own family names): "Arial" is Arial when
+   * there is one, its generic family's substitute only when not */
+  if (!family_keyword(family)) {
     char path[GPU_FONT_PATH];
     int index = 0, have = 0;
     if (gpu_font_named(family, style, path, &index, &have)) {
@@ -3961,6 +3972,19 @@ static int face_lookup(const char *family, int style, int *r_have, int strict)
         return f;
       }
     }
+  }
+  /* 4. BUI_FONT overrides the default face */
+  const char *env = fam == 0 ? getenv("BUI_FONT") : NULL;
+  if (env && env[0]) {
+    const int f = face_load_file(env);
+    if (f >= 0) {
+      *r_have = 0;
+      return f;
+    }
+  }
+  /* 5. a family nothing names: "<family>.ttf", else the default (strict: none); a known
+   * generic family: its substitutes */
+  if (fam < 0) {
     char files[200];
     char squashed[64];
     int k = 0;
@@ -4013,9 +4037,11 @@ static int face_lookup(const char *family, int style, int *r_have, int strict)
       return f;
     }
   }
+  if (strict) {
+    return -1; /* in a list, a family that isn't installed gives way to the next */
+  }
   if (fam != 0) {
-    /* in a list, a generic family that isn't installed gives way to the next */
-    return strict ? -1 : face_lookup("", style, r_have, 0);
+    return face_lookup("", style, r_have, 0);
   }
   if (g_reg_count > 0) {
     *r_have = g_regs[0].style;
@@ -4024,9 +4050,17 @@ static int face_lookup(const char *family, int style, int *r_have, int strict)
   return -1;
 }
 
+/* The face of entry `n` bytes at `entry` of a font list, strictly (-1 when nothing has it). */
+static int list_entry(const char *entry, int n, int style, int *r_have)
+{
+  char name[128];
+  snprintf(name, sizeof(name), "%.*s", n, entry);
+  return name[0] ? face_lookup(name, style, r_have, 1) : -1;
+}
+
 /* The face of the first family of `family` (a CSS list "A,B,C") that is
- * registered or installed, the default face when none is; the faces of the
- * others go to the slot's fallbacks, for the glyphs the first lacks. A
+ * registered or installed, the default face when none is; the others are
+ * looked up only when a glyph the first lacks needs them (list_fallback). A
  * fallback face's own slot (`s->own_face`) is that face. */
 static int list_faces(FontSlot *s, const char *family, int style, int *r_have)
 {
@@ -4037,27 +4071,10 @@ static int list_faces(FontSlot *s, const char *family, int style, int *r_have)
   int primary = -1;
   const char *p = family, *entry;
   int n;
-  /* stops once the list has filled its slot: a face loaded past that draws nothing and
-   * keeps a place in the face table */
-  while (s->fb_n < MAX_FALLBACKS && family_next(&p, &entry, &n)) {
-    char name[128];
-    snprintf(name, sizeof(name), "%.*s", n, entry);
-    int have = 0;
-    const int f = name[0] ? face_lookup(name, style, &have, 1) : -1;
-    if (f >= 0 && primary < 0) {
-      primary = f;
-      *r_have = have;
-    }
-    else if (f >= 0 && f != primary) {
-      int seen = 0;
-      for (int k = 0; k < s->fb_n && !seen; k++) {
-        seen = s->fb[k] == f;
-      }
-      if (!seen) {
-        s->fb[s->fb_n++] = f;
-      }
-    }
+  while (primary < 0 && family_next(&p, &entry, &n)) {
+    primary = list_entry(entry, n, style, r_have);
   }
+  s->fb_at = (int)(p - family);
   return primary >= 0 ? primary : face_lookup("", style, r_have, 0);
 }
 
@@ -4394,6 +4411,38 @@ static int system_fallback(int cp, int bold, RunScript *rs)
   return f >= 0 || group == GPU_FALLBACK_ANY ? f : group_find(GPU_FALLBACK_ANY, bold, cp);
 }
 
+/* The face of the rest of slot `s`'s font list that has `cp`: the ones looked up already,
+ * then the next entries, each looked up (its face loaded) only when those before it lack
+ * the glyph, so the faces of a list that never draw take no place in the face table (it
+ * keeps every face loaded). -1: none has it. */
+static int list_fallback(FontSlot *s, int cp)
+{
+  for (int k = 0; k < s->fb_n; k++) {
+    if (face_has(s->fb[k], cp)) {
+      return s->fb[k];
+    }
+  }
+  const int style = s->flags & (BUI_FONT_BOLD | BUI_FONT_ITALIC);
+  const char *p = s->family + s->fb_at, *entry;
+  int n;
+  while (s->fb_n < MAX_FALLBACKS && family_next(&p, &entry, &n)) {
+    s->fb_at = (int)(p - s->family);
+    int have = 0;
+    const int f = list_entry(entry, n, style, &have);
+    int seen = f < 0 || f == s->face;
+    for (int k = 0; k < s->fb_n && !seen; k++) {
+      seen = s->fb[k] == f;
+    }
+    if (!seen) {
+      s->fb[s->fb_n++] = f;
+      if (face_has(f, cp)) {
+        return f;
+      }
+    }
+  }
+  return -1;
+}
+
 /* The slot for `cp`, which slot `font` lacks: the first of the rest of the
  * slot's font list that has it, then the system's for the character's script;
  * at the slot's size and style. The run's last fallback slot (`*last`) is
@@ -4401,11 +4450,8 @@ static int system_fallback(int cp, int bold, RunScript *rs)
  * table is full (it is never emptied while a run is built). */
 static int fallback_slot(int font, int cp, int *last, RunScript *rs)
 {
-  const FontSlot *s = &g_fonts[font];
-  int face = -1;
-  for (int k = 0; k < s->fb_n && face < 0; k++) {
-    face = face_has(s->fb[k], cp) ? s->fb[k] : -1;
-  }
+  FontSlot *s = &g_fonts[font];
+  int face = list_fallback(s, cp);
   const int bold = (s->flags & BUI_FONT_BOLD) ? 1 : 0;
   if (face < 0) {
     face = system_fallback(cp, bold, rs);

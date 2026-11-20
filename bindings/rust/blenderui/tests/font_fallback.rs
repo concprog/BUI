@@ -3,7 +3,7 @@
 //! size and weight of a fallback face takes a font slot; with too few slots
 //! the glyphs past the last one drew as empty boxes).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use blenderui::prelude::*;
 use blenderui::sys;
@@ -16,25 +16,21 @@ const CHINESE: &[&str] = &["msyh.ttc", "YuGothM.ttc", "simsun.ttc", "PingFang.tt
 const JAPANESE: &[&str] = &["YuGothM.ttc", "meiryo.ttc", "msgothic.ttc", "Hiragino Sans GB.ttc", "NotoSansCJK-Regular.ttc",
                             "NotoSansJP-Regular.otf", "NotoSansCJKjp-Regular.otf"];
 
-/// The first of `names` in the system's font folders, found apart from the
-/// text engine (so a fallback that fails can't make a test skip itself).
+/// The first of `names` in the font folders the text engine reads fallback files from, the
+/// way it opens them (`<folder>/<name>`), found apart from its glyph fallback (so a fallback
+/// that fails can't make a test skip itself).
 fn installed(names: &[&'static str]) -> Option<&'static str> {
-    fn has(dir: &Path, name: &str, depth: u32) -> bool {
-        std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| {
-            let path = e.path();
-            if path.is_dir() {
-                depth > 0 && has(&path, name, depth - 1)
-            } else {
-                e.file_name().to_string_lossy().eq_ignore_ascii_case(name)
-            }
-        })
+    let mut dirs = Vec::new();
+    let mut buf = [0u8; 600];
+    for i in 0.. {
+        // SAFETY: `buf` is writable for its length.
+        let n = unsafe { sys::BUI_text_font_dir(i, buf.as_mut_ptr().cast(), buf.len() as i32) };
+        if n <= 0 {
+            break;
+        }
+        dirs.push(PathBuf::from(String::from_utf8_lossy(&buf[..n as usize]).into_owned()));
     }
-    let mut dirs: Vec<PathBuf> = ["/System/Library/Fonts", "/System/Library/Fonts/Supplemental", "/Library/Fonts",
-                                  "/usr/share/fonts", "/usr/local/share/fonts"].map(PathBuf::from).into();
-    let env = |k: &str, sub: &str| std::env::var_os(k).map(|v| PathBuf::from(v).join(sub));
-    dirs.extend([env("WINDIR", "Fonts"), env("LOCALAPPDATA", "Microsoft/Windows/Fonts"), env("HOME", "Library/Fonts"),
-                 env("HOME", ".local/share/fonts"), env("HOME", ".fonts")].into_iter().flatten());
-    names.iter().copied().find(|n| dirs.iter().any(|d| has(d, n, 3)))
+    names.iter().copied().find(|n| dirs.iter().any(|d| d.join(n).is_file()))
 }
 
 /// The advance of `s` at `size` px (bold or not), in the default UI font.
