@@ -1306,7 +1306,7 @@ void BK_window_set_size(BKWindow *win, int width, int height)
     return;
   }
   RECT r = {0, 0, (LONG)(width * win->scale), (LONG)(height * win->scale)};
-  AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+  client_to_window(win, &r); /* its own frame: a title bar the app draws has no caption */
   SetWindowPos(win->hwnd, NULL, 0, 0, r.right - r.left, r.bottom - r.top,
                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
