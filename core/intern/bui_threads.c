@@ -248,12 +248,9 @@ static DWORD WINAPI range_worker_win(LPVOID arg)
 }
 #endif
 
-/* Start the workers once (the first call is on the UI thread, before any job). */
-static int range_pool(void)
+/* Create the sync objects and start the workers. It runs once, see range_pool. */
+static void range_init(void)
 {
-  if (g_range_workers >= 0) {
-    return g_range_workers;
-  }
   BLI_mutex_init(&g_range_mutex);
   BLI_condition_init(&g_range_work);
   BLI_condition_init(&g_range_done);
@@ -277,8 +274,35 @@ static int range_pool(void)
     started++;
   }
   g_range_workers = started;
-  return started;
 }
+
+/* Start the workers once. Other callers wait here until the first one is done. */
+#ifdef _WIN32
+static INIT_ONCE g_range_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK range_init_win(PINIT_ONCE once, PVOID param, PVOID *ctx)
+{
+  (void)once;
+  (void)param;
+  (void)ctx;
+  range_init();
+  return TRUE;
+}
+
+static int range_pool(void)
+{
+  InitOnceExecuteOnce(&g_range_once, range_init_win, NULL, NULL);
+  return g_range_workers;
+}
+#else
+static pthread_once_t g_range_once = PTHREAD_ONCE_INIT;
+
+static int range_pool(void)
+{
+  pthread_once(&g_range_once, range_init);
+  return g_range_workers;
+}
+#endif
 
 int BLI_task_scheduler_num_threads(void)
 {
