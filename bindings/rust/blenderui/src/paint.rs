@@ -260,6 +260,11 @@ struct EffectItem {
     inputs: [i32; sys::BK_EFFECT_MAX_INPUTS],
     floats: Vec<f32>,
     fallback: Option<Arc<Image>>,
+    /// A texture of the painter's own among the inputs (a turned layer's): held for as long as
+    /// a display list draws it, not only while the layer cache keeps it (another window's
+    /// paints can drop it from the cache while this one's list is still shown). Never read.
+    #[allow(dead_code)]
+    texture: Option<Arc<Texture>>,
 }
 
 /// Coordinates: up to four inline (rects, ovals, text, images), more on the heap.
@@ -461,9 +466,8 @@ impl Painter {
 
     /// Map the items from `from` on through `m`, a move and a scale (see
     /// [`Effects::vector`](crate::effects::Effects::vector)): their points,
-    /// text sizes, corner radii and line widths, and the clips made inside
-    /// the transformed box (`outer`, the clip from outside it, stays put).
-    fn map_items(&mut self, from: usize, m: &crate::effects::Affine, outer: Option<Bounds<f32>>) {
+    /// text sizes, corner radii and line widths, and their clips ([`clip_through`]).
+    fn map_items(&mut self, from: usize, m: &crate::effects::Affine, outer: OuterClip) {
         let (sx, sy) = (m[0], m[3]);
         let mean = (sx + sy) * 0.5;
         for it in &mut self.items[from..] {
@@ -481,12 +485,7 @@ impl Painter {
                 Kind::Text { size, .. } => *size *= sy,
                 _ => {}
             }
-            if it.clip != outer
-                && let Some(c) = &mut it.clip
-            {
-                let mapped = map_rect(*c, m);
-                *c = outer.map_or(mapped, |o| mapped.intersect(&o));
-            }
+            it.clip = clip_through(it.clip, m, outer);
         }
     }
 
@@ -498,9 +497,10 @@ impl Painter {
         }
     }
 
-    /// The area the items cover: their points, and text by its measured
-    /// width and line (`None`: no items). What a layer must rasterize: not
-    /// the boxes it sits in, which may be wider than anything drawn.
+    /// The area the items cover: their points (with half a stroke and a pixel
+    /// of antialiasing around a stroked one), and text by its measured width
+    /// and line (`None`: no items). What a layer must rasterize: not the boxes
+    /// it sits in, which may be wider than anything drawn.
     fn extent(&self, tc: &mut TextCache) -> Option<Bounds<f32>> {
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for it in &self.items {
@@ -514,8 +514,14 @@ impl Painter {
                 (x0, y0, x1, y1) = (x0.min(x - pad), y0.min(y - pad), x1.max(x + w + pad), y1.max(y + size * TEXT_LINE + pad));
                 continue;
             }
+            let stroke = match it.kind {
+                Kind::Line { width } | Kind::Oval { width, .. } | Kind::Rect { width, .. } if width > 0.0 => {
+                    width * 0.5 + 1.0
+                }
+                _ => 0.0,
+            };
             for p in xy.as_chunks::<2>().0 {
-                (x0, y0, x1, y1) = (x0.min(p[0]), y0.min(p[1]), x1.max(p[0]), y1.max(p[1]));
+                (x0, y0, x1, y1) = (x0.min(p[0] - stroke), y0.min(p[1] - stroke), x1.max(p[0] + stroke), y1.max(p[1] + stroke));
             }
         }
         (x0 <= x1).then(|| rect(x0, y0, x1 - x0, y1 - y0))
@@ -653,12 +659,18 @@ impl Painter {
     /// change every frame repaint the canvas every frame.
     pub fn effect(&mut self, bounds: Bounds<f32>, effect: &ShaderEffect, inputs: &[i32], floats: &[f32],
                   fallback: Option<&Arc<Image>>) {
+        self.effect_holding(bounds, effect, inputs, floats, fallback, None);
+    }
+
+    /// [`Painter::effect`], the item holding `texture` (one of `inputs`) while it is drawn.
+    fn effect_holding(&mut self, bounds: Bounds<f32>, effect: &ShaderEffect, inputs: &[i32], floats: &[f32],
+                      fallback: Option<&Arc<Image>>, texture: Option<Arc<Texture>>) {
         let mut slots = [0; sys::BK_EFFECT_MAX_INPUTS];
         for (slot, id) in slots.iter_mut().zip(inputs) {
             *slot = *id;
         }
         let floats = floats[..floats.len().min(ShaderEffect::MAX_FLOATS)].to_vec();
-        let item = EffectItem { id: effect.id(), inputs: slots, floats, fallback: fallback.cloned() };
+        let item = EffectItem { id: effect.id(), inputs: slots, floats, fallback: fallback.cloned(), texture };
         self.push(Kind::Effect(Box::new(item)), Self::corners(bounds), Rgba::TRANSPARENT);
     }
 
@@ -1025,8 +1037,28 @@ struct LayerCx<'a> {
 #[derive(Default)]
 struct Mats {
     m: Vec<crate::effects::Affine>,
-    outer: Vec<Option<Bounds<f32>>>,
+    outer: Vec<OuterClip>,
+    /// Boxes whose move and scale goes through a pixel layer all the same: a
+    /// non-uniform scale over text (a text item scales by one size).
+    pixel: Vec<bool>,
+    /// Whether each box's subtree draws text (the buffer of [`vector_mats`]).
+    text: Vec<bool>,
     layered: bool,
+}
+
+/// The clip from outside a box's nearest transformed ancestor: as layout gave
+/// it (`.0`, what its items carry) and where it draws (`.1`: through the
+/// transforms above that ancestor, not through the ancestor's own).
+type OuterClip = (Option<Bounds<f32>>, Option<Bounds<f32>>);
+
+/// Where clip `c` of an item drawn through `m` draws: the outer clip where it
+/// draws; a clip made inside the transformed boxes through `m`, within it.
+fn clip_through(c: Option<Bounds<f32>>, m: &crate::effects::Affine, outer: OuterClip) -> Option<Bounds<f32>> {
+    if c == outer.0 {
+        return outer.1;
+    }
+    let mapped = map_rect(c?, m);
+    Some(outer.1.map_or(mapped, |o| mapped.intersect(&o)))
 }
 
 impl Mats {
@@ -1049,17 +1081,36 @@ fn vector_mats(frame: &Frame, styles: &StyleStore, vp: (f32, f32), out: &mut Mat
     let nodes = &frame.nodes;
     out.m.clear();
     out.outer.clear();
+    out.pixel.clear();
     out.layered = false;
+    // children come after their parents: backwards, a subtree's text reaches its root
+    out.text.clear();
+    out.text.resize(nodes.len(), false);
+    for (i, n) in nodes.iter().enumerate().rev() {
+        let text = out.text[i] || matches!(n.content, Content::Word { .. } | Content::Text(_));
+        if let Some(p) = n.parent {
+            out.text[p] |= text;
+        }
+        out.text[i] = text;
+    }
     for (i, n) in nodes.iter().enumerate() {
         // parents come before their children
-        let (mut m, mut outer) = n.parent.and_then(|p| Some((*out.m.get(p)?, out.outer[p]))).unwrap_or((IDENTITY, None));
+        let (mut m, mut outer) = n.parent.and_then(|p| Some((*out.m.get(p)?, out.outer[p]))).unwrap_or((IDENTITY, (None, None)));
         if let Some(e) = effects_of(frame, styles, i) {
             let u = Units { font_size: styles[n.style].font_size, viewport: vp };
             out.layered |= !e.backdrop.is_empty() || e.needs_layer(n.bounds, &u);
-            if let Some(own) = e.vector(n.bounds, &u) {
+            let vector = e.vector(n.bounds, &u);
+            let pixel = out.text[i] && vector.is_some_and(|v| (v[0] - v[3]).abs() > crate::effects::AXIS_EPSILON);
+            out.layered |= pixel;
+            out.pixel.push(pixel);
+            if let Some(own) = vector.filter(|_| !pixel) {
+                // its clip draws through the transforms above it, not its own
+                outer = (n.clip, clip_through(n.clip, &m, outer));
                 m = mul(&m, &own);
-                outer = n.clip;
             }
+        }
+        else {
+            out.pixel.push(false);
         }
         out.m.push(m);
         out.outer.push(outer);
@@ -1151,12 +1202,13 @@ thread_local! {
     static TURN: Option<ShaderEffect> = ShaderEffect::new("bui-turn", crate::effects::TURN_SHADER, 1, 7).ok();
 }
 
-/// A BUI texture of a layer's pixels, freed with it.
+/// A BUI texture of a layer's pixels, freed with it: the layer cache and every
+/// display list that draws it ([`EffectItem::texture`]) hold it.
 struct Texture(i32);
 
 impl Drop for Texture {
     fn drop(&mut self) {
-        // SAFETY: ours, freed once; no display list drawn after this frame names it.
+        // SAFETY: ours, freed once, when nothing that draws it is left.
         unsafe { sys::BUI_texture_free(self.0) };
     }
 }
@@ -1176,7 +1228,7 @@ fn gpu_turn(p: &mut Painter, px: &crate::effects::Argb, key: u64, origin: (f32, 
     TURN.with(|turn| {
         let Some(turn) = turn.as_ref().filter(|t| t.error().is_empty()) else { return false };
         let texture = LAYERS.with(|l| l.borrow_mut().textures.get(key)).or_else(|| {
-            let id = Image::from_argb(px)?.texture();
+            let id = crate::effects::turn_texture(px);
             (id > 0).then(|| {
                 let t = Arc::new(Texture(id));
                 LAYERS.with(|l| l.borrow_mut().textures.put(key, t.clone()));
@@ -1186,7 +1238,8 @@ fn gpu_turn(p: &mut Painter, px: &crate::effects::Argb, key: u64, origin: (f32, 
         let Some(texture) = texture else { return false };
         p.opacity = 1.0;
         p.clip = clip;
-        p.effect(at, turn, &[texture.0], &[m[0], m[1], m[2], m[3], m[4], m[5], opacity], None);
+        let id = texture.0;
+        p.effect_holding(at, turn, &[id], &[m[0], m[1], m[2], m[3], m[4], m[5], opacity], None, Some(texture));
         true
     })
 }
@@ -1281,7 +1334,7 @@ fn paint_list(cx: &mut LayerCx, list: &[usize], p: &mut Painter, root: Option<us
             paint_backdrop(cx, i, p);
         }
         let u = Units { font_size: cx.styles[n.style].font_size, viewport: cx.vp };
-        if fx.is_some_and(|e| e.needs_layer(n.bounds, &u)) && Some(i) != root {
+        if (cx.mats.pixel[i] || fx.is_some_and(|e| e.needs_layer(n.bounds, &u))) && Some(i) != root {
             // a list kept from an earlier layer (a nested layer takes the next)
             let mut sub = cx.subs.pop().unwrap_or_default();
             sub.clear();
@@ -1371,7 +1424,9 @@ fn out_of_view(cx: &LayerCx, root: usize, list: &[usize], e: &crate::effects::Ef
         return false;
     }
     let Some(boxes) = boxes_area(cx, list.iter().copied()) else { return true };
-    let g = crate::effects::filter_outset(&e.filter);
+    // what its filters spread, and those of the layers in it (nested: they add up)
+    let g = list.iter().filter(|&&k| k != root).filter_map(|&k| effects_of(cx.frame, cx.styles, k))
+        .fold(crate::effects::filter_outset(&e.filter), |g, f| g + crate::effects::filter_outset(&f.filter));
     let area = rect(boxes.origin.x - g, boxes.origin.y - g, boxes.size.width + 2.0 * g, boxes.size.height + 2.0 * g);
     let window = rect(0.0, 0.0, cx.vp.0, cx.vp.1);
     let seen = cx.frame.nodes[root].clip.map_or(window, |c| c.intersect(&window));
@@ -1462,7 +1517,7 @@ fn paint_layer_inner(cx: &mut LayerCx, root: usize, list: &[usize], p: &mut Pain
     let filtered = {
         let mut hh = key_hasher();
         content.hash(&mut hh);
-        hash_effects(&mut hh, &e, scale);
+        hash_effects(&mut hh, &e, scale, &u);
         (q(b.origin.x - ax), q(b.origin.y - ay), q(b.size.width), q(b.size.height)).hash(&mut hh);
         if transformed {
             // a turned layer is turned from the device grid it sits on: where its
@@ -1592,9 +1647,12 @@ impl<H: Hasher> std::fmt::Write for HashWrite<'_, H> {
 }
 
 /// What of `e` its filtered layer depends on: the filters as drawn (see
-/// [`drawn_filters`]), the clip path and the mask. Allocates nothing.
-fn hash_effects<H: Hasher>(hh: &mut H, e: &crate::effects::Effects, scale: f32) {
+/// [`drawn_filters`]), the clip path and the mask, and the units those
+/// resolve with (`circle(1em)` is another circle at another font size).
+/// Allocates nothing.
+fn hash_effects<H: Hasher>(hh: &mut H, e: &crate::effects::Effects, scale: f32, u: &Units) {
     use crate::effects::Filter;
+    use std::hash::Hash;
     use std::fmt::Write;
     let mut w = HashWrite(hh);
     for f in &e.filter {
@@ -1605,6 +1663,9 @@ fn hash_effects<H: Hasher>(hh: &mut H, e: &crate::effects::Effects, scale: f32) 
         };
     }
     let _ = write!(w, "{:?}{:?}", e.clip_path, e.mask);
+    if e.clip_path.is_some() || e.mask.is_some() {
+        (u.font_size.to_bits(), u.viewport.0.to_bits(), u.viewport.1.to_bits()).hash(hh);
+    }
 }
 
 /// A layer's raster (with its margin) through `filters` (see

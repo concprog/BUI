@@ -259,19 +259,37 @@ impl Effects {
 
 /// How far off the axes a matrix may be and still move and scale only
 /// (rounding of a turn by 0 or 360 degrees).
-const AXIS_EPSILON: f32 = 1e-5;
+pub(crate) const AXIS_EPSILON: f32 = 1e-5;
 
 /// The shader that turns (rotates, skews, mirrors) a layer on the GPU: each
 /// pixel of the box goes back through the inverse matrix (`U[0..6]`, box
 /// pixels to texels, see [`turn_box`]) to the layer's texture, sampled
 /// bilinearly, the last half texel at its edges faded out (antialiasing),
-/// times the layer's opacity (`U[6]`).
+/// times the layer's opacity (`U[6]`). The texture holds premultiplied texels
+/// ([`turn_texture`]), so the bilinear mix is the CPU's; `input_color` takes
+/// texels as straight and multiplies by alpha again, which is undone here (a
+/// straight texture mixed bilinearly darkens the edges it fades out).
 #[doc(hidden)]
 pub const TURN_SHADER: &str = "vec4 effect(vec2 p) {
     vec2 q = vec2(U[0] * p.x + U[2] * p.y + U[4], U[1] * p.x + U[3] * p.y + U[5]);
     vec2 inside = clamp(min(q, input_size(0) - q) + 0.5, 0.0, 1.0);
-    return input_color(0, q) * (inside.x * inside.y * U[6]);
+    vec4 c = input_color(0, q);
+    c.rgb = c.rgb / max(c.a, 0.000001);
+    return c * (inside.x * inside.y * U[6]);
 }";
+
+/// A BUI texture of a layer for [`TURN_SHADER`]: its premultiplied texels as
+/// they are (RGBA bytes), not made straight. 0 on failure.
+#[doc(hidden)]
+#[must_use]
+pub fn turn_texture(a: &Argb) -> i32 {
+    if a.w == 0 || a.h == 0 || a.px.len() < a.w * a.h {
+        return 0;
+    }
+    let rgba: Vec<u8> = a.px[..a.w * a.h].iter().flat_map(|&p| [(p >> 16) as u8, (p >> 8) as u8, p as u8, (p >> 24) as u8]).collect();
+    // SAFETY: `rgba` holds `w * h * 4` bytes, read during the call.
+    unsafe { crate::sys::BUI_texture_create(a.w as i32, a.h as i32, rgba.as_ptr().cast(), 0) }
+}
 
 /// Where a turned layer lands, and how a pixel of that box finds its texel:
 /// for a layer image of `size` pixels whose top left is `origin` (layer device
@@ -460,6 +478,9 @@ impl Argb {
     pub fn padded(&self, w: usize, h: usize, (x, y): (usize, usize)) -> Argb {
         let mut out = Argb { w, h, px: vec![0; w * h] };
         let cols = self.w.min(w.saturating_sub(x));
+        if cols == 0 || y >= h {
+            return out; // nothing of it lands inside
+        }
         for (row, line) in self.px.chunks_exact(self.w).enumerate().take(h.saturating_sub(y)) {
             out.px[(y + row) * w + x..][..cols].copy_from_slice(&line[..cols]);
         }
@@ -491,11 +512,10 @@ pub fn blur_argb(p: &mut Argb, sigma: f32) {
     if sigma < 0.3 || p.w == 0 || p.h == 0 {
         return;
     }
-    let k = (sigma / SMALL_SIGMA).floor() as usize;
-    if sigma >= DOWNSAMPLE_FROM && k >= 2 && p.w >= 2 * k && p.h >= 2 * k {
+    if let Some(k) = downsample_factor(sigma, p.w, p.h) {
         // the same path as `blur`: down, blur, up
         let mut f = Pixels::from_argb(p);
-        blur(&mut f, sigma);
+        blur_small(&mut f, sigma, k);
         *p = f.to_argb();
         return;
     }
@@ -626,15 +646,26 @@ pub(crate) const DOWNSAMPLE_FROM: f32 = 6.0;
 /// The sigma the smaller copy is blurred at; the factor follows from it.
 pub(crate) const SMALL_SIGMA: f32 = 3.0;
 
+/// How many times smaller a blur of `sigma` runs on a `w` x `h` image (for
+/// [`blur`] and [`blur_argb`] alike); `None`: at full size.
+fn downsample_factor(sigma: f32, w: usize, h: usize) -> Option<usize> {
+    let k = (sigma / SMALL_SIGMA).floor() as usize;
+    (sigma >= DOWNSAMPLE_FROM && k >= 2 && w >= 2 * k && h >= 2 * k).then_some(k)
+}
+
 /// Gaussian blur with standard deviation `sigma` (device pixels).
 pub fn blur(p: &mut Pixels, sigma: f32) {
     if sigma < 0.3 || p.w == 0 || p.h == 0 {
         return;
     }
-    let k = (sigma / SMALL_SIGMA).floor() as usize;
-    if sigma < DOWNSAMPLE_FROM || k < 2 || p.w < 2 * k || p.h < 2 * k {
-        return box_blur(p, sigma);
+    match downsample_factor(sigma, p.w, p.h) {
+        Some(k) => blur_small(p, sigma, k),
+        None => box_blur(p, sigma),
     }
+}
+
+/// The blur of `sigma` on a copy `k` times smaller, scaled back up into `p`.
+fn blur_small(p: &mut Pixels, sigma: f32, k: usize) {
     let mut small = downsample(p, k);
     // the box filter down and the bilinear filter up blur too (variances
     // (k^2 - 1) / 12 and k^2 / 6): the small copy takes what is left

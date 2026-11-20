@@ -305,6 +305,8 @@ unsafe extern "C" {
     pub fn BK_imbuf_rgba(ib: *const BKImBuf, frame: c_int, dst: *mut c_uchar) -> c_int;
     pub fn BK_imbuf_texture(ib: *const BKImBuf, frame: c_int) -> c_int;
     pub fn BK_imbuf_texture_update(ib: *const BKImBuf, frame: c_int, tex: c_int) -> c_int;
+    /// A BUI texture of `w` x `h` RGBA bytes (`pitch` 0: `w * 4`; null: transparent); 0 on failure.
+    pub fn BUI_texture_create(w: c_int, h: c_int, rgba: *const c_void, pitch: c_int) -> c_int;
     /// Frees a BUI texture (`BK_imbuf_texture`, Dear ImGui user textures).
     pub fn BUI_texture_free(tex: c_int);
 
