@@ -78,6 +78,7 @@ Application.Run(form);
 - `Location` and `Size` place a control absolutely (the kit's place manager). `Dock` other than `None` packs it against a side of its container (`Fill` takes the rest).
 - Only containers (`Form`) have `Controls`.
 - `Form.Context` drives a form without a window: `Configure`, `Press`, `Release`, `Motion` (tests, other hosts).
+- `Controls.Add` moves a control from another container, `Remove` leaves it usable, and `Dispose` removes it. The [Forms page](https://github.com/ppmpreetham/BUI/blob/main/website/src/content/docs/csharp/forms.mdx) lists every type and member, and how to measure test coverage.
 
 ## Components
 

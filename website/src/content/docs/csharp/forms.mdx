@@ -1,0 +1,159 @@
+---
+title: Windows Forms-style API
+sidebarLabel: Forms
+description: Which Windows Forms types BUI.Forms has, how Location, Size and Dock place a control, how Controls behaves, and how to test a form without a window.
+section: C#
+order: 15
+languages: ["csharp"]
+sources: ["bindings/csharp/src/Bui.Forms/Control.cs", "bindings/csharp/src/Bui.Forms/Button.cs", "bindings/csharp/src/Bui.Forms/ContainerControl.cs", "bindings/csharp/src/Bui.Forms/Form.cs", "bindings/csharp/tests/Bui.Tests/Program.cs", "bindings/csharp/README.md"]
+---
+
+**`BlenderUI.Forms` gives you the Windows Forms names on Blender's widgets.** You write `Form`, `Button`, `Controls.Add` and `Click`, and the window draws and reacts the way Blender's UI does. It is a small slice of Windows Forms, so this page lists exactly what exists.
+
+## What is there
+
+<StatusTable
+  rows={[
+    ["Form", "partial", "<code>Text</code>, <code>Size</code>, <code>Show</code>, <code>Close</code>, <code>Dispose</code>, and <code>Context</code> for tests. No <code>FormClosing</code>, <code>StartPosition</code> or dialogs"],
+    ["Button", "partial", "<code>Text</code>, <code>Click</code>, <code>PerformClick</code>, <code>OnClick</code>. No <code>Enabled</code>, <code>Font</code> or <code>Image</code>"],
+    ["Control placement", "done", "<code>Location</code> and <code>Size</code>, and all six <code>DockStyle</code> values"],
+    ["Controls", "partial", "<code>Add</code>, <code>Remove</code>, <code>Count</code>, the indexer and enumeration. No <code>Clear</code>, <code>Contains</code> or <code>AddRange</code>"],
+    ["Application", "partial", "<code>Run(Form)</code> and <code>Exit</code>. No <code>DoEvents</code> or <code>Idle</code>"],
+    ["Other controls", "planned", "<code>Label</code>, <code>TextBox</code>, <code>CheckBox</code>, <code>Panel</code> and the rest of Windows Forms"],
+  ]}
+/>
+
+Anything else you need is one level down: the `Bui` components (`Node`, `Slider`, `Context`) work next to the forms, and [the overview](../overview/) shows them.
+
+## Place a control
+
+A control sits at `Location` with `Size`, in pixels, measured from the top-left corner of its container. Both can change after you add the control, and the layout follows.
+
+```csharp title="Program.cs"
+using System.Drawing;
+using Bui.Forms;
+
+using var form = new Form { Text = "Place", Size = new Size(300, 200) };
+var button = new Button { Text = "OK", Location = new Point(7, 9), Size = new Size(60, 20) };
+form.Controls.Add(button);
+
+button.Location = new Point(40, 50); // moves the button
+Application.Run(form);
+```
+
+A new `Button` is 75 by 23 pixels and a new `Form` is 300 by 300, the Windows Forms defaults.
+
+## Dock a control
+
+`Dock` packs a control against one side of its container, and `Location` stops applying. The side takes the control's `Size.Width` or `Size.Height` along that edge and the whole container across it. `DockStyle.Fill` takes what is left.
+
+| `Dock` | Where the control goes in a 300 by 200 form (button size 80 by 25) |
+|---|---|
+| `Top` | x 0, y 0, 300 wide, 25 high |
+| `Bottom` | x 0, y 175, 300 wide, 25 high |
+| `Left` | x 0, y 0, 80 wide, 200 high |
+| `Right` | x 220, y 0, 80 wide, 200 high |
+| `Fill` | x 0, y 0, 300 wide, 200 high |
+| `None` | at `Location`, with `Size` |
+
+Controls dock in the order you add them, and each one takes its space from what the earlier ones left. A top bar, a left panel and a fill area give the layout most windows use:
+
+```csharp title="Program.cs"
+using System.Drawing;
+using Bui.Forms;
+
+using var form = new Form { Text = "Dock", Size = new Size(300, 200) };
+form.Controls.Add(new Button { Text = "Bar", Dock = DockStyle.Top, Size = new Size(75, 30) });
+form.Controls.Add(new Button { Text = "Side", Dock = DockStyle.Left, Size = new Size(50, 23) });
+form.Controls.Add(new Button { Text = "Main", Dock = DockStyle.Fill });
+Application.Run(form);
+```
+
+Here the bar is the top 30 pixels, the side is 50 pixels wide below it, and the main button fills the other 250 by 170 pixels.
+
+## Add, move and remove controls
+
+- `Controls.Add` puts a control last in the list. A control that is in another container moves to the new one, and adding the same control twice keeps one copy.
+- `Controls.Remove` takes a control out and leaves it usable, so you can add it again. Removing a control that is not in the list does nothing.
+- `Dispose` on a control also removes it from its container, and calling it twice is safe.
+- A control cannot contain itself, and a `null` control throws `ArgumentNullException`.
+
+## Handle a click
+
+`Click` is raised with the `Button` as the sender, once per click, for every handler you add. `PerformClick` raises it from code. To react in a subclass, override `OnClick` and call the base method so `Click` still fires.
+
+```csharp title="Counting.cs"
+using System;
+using Bui.Forms;
+
+sealed class Counting : Button
+{
+    public int Clicks { get; private set; }
+
+    protected override void OnClick(EventArgs e)
+    {
+        Clicks++;
+        base.OnClick(e);
+    }
+}
+```
+
+An exception in a handler is thrown from the call that caused the click, so a test sees it.
+
+## Test a form without a window
+
+`Show` makes the native window, and nothing before it does. `Form.Context` lets you lay out a form and send input to it without a display, which is how the project's own tests run on a build server.
+
+```csharp title="Test.cs"
+using System.Drawing;
+using Bui.Forms;
+
+using var form = new Form();
+var button = new Button { Location = new Point(5, 5), Size = new Size(100, 30) };
+var clicks = 0;
+button.Click += (_, _) => clicks++;
+form.Controls.Add(button);
+
+form.Context.Configure(200, 100);       // lay out a 200 by 100 window
+form.Context.Motion(50, 20);            // move the pointer onto the button
+form.Context.Press(50, 20);
+form.Context.Release(50, 20);           // clicks == 1
+```
+
+`Context.Root.Child(i)!.Bounds` returns the laid-out rectangle of the i-th control. Each test in `bindings/csharp/tests/Bui.Tests/Program.cs` uses that to check exact positions.
+
+## Run the tests and measure coverage
+
+The tests need the native kit. Build it as on the [overview](../overview/) page, then run:
+
+```sh
+cd bindings/csharp
+dotnet run --project tests/Bui.Tests
+```
+
+The tests exit with a non-zero code when one fails. To measure which lines of `Bui.Forms` they run, use Microsoft's `dotnet-coverage` tool on the built test assembly:
+
+```sh
+dotnet tool install -g dotnet-coverage
+dotnet build tests/Bui.Tests
+dotnet-coverage collect -f xml -o coverage.xml "dotnet tests/Bui.Tests/bin/Debug/net9.0/Bui.Tests.dll"
+```
+
+The lines the headless tests do not reach are `Form.Show`, `Application.Run`, `Application.Exit` and a `Text` change on a form that has a window, because they need a display.
+
+## Limitations
+
+- A form is one frame with absolute and docked children. There is no flow or table layout, `Anchor`, `Padding` or `Margin` yet.
+- All the work happens on the UI thread. Do not touch a control from another thread.
+- The Windows Forms types that are not listed above do not exist. Code that uses them does not compile, so you find out at build time.
+
+## Next steps
+
+<CardGrid>
+  <Card title="Use BUI in your app" href="docs/csharp/in-your-app/" icon="package" kicker="C#">
+    Add a local build to a Rider or Visual Studio project.
+  </Card>
+  <Card title="C# overview" href="docs/csharp/overview/" icon="file-c-sharp" kicker="C#">
+    The three layers, and the components under the forms.
+  </Card>
+</CardGrid>
