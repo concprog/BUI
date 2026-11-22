@@ -217,12 +217,12 @@ static bool screen_accept(BKNode *n, BKNode *child)
 static void screen_detach(BKNode *n, BKNode *child)
 {
   BKScreen *screen = SCREEN(n);
-  if (!IS_AREA(child) || screen->detaching || AREA(child)->v1 == NULL) {
-    return;
+  if (!IS_AREA(child) || AREA(child)->closing || AREA(child)->v1 == NULL) {
+    return; /* the screen is closing it (screen_area_free), or never placed it */
   }
   /* The host removes an area: a neighbor takes its place (screen_area_close). Back to the normal
    * state first, as Blender's operators do (ED_screen_state_toggle), or the others stay hidden. */
-  screen->detaching = child;
+  AREA(child)->closing = true;
   SCREEN_AREAS_ITER (n, other) {
     if (other->full) {
       screen_state_apply(n, other->node, other->full);
@@ -236,7 +236,7 @@ static void screen_detach(BKNode *n, BKNode *child)
     screen_remove_unused_scredges(n);
     screen_remove_unused_scrverts(screen);
   }
-  screen->detaching = NULL;
+  AREA(child)->closing = false; /* closed: its unlink comes next (screen_detached) */
 }
 
 static void screen_detached(BKNode *n, BKNode *child)
@@ -248,7 +248,7 @@ static void screen_detached(BKNode *n, BKNode *child)
   /* The host removed it (screen_detach closed it): told now that it is unlinked, as Blender's
    * area_close_exec adds its notifier after screen_delarea. A close of the screen's own tells
    * the host itself once the edit is done. */
-  const bool by_host = area->v1 != NULL && SCREEN(n)->detaching != child;
+  const bool by_host = area->v1 != NULL && !area->closing;
   area->v1 = area->v2 = area->v3 = area->v4 = NULL; /* nothing of this screen: it may join another */
   area->full = 0;
   area->new_pending = false;
@@ -743,7 +743,7 @@ static BKNode *api_screen(BKNode *area)
   if (screen_node) {
     screen_ensure_verts(screen_node); /* operations before the first layout */
   }
-  return (screen_node && AREA(area)->v1) ? screen_node : NULL;
+  return (screen_node && AREA(area)->v1 && !AREA(area)->closing) ? screen_node : NULL;
 }
 
 static void api_done(BKNode *screen_node)

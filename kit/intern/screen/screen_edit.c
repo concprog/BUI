@@ -91,6 +91,7 @@ static BKNode *screen_addarea(BKNode *screen_node, const BKNode *src, ScrVert *v
 void screen_area_free(BKNode *screen_node, BKNode *area_node)
 {
   BKScreen *screen = SCREEN(screen_node);
+  BKArea *area = AREA(area_node);
   if (screen->active == area_node) {
     screen->active = NULL;
   }
@@ -101,29 +102,24 @@ void screen_area_free(BKNode *screen_node, BKNode *area_node)
   if (screen->jd.sa2 == area_node) {
     screen->jd.sa2 = NULL;
   }
-  if (area_node == screen->detaching) {
-    return; /* the host is removing it already */
+  if (area->closing) {
+    return; /* the host is removing it, or a close handler further up is closing it already */
   }
   const int index = area_index(screen_node, area_node);
   void *ref = area_node->ref;
   bk_retain(ref); /* the close handler may drop the host's last hold: the area outlives it */
   const bool attached = area_node->parent == screen_node;
-  BKNode *const outer = screen->detaching; /* a close from a close handler nests: keep the outer */
-  if (attached) {
-    screen->detaching = area_node; /* guard first: the geometry is done, no closing again */
-  }
-  if (index >= 0 && !AREA(area_node)->new_pending) { /* the host never heard of one made now */
+  area->closing = true; /* guard first: the geometry is done, no closing again */
+  if (index >= 0 && !area->new_pending) { /* the host never heard of one made now */
     bk_emit(area_node, BK_EV_AREA, NULL, index, BK_AREA_CLOSE); /* on the area: its host object */
   }
-  AREA(area_node)->new_pending = false;
-  if (attached) {
-    if (area_node->parent == screen_node) {
-      BK_node_remove(screen_node, area_node);
-    }
-    screen->detaching = outer;
-    if (!ref) {
-      BK_node_free(area_node); /* made here (a split): nobody else holds it */
-    }
+  area->new_pending = false;
+  if (attached && area_node->parent == screen_node) {
+    BK_node_remove(screen_node, area_node);
+  }
+  area->closing = false;
+  if (attached && !ref) {
+    BK_node_free(area_node); /* made here (a split): nobody else holds it */
   }
   bk_release(ref);
 }
@@ -443,7 +439,7 @@ bool screen_area_close(BKNode *screen_node, BKNode *area_node, BKNode *not_area)
   float best_alignment = 0.0f;
   for (int i = 0; i < screen_node->nkids; i++) {
     BKNode *n = screen_node->kids[i];
-    if (n == area_node || n == not_area) {
+    if (n == area_node || n == not_area || AREA(n)->closing) {
       continue;
     }
     const BKArea *neighbor = AREA(n);

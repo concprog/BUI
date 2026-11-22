@@ -36,6 +36,9 @@ static unsigned g_saved_ids[8];
 static int g_saved_n;
 static bool g_saved_dangling;
 static int layout_ids(BKNode *s, unsigned *ids, int max);
+/* Close handlers in a chain: closing [i] closes [i + 1] (once), what BK_area_close said in [i]. */
+static BKNode *g_close_chain[4];
+static int g_chain_closed[3];
 
 static void request(void *data)
 {
@@ -57,6 +60,13 @@ static void emit(void *data, BKNode *node, int kind, void *ref, double a, double
       CHECK(BK_set_str(node, "layout", l));
     }
     g_close += b == BK_AREA_CLOSE;
+    for (int i = 0; b == BK_AREA_CLOSE && i < 3; i++) {
+      if (node == g_close_chain[i]) {
+        g_close_chain[i] = NULL;
+        g_chain_closed[i] = BK_area_close(g_close_chain[i + 1]);
+        break;
+      }
+    }
     g_window += b == BK_AREA_WINDOW;
   }
   else if (kind == BK_EV_CHANGE && strcmp(BK_node_type(node), "screen") == 0) {
@@ -777,6 +787,26 @@ int main(void)
     g_save_on_change = NULL;
     CHECK(g_saved_n == 1 && g_saved_ids[0] == ids[0] && !g_saved_dangling);
     BK_node_free(b);
+    free_screen(s);
+  }
+
+  /* -- close handlers nest: one further down never closes an area again that one up is closing -- */
+  {
+    BKNode *a;
+    BKNode *s = test_screen(&a);
+    BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);  /* a | b */
+    BKNode *c = BK_area_split(a, BK_AXIS_H, 0.75f); /* c over a */
+    BKNode *d = BK_area_split(b, BK_AXIS_H, 0.75f); /* d over b */
+    CHECK(b && c && d && BK_node_child_count(s) == 4);
+    const int closes = g_close;
+    g_close_chain[0] = c, g_close_chain[1] = d, g_close_chain[2] = b, g_close_chain[3] = c;
+    CHECK(BK_area_close(c));
+    CHECK(g_chain_closed[0] == 1 && g_chain_closed[1] == 1 && g_chain_closed[2] == 0);
+    CHECK(g_close == closes + 3 && BK_node_child_count(s) == 1);
+    memset(g_close_chain, 0, sizeof(g_close_chain));
+    int rr[4];
+    rect_of(a, rr);
+    CHECK(rr[2] == W && rr[3] == H);
     free_screen(s);
   }
 

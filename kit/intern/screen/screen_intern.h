@@ -229,6 +229,8 @@ typedef struct BKArea {
   BKNode *menu_region; /* the region a context menu was opened over */
   struct BKRegionRecord *pending_regions; /* saved region state the host has not made yet */
   bool new_pending; /* made by an edit: BK_AREA_NEW is owed, sent when the edit is done */
+  bool closing;     /* leaving (screen_area_free, or the host removing it): no second close, and
+                     * no longer an area to edit or join */
 } BKArea;
 
 /* A saved region (screen_layout_set) waiting for the host to create it: applied as soon as the
@@ -256,7 +258,6 @@ enum { OP_NONE = 0, OP_MOVE, OP_JOIN, OP_SWAP, OP_WINDOW, OP_SPLIT };
 typedef struct BKScreen {
   ListBase vertbase, edgebase; /* ScrVert, ScrEdge */
   short state;                 /* SCREENNORMAL ... */
-  BKNode *detaching;           /* the area the host is removing (node_detach) */
   bool resize_only;            /* "ops": "resize": only edges move (QSplitter, PanedWindow) */
   bool host_content;           /* "transparent": the host draws the region contents */
   uint64_t geom_sig;           /* host content: the areas' and regions' rects last reported */
