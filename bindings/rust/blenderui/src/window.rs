@@ -22,6 +22,7 @@ use crate::style::AppRegion;
 use crate::window_kind::{WindowControlArea, WindowDecorations, WindowKind};
 use crate::paint::{paint_frame, Painter};
 use crate::selection::{Cx, Selector};
+use crate::style::KeySet;
 use crate::widgets::{WKind, Widgets};
 use blenderui_sys as sys;
 
@@ -706,7 +707,7 @@ impl App {
         for id in 0..self.windows.len() {
             let Some(w) = self.windows[id].as_deref_mut() else { continue };
             // a closed window draws no more frames (its animations stop with it)
-            if w.closed || (!w.dirty && !w.scrolled && !w.motion_frame && !w.sel_repaint && w.glides.is_empty()) {
+            if w.life != Life::Open || (!w.dirty && !w.scrolled && !w.motion_frame && !w.sel_repaint && w.glides.is_empty()) {
                 continue;
             }
             match w.native {
@@ -843,7 +844,7 @@ impl App {
     pub fn advance_clock(&mut self, d: std::time::Duration) {
         crate::motion::advance(d.as_secs_f64());
         for w in self.windows.iter_mut().flatten() {
-            if w.closed {
+            if w.life != Life::Open {
                 continue;
             }
             w.clock.advance(d);
@@ -2139,7 +2140,7 @@ impl Window {
     fn update_hover(&mut self, app: &mut App, fire: bool) {
         let (path, over_text) = self.hover_target(fire);
         self.set_cursor(&path, over_text);
-        let now: std::collections::HashSet<Key> = path.iter().copied().collect();
+        let now: KeySet<Key> = path.iter().copied().collect();
         if now == self.state.hovered {
             return;
         }

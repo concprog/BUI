@@ -737,6 +737,7 @@ static int ta_set_num(BKNode *n, const char *key, double v)
     n->nat_gen = 0;
     ta_reindex(n);
     bk_relayout(n);
+    bk_invalidate(n);
     return 1;
   }
   if (strcmp(key, "max_h") == 0) { /* CSS px */
@@ -747,7 +748,7 @@ static int ta_set_num(BKNode *n, const char *key, double v)
   }
   if (strcmp(key, "measure_w") == 0) { /* the width a following natural size is asked for (0: none) */
     TAR(n)->measure_w = (int)v;
-    n->nat_gen = 0; /* the cached natural size was for another width */
+    bk_stale(n); /* the cached natural size was for another width */
     return 1;
   }
   if (strcmp(key, "grow") == 0) { /* field-sizing: content: wrap at the width, height follows the lines */

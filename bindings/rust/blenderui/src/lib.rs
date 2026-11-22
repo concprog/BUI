@@ -119,6 +119,7 @@ pub mod shader;
 pub mod video;
 pub mod sound;
 pub(crate) mod prof;
+mod config;
 mod selector;
 pub(crate) mod selection;
 pub mod hooks;
