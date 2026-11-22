@@ -19,6 +19,7 @@ func edit(tt *Tester, label string, v float64) {
 func TestBoundControls(t *testing.T) {
 	var (
 		sync    bool
+		snap    bool
 		volume  = 20.0
 		plan    = "Free"
 		size    = "M"
@@ -29,6 +30,7 @@ func TestBoundControls(t *testing.T) {
 			if Checkbox(c, &sync, "Sync").Changed() {
 				changes++
 			}
+			Toggle(c, &snap, "Snap")
 			Slider(c, &volume, 0, 100).Label("Volume")
 			Select(c, &plan, []string{"Free", "Pro", "Team"}).Label("Plan")
 			RadioGroup(c, func() {
@@ -48,6 +50,12 @@ func TestBoundControls(t *testing.T) {
 	}
 	if got := tt.find("Sync").node.Str("label"); got != "Sync" {
 		t.Errorf("the check box shows %q", got)
+	}
+	if got := tt.find("Snap").node.Str("label"); got != "Snap" { // the kit draws a toggle's label
+		t.Errorf("the toggle shows %q", got)
+	}
+	if err := tt.Click("Snap"); err != nil || !snap {
+		t.Errorf("snap %v after a click (%v)", snap, err)
 	}
 	edit(tt, "Volume", 75)
 	if volume != 75 {

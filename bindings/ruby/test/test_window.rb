@@ -18,13 +18,48 @@ class TestWindow < Minitest::Test
       label "Closing soon"
     end
     win.on_close { closes += 1 }
-    Thread.new { sleep 0.05; win.update { other_thread = :ran } }
-    win.timer(200) { win.close }
+    # the other thread's update closes the window: the loop ends only after it ran
+    # (the timer ends a loop that never runs it, and the assertion then fails)
+    Thread.new do
+      win.update do
+        other_thread = :ran
+        win.close
+      end
+    end
+    win.timer(5000) { win.close }
     BUI.run
     assert_equal :ran, other_thread
     refute win.open?
     win.free
     assert win.freed?
+  end
+
+  def test_a_window_shows_unless_asked_not_to
+    # a mapped and an unmapped window both render on X11: watch the calls to show
+    shows = []
+    watched = Class.new(BUI::Window) do
+      define_method(:show) do
+        shows << self
+        super()
+      end
+    end
+    shown = watched.new("Shown", width: 200, height: 100)
+    hidden = watched.new("Hidden", width: 200, height: 100, show: false)
+    assert_equal [shown], shows
+  ensure
+    shown&.free
+    hidden&.free
+  end
+
+  def test_app_frees_a_window_before_the_one_whose_context_it_shows
+    windows = nil
+    BUI.app do
+      owner = window("Owner", width: 200, height: 100, show: false)
+      window("Borrower", width: 200, height: 100, context: owner.context, show: false)
+      windows = self.windows
+      owner.timer(10) { windows.each(&:close) }
+    end
+    assert windows.all?(&:freed?)
   end
 
   def test_an_error_stops_the_loop

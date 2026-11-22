@@ -176,7 +176,7 @@ func goHostEmit(id C.uintptr_t, n *C.BKNode, kind C.int, ref C.uintptr_t, a, b C
 			e.Text = C.GoString(C.BK_get_str(n, ckey("edit")))
 		}
 	}
-	if e.Node != nil {
+	if e.Node != nil && k.valid() { // a kind newer than this package has no handler
 		if h := e.Node.handlers[k]; h != nil {
 			h(e)
 		}
@@ -242,9 +242,9 @@ func RunOnMain(fn func()) {
 //export goWake
 func goWake() { drainMain() }
 
-// drainMain runs the frees left for later, when no callback is running, then
-// the functions other goroutines queued.
-func drainMain() {
+// settle runs the frees left for later, when no callback is running: from the
+// loop and after each headless kit call that may have run callbacks.
+func settle() {
 	for callbacks == 0 && len(later) > 0 {
 		q := later
 		later = nil
@@ -252,6 +252,18 @@ func drainMain() {
 			fn()
 		}
 	}
+}
+
+// settled settles after a headless kit call and reports its result as a bool.
+func settled(r C.int) bool {
+	settle()
+	return r != 0
+}
+
+// drainMain runs the frees left for later, then the functions other
+// goroutines queued.
+func drainMain() {
+	settle()
 	for {
 		mainMu.Lock()
 		q := mainQueue

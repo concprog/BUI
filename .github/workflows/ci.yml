@@ -204,10 +204,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libx11-dev
       - name: Build the C kit
         run: go generate ./bui
-      - name: go vet and go test
-        run: |
-          go vet ./...
-          go test ./...
+      # one command per step: pwsh (Windows' default shell) goes on after a failed
+      # native command, so a multi-line run would only report the last one
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
 
   # bindings/ruby: the gem's extension builds the kit with CMake and Ruby's own compiler
   # (RubyInstaller's MSYS2 gcc on Windows). On Linux the window tests run on Xvfb; the

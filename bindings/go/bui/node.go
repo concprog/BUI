@@ -37,8 +37,14 @@ const (
 	EventScroll     EventKind = C.BK_EV_SCROLL     // a scrollbar request
 	EventConfigure  EventKind = C.BK_EV_CONFIGURE  // the geometry changed: A, B = width, height
 	EventKeyRelease EventKind = C.BK_EV_KEYRELEASE // Text = "\tkeysym", A = modifiers
-	eventKindCount            = int(EventKeyRelease) + 1
+	EventArea       EventKind = C.BK_EV_AREA       // a screen's area: A = its child index, B = BK_AREA_*
+	EventMove       EventKind = C.BK_EV_MOVE       // a panel was dragged to a new place: A = old index, B = new index
+	EventResize     EventKind = C.BK_EV_RESIZE     // an area's region was resized, hidden or shown: A = size, B = hidden
+	eventKindCount            = int(EventResize) + 1
 )
+
+// valid reports a kind a node can have a handler for.
+func (k EventKind) valid() bool { return k >= EventChange && int(k) < eventKindCount }
 
 // Event is a callback from the kit.
 type Event struct {
@@ -113,9 +119,15 @@ func NewNode(typ string) *Node {
 
 // Free frees the node and everything under it; it leaves its parent first.
 // The Go values of the freed nodes let go of them as the kit releases their
-// refs, so a second Free does nothing.
+// refs, so a second Free does nothing. Called inside a callback (a node's
+// handler, a window's), it frees the node once no callback is running, as
+// Window.Free does: the kit still uses the node after the callback returns.
 func (n *Node) Free() {
 	if n == nil || n.h == nil {
+		return
+	}
+	if callbacks > 0 {
+		later = append(later, n.Free)
 		return
 	}
 	C.BK_node_free(n.h)
@@ -291,8 +303,11 @@ func LinkFields(fields ...*Node) {
 // -- events --------------------------------------------------------------------
 
 // On sets the node's handler for a kind of event, replacing the last one; nil
-// removes it.
+// removes it. It panics for a kind that is not one of the Event constants.
 func (n *Node) On(kind EventKind, fn func(Event)) *Node {
+	if !kind.valid() {
+		panic(fmt.Sprintf("bui: unknown event kind %d", kind))
+	}
 	n.handlers[kind] = fn
 	return n
 }

@@ -461,6 +461,7 @@ func (c *Context) arrange(s *slot) {
 	}
 	space(after)
 	for _, sp := range s.spaces[used:] { // spacers no longer needed go
+		s.host.Remove(sp) // now: a free inside a callback waits for the loop
 		sp.Free()
 	}
 	s.spaces = s.spaces[:used]

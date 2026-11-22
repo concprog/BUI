@@ -143,6 +143,8 @@ module BUI
     private
 
     def geometry_options(manager, opts)
+      return geometry(manager, nil, nil) if opts.empty? # pack with no options still packs
+
       opts.each do |key, value|
         case key
         when :side then geometry(manager, "side", SIDES.fetch(value) { raise ArgumentError, "no side #{value.inspect}" })

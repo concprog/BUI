@@ -79,6 +79,9 @@ class TestNode < Minitest::Test
     frame << right
     assert_equal BUI::ANCHOR_N | BUI::ANCHOR_S | BUI::ANCHOR_E | BUI::ANCHOR_W, right.geometry_get("sticky")
     assert_raises(ArgumentError) { right.pack(side: :middle) }
+    plain = BUI::Node.new("label").pack # no options: packed with the defaults
+    frame << plain
+    assert_equal BUI::GEOM_PACK, plain.geometry_manager
   ensure
     frame&.free
   end
