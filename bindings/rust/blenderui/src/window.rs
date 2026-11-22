@@ -405,6 +405,9 @@ pub struct App {
     activation_hooks: Vec<Box<dyn FnMut(WindowId, bool, &mut App)>>,
     /// Counts `notify_all` calls (see `WindowHandle::update`).
     notified: u64,
+    /// [`shutdown`](App::shutdown) was asked while a window was lent to a
+    /// callback: it runs once every window is back.
+    shutdown_later: bool,
 }
 
 type RemoteJob = Box<dyn FnOnce(&mut App) + Send>;
@@ -450,7 +453,7 @@ impl App {
         crate::motion::start_clock(real_clock);
         App { windows: Vec::new(), entities: Vec::new(), headless, real_clock, globals: HashMap::new(), propagate: true,
               remote: None, close_hooks: Vec::new(), closed_later: None,
-              activation_hooks: Vec::new(), notified: 0 }
+              activation_hooks: Vec::new(), notified: 0, shutdown_later: false }
     }
 
     /// Create an entity (gpui's `cx.new`).
@@ -656,6 +659,9 @@ impl App {
         if closing {
             self.window_closed(id);
         }
+        if self.shutdown_later {
+            self.shutdown();
+        }
         Some(r)
     }
 
@@ -734,8 +740,14 @@ impl App {
     }
 
     /// Free every window's native and raster resources. Safe to call again (and done on drop): a host
-    /// that took the app from [`Application::start`] calls it when the page is done with it.
+    /// that took the app from [`Application::start`] calls it when the page is done with it. Called from
+    /// a window's callback (an event handler, a render), it runs once that callback has returned.
     pub fn shutdown(&mut self) {
+        // a window lent to a callback is out of its slot: free them all once it is back
+        self.shutdown_later = self.windows.iter().any(Option::is_none);
+        if self.shutdown_later {
+            return;
+        }
         for w in self.windows.iter_mut().flatten() {
             w.destroy();
         }

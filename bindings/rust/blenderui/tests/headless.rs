@@ -537,3 +537,25 @@ fn boxes_outside_the_view_leave_the_view_unchanged() {
         }
     });
 }
+
+struct Quitter;
+
+impl Render for Quitter {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        body().m_0().child(div().id("q").size(px(50.0)).bg(rgb(0xff0000)).on_click(|_, _, cx| cx.shutdown()))
+    }
+}
+
+/// `shutdown` from an event handler (its window lent to it) waits for the
+/// handler to return, then frees every window.
+#[test]
+fn shutdown_from_a_handler_waits_for_it() {
+    Application::headless().run(|cx| {
+        let win = open(cx, 100.0, 100.0, Quitter);
+        cx.draw(win.id);
+        let other = open(cx, 100.0, 100.0, Quitter);
+        cx.simulate_click(win.id, 10.0, 10.0);
+        assert!(cx.window(win.id).is_none() && cx.window(other.id).is_none(), "both windows freed");
+        assert!(cx.window_ids().is_empty());
+    });
+}
