@@ -1358,6 +1358,29 @@ void testScreen() {
     pane.dispatch(BK_EV_CLICK, null, 0, 0);
     check(clicks == 1, "a D-owned node keeps its handlers when its area closes");
 
+    // ... and when its area joins into a neighbor (or is docked away: the same notice).
+    auto joining = first.split('v', 0.75f);
+    auto joined = new Node("column");
+    joining.add(joined);
+    int joinedClicks;
+    joined.onClick((NodeEvent) { ++joinedClicks; });
+    check(first.join(joining), "join an area");
+    joined.dispatch(BK_EV_CLICK, null, 0, 0);
+    check(joinedClicks == 1, "a D-owned node keeps its handlers when its area joins");
+
+    // A close handler that frees a D-owned node of the closing area: no walk reaches it.
+    auto closing = first.split('v', 0.75f);
+    auto freed = new Node("column");
+    closing.add(freed);
+    freed.onClick((NodeEvent) {});
+    closing.onArea((NodeEvent e) {
+        if (cast(int) e.b == BK_AREA_CLOSE) {
+            freed.free();
+        }
+    });
+    check(closing.close(), "close an area whose handler frees its node");
+    check(freed.handle is null, "the handler freed it");
+
     auto area = new Node("area");
     auto side = new Node("sidebar");
     check(BK_set_num(side.handle, "size", 200) == 1, "a sidebar's size");
