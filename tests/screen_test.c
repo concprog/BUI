@@ -701,6 +701,12 @@ int main(void)
     BK_render(sc, g_r, 200, 100, 0);
     BK_node_rect(rows[0], y1);
     CHECK(y1[1] == y0[1] - 1); /* the fourth completes it */
+    /* a sideways swipe or tilt: the root only scrolls vertically, so it doesn't move */
+    CHECK(!BK_scroll_px(sc, 10, 50, 12.0f, 0.0f, 0));
+    CHECK(!BK_scroll(sc, 10, 50, 1.0f, 0.0f, 0));
+    BK_render(sc, g_r, 200, 100, 0);
+    BK_node_rect(rows[0], y0);
+    CHECK(y0[1] == y1[1]);
     BK_context_free(sc);
     BK_node_free(col);
   }
