@@ -383,8 +383,11 @@ void BK_node_remove(BKNode *parent, BKNode *child)
   if (!child || child->parent != parent) {
     return;
   }
+  /* the parent's hold: read first, as the detached hook may tell the host (BK_EV_CHANGE), whose
+   * handler may free the child */
+  void *ref = child->ref;
   node_detach(child);
-  bk_release(child->ref);
+  bk_release(ref);
 }
 
 int BK_node_move(BKNode *parent, BKNode *child, int index)

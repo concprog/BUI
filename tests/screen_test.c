@@ -35,6 +35,8 @@ static BKNode *g_save_on_change;
 static unsigned g_saved_ids[8];
 static int g_saved_n;
 static bool g_saved_dangling;
+/* The node a BK_EV_CHANGE handler of a screen frees, once (a raw-C host done with an area). */
+static BKNode *g_free_on_change;
 static int layout_ids(BKNode *s, unsigned *ids, int max);
 static void render(void);
 /* Close handlers in a chain: closing [i] closes [i + 1] (once), what BK_area_close said in [i]. */
@@ -86,6 +88,11 @@ static void emit(void *data, BKNode *node, int kind, void *ref, double a, double
   }
   else if (kind == BK_EV_CHANGE && strcmp(BK_node_type(node), "screen") == 0) {
     g_changes++;
+    if (g_free_on_change) {
+      BKNode *n = g_free_on_change;
+      g_free_on_change = NULL;
+      BK_node_free(n);
+    }
     if (node == g_save_on_change) {
       g_saved_n = layout_ids(node, g_saved_ids, 8);
       g_saved_dangling = strstr(BK_get_str(node, "layout"), "-1") != NULL;
@@ -803,6 +810,19 @@ int main(void)
     g_save_on_change = NULL;
     CHECK(g_saved_n == 1 && g_saved_ids[0] == ids[0] && !g_saved_dangling);
     BK_node_free(b);
+    free_screen(s);
+  }
+
+  /* -- a raw-C host frees the area it removed when the screen tells it of the change -- */
+  {
+    BKNode *a;
+    BKNode *s = test_screen(&a);
+    BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);
+    CHECK(b != NULL);
+    const int changes = g_changes;
+    g_free_on_change = b;
+    BK_node_remove(s, b);
+    CHECK(g_free_on_change == NULL && g_changes == changes + 1 && BK_node_child_count(s) == 1);
     free_screen(s);
   }
 
