@@ -159,11 +159,7 @@ func Switch(c *Context, on *bool) Element {
 func boolControl(c *Context, k kind, typ string, v *bool, label string) Element {
 	s := c.child(k, typ)
 	s.text = label
-	key := "label" // a check box's text is beside it, a toggle's on it
-	if k == kindToggle {
-		key = "text"
-	}
-	s.setStr(key, label)
+	s.setStr("label", label) // the kit draws a check box's and a toggle's label
 	c.bindNum(s, "value", b2f(*v), func(x float64) { *v = x != 0 })
 	return c.elem(s)
 }
