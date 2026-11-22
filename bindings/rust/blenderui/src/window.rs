@@ -714,7 +714,9 @@ impl App {
             }
         }
         for id in 0..self.windows.len() {
-            let Some(w) = self.windows[id].as_deref_mut() else { continue };
+            // a render may shut the app down (the windows go once it returns)
+            let Some(slot) = self.windows.get_mut(id) else { break };
+            let Some(w) = slot.as_deref_mut() else { continue };
             // a closed window draws no more frames (its animations stop with it)
             if w.life != Life::Open || (!w.dirty && !w.scrolled && !w.motion_frame && !w.sel_repaint && w.glides.is_empty()) {
                 continue;
