@@ -228,6 +228,7 @@ typedef struct BKArea {
   } rmd;
   BKNode *menu_region; /* the region a context menu was opened over */
   struct BKRegionRecord *pending_regions; /* saved region state the host has not made yet */
+  bool new_pending; /* made by an edit: BK_AREA_NEW is owed, sent when the edit is done */
 } BKArea;
 
 /* A saved region (screen_layout_set) waiting for the host to create it: applied as soon as the
@@ -349,12 +350,16 @@ bool screen_area_close(BKNode *screen_node, BKNode *area, BKNode *not_area);
 void area_swapspace(BKNode *screen_node, BKNode *sa1, BKNode *sa2);
 bool area_docking_apply(BKNode *screen_node, BKNode *sa1, BKNode *sa2, AreaDockTarget target,
                         float factor);
+/* ED_screen_state_toggle: and tells the host (screen_changed). */
 void screen_state_toggle(BKNode *screen_node, BKNode *area_node, short state);
+/* The same, inside an edit that tells the host when it is done. */
+void screen_state_apply(BKNode *screen_node, BKNode *area_node, short state);
 /* The regions focus mode hides while an area is in it. */
 bool region_hidden_in_focus(int type);
 /* The area left the screen: tell the host, free it (unless the host owns it). */
 void screen_area_free(BKNode *screen_node, BKNode *area_node);
-/* The layout changed: tell the host (BK_EV_CHANGE on the screen) and lay out again. */
+/* The layout changed: lay out again and tell the host, once the edit is done (Blender queues its
+ * notifiers, WM_event_add_notifier): the areas it made (BK_AREA_NEW), then BK_EV_CHANGE. */
 void screen_changed(BKNode *screen_node);
 
 /** \} */

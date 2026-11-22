@@ -379,9 +379,11 @@ void BK_frame_grid_weight(BKNode *frame, int column_axis, int index, double weig
  *                     its content out again, and leaves the pointer to the host's content)
  *  screen events:     BK_EV_AREA with BK_AREA_NEW (a = the new area's child index; the screen
  *                     made it, the host fills it) and BK_EV_CHANGE (the layout changed: save
- *                     "layout"). Areas get BK_EV_AREA with BK_AREA_CLOSE and BK_AREA_WINDOW
- *                     themselves (a = their child index), so a host that handles events later
- *                     still knows which.
+ *                     "layout"), both once an edit is done (as Blender queues its notifiers),
+ *                     so a handler may edit the screen again; an area made and closed by the
+ *                     same edit is never announced (nor closed). Areas get BK_EV_AREA with
+ *                     BK_AREA_CLOSE and BK_AREA_WINDOW themselves (a = their child index), so a
+ *                     host that handles events later still knows which.
  *
  * "area" (ScrArea): "editor" (string, which editor it shows: new areas copy it, the host fills
  * them on BK_AREA_NEW), "full" (string: "", "maximized" or "focus"). An area also works on its
@@ -412,7 +414,7 @@ enum {
   BK_AREA_WINDOW   /* the user dragged the area out of the window: open it in one */
 };
 /* Splits `area` at `factor` (0..1, from the left or bottom): the new area (the side past 0.5) or
- * NULL when the area is too small. */
+ * NULL when the area is too small, or when its BK_AREA_NEW handler closed it. */
 BKNode *BK_area_split(BKNode *area, BKScreenAxis axis, float factor);
 /* `gone` joins into `keep`, neighbors along an edge (trimming what overhangs). 0: not neighbors. */
 int BK_area_join(BKNode *keep, BKNode *gone);

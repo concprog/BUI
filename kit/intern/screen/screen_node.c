@@ -232,7 +232,8 @@ static void screen_detach(BKNode *n, BKNode *child)
   screen->detaching = NULL;
   AREA(child)->v1 = AREA(child)->v2 = AREA(child)->v3 = AREA(child)->v4 = NULL;
   AREA(child)->full = 0;
-  bk_emit(n, BK_EV_CHANGE, NULL, 0, 0);
+  AREA(child)->new_pending = false;
+  screen_changed(n);
 }
 
 static int screen_set_num(BKNode *n, const char *key, double v)
@@ -741,10 +742,17 @@ BKNode *BK_area_split(BKNode *area, BKScreenAxis axis, float factor)
     return NULL;
   }
   BKNode *newa = area_split(screen_node, area, (eScreenAxis)axis, factor);
-  if (newa) {
-    api_done(screen_node);
+  if (!newa) {
+    return NULL;
   }
-  return newa;
+  api_done(screen_node);
+  /* its BK_AREA_NEW handler may have closed it (and freed it): compared, never read */
+  for (int i = 0; i < screen_node->nkids; i++) {
+    if (screen_node->kids[i] == newa) {
+      return newa;
+    }
+  }
+  return NULL;
 }
 
 int BK_area_join(BKNode *keep, BKNode *gone)

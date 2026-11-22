@@ -384,7 +384,7 @@ int screen_layout_set(BKNode *screen_node, const char *text)
    * restored layout then enters its own state, if any). */
   SCREEN_AREAS_ITER (screen_node, other) {
     if (other->full) {
-      screen_state_toggle(screen_node, other->node, other->full);
+      screen_state_apply(screen_node, other->node, other->full);
       break;
     }
   }
@@ -427,9 +427,7 @@ int screen_layout_set(BKNode *screen_node, const char *text)
     for (int k = 0; k < 4; k++) {
       screen_geom_edge_add(screen, loop[k], loop[k + 1]);
     }
-    if (made) {
-      bk_emit(screen_node, BK_EV_AREA, NULL, i, BK_AREA_NEW); /* the host fills it */
-    }
+    area->new_pending = made; /* the host fills it, told once the layout is done */
     const BKJson *regions = bk_json_get(a, "regions");
     for (int k = 0; k < json_len(regions); k++) {
       region_from_json(node, json_at(regions, k));
@@ -441,7 +439,7 @@ int screen_layout_set(BKNode *screen_node, const char *text)
   for (int i = 0; i < nareas; i++) {
     const int full = json_int(bk_json_get(json_at(areas, i), "full"), 0);
     if (full == SCREENMAXIMIZED || full == SCREENFULL) {
-      screen_state_toggle(screen_node, screen_node->kids[i], (short)full);
+      screen_state_apply(screen_node, screen_node->kids[i], (short)full);
       break;
     }
   }
