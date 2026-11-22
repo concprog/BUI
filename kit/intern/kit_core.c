@@ -2299,6 +2299,9 @@ int BK_render(BKContext *ctx, BuiRaster *r, int w, int h, int full)
   BuiRaster *const outer = bk_draw.r;
   const int regions = render_frame(ctx, r, w, h, full);
   bk_draw.r = outer;
+  /* the context's last frame is this call's raster, also when a handler rendered the context
+   * into another one meanwhile (a render nested in a configure handler) */
+  ctx->raster = r;
   return regions;
 }
 
