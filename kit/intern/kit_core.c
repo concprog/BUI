@@ -2290,7 +2290,19 @@ int BK_configure(BKContext *ctx, int w, int h)
   return changed;
 }
 
+static int render_frame(BKContext *ctx, BuiRaster *r, int w, int h, int full);
+
 int BK_render(BKContext *ctx, BuiRaster *r, int w, int h, int full)
+{
+  /* the draw state names the raster only while it is drawn into: the host may free it after
+   * (a widget drawn later with BK_draw_widget then has no stale raster to set a clip on) */
+  BuiRaster *const outer = bk_draw.r;
+  const int regions = render_frame(ctx, r, w, h, full);
+  bk_draw.r = outer;
+  return regions;
+}
+
+static int render_frame(BKContext *ctx, BuiRaster *r, int w, int h, int full)
 {
   BK_image_poll(); /* decoded images arrive (and damage where they show) */
   bk_image_tick(); /* animated images whose next frame is due */

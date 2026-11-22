@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -935,40 +936,47 @@ struct BiStructInfo
     newfunc tp_new; // nullptr: not constructible from Python
 };
 
+// What a type made by bi_make_type points into (its name, getset table and slots). The types live
+// as long as the process, so these do too: kept here, where they stay reachable, rather than
+// allocated once and dropped. A deque never moves what it holds.
+struct BiTypeStorage
+{
+    std::string name;
+    std::vector<PyGetSetDef> getset;
+    std::vector<PyType_Slot> slots;
+    PyType_Spec spec;
+};
+static std::deque<BiTypeStorage> bi_type_storage;
+
 static bool bi_make_type(PyObject* module, BiStructInfo& s)
 {
+    BiTypeStorage& st = bi_type_storage.emplace_back();
     // getset table: generated fields (kinds Python understands) + `address`
-    PyGetSetDef* gs = new PyGetSetDef[(size_t)s.nfields + 2];
-    int n = 0;
     for (int i = 0; i < s.nfields; i++)
     {
         if (s.fields[i].elem.kind == BK_NONE)
             continue;
-        gs[n++] = { s.fields[i].name, bi_field_get, bi_field_set, nullptr, &s.fields[i] };
+        st.getset.push_back({ s.fields[i].name, bi_field_get, bi_field_set, nullptr, &s.fields[i] });
     }
-    gs[n++] = { "address", bi_obj_address, nullptr, (char*)"address of the C++ object", nullptr };
-    gs[n] = { nullptr, nullptr, nullptr, nullptr, nullptr };
+    st.getset.push_back({ "address", bi_obj_address, nullptr, (char*)"address of the C++ object", nullptr });
+    st.getset.push_back({ nullptr, nullptr, nullptr, nullptr, nullptr });
 
-    std::vector<PyType_Slot> slots = {
+    st.slots = {
         { Py_tp_dealloc, (void*)bi_obj_dealloc },
         { Py_tp_repr, (void*)bi_obj_repr },
         { Py_tp_richcompare, (void*)bi_obj_richcompare },
         { Py_tp_hash, (void*)bi_obj_hash },
-        { Py_tp_getset, (void*)gs },
+        { Py_tp_getset, (void*)st.getset.data() },
     };
     if (s.methods)
-        slots.push_back({ Py_tp_methods, (void*)s.methods });
+        st.slots.push_back({ Py_tp_methods, (void*)s.methods });
     if (s.tp_new)
-        slots.push_back({ Py_tp_new, (void*)s.tp_new });
-    slots.push_back({ 0, nullptr });
-    std::string* full = new std::string(std::string("imgui.") + s.name);
-    PyType_Spec* spec = new PyType_Spec{ full->c_str(), (int)sizeof(BiObj), 0,
-                                         (unsigned)(Py_TPFLAGS_DEFAULT | (s.tp_new ? 0 : Py_TPFLAGS_DISALLOW_INSTANTIATION)),
-                                         nullptr };
-    PyType_Slot* sl = new PyType_Slot[slots.size()];
-    memcpy(sl, slots.data(), sizeof(PyType_Slot) * slots.size());
-    spec->slots = sl;
-    PyObject* t = PyType_FromSpec(spec);
+        st.slots.push_back({ Py_tp_new, (void*)s.tp_new });
+    st.slots.push_back({ 0, nullptr });
+    st.name = std::string("imgui.") + s.name;
+    st.spec = { st.name.c_str(), (int)sizeof(BiObj), 0,
+                (unsigned)(Py_TPFLAGS_DEFAULT | (s.tp_new ? 0 : Py_TPFLAGS_DISALLOW_INSTANTIATION)), st.slots.data() };
+    PyObject* t = PyType_FromSpec(&st.spec);
     if (t == nullptr)
         return false;
     *s.type = (PyTypeObject*)t;

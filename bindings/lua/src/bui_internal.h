@@ -24,6 +24,7 @@ typedef struct {
 
 typedef struct {
   BKContext *ctx;
+  BuiRaster *raster; /* ctx:render's frame: the context keeps it as its last one (eyedropper) */
 } luabui_Context;
 
 typedef struct {

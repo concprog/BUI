@@ -644,6 +644,7 @@ static int l_new_context(lua_State *L) {
 
   luabui_Context *cud = (luabui_Context *)lua_newuserdata(L, sizeof(luabui_Context));
   cud->ctx = ctx;
+  cud->raster = NULL;
   luaL_getmetatable(L, LUABUI_CONTEXT_MT);
   lua_setmetatable(L, -2);
   luabui_map_ctx(L, ctx, -1);
