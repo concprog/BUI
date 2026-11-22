@@ -184,6 +184,8 @@ fn an_unchanged_img_is_not_redrawn() {
             ..Default::default()
         };
         let h = cx.open_window(opts, |_, cx| cx.new(|_| Counter { n: 0 })).unwrap();
+        // the image decoded first (`draw` waits for it): its arrival would damage it in the frame measured
+        cx.draw(h.id);
         cx.draw_partial_and_full(h.id);
         cx.draw_partial_and_full(h.id);
         h.update(cx, |v, _, cx| {

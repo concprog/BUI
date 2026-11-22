@@ -700,7 +700,7 @@ impl ScreenBuilder {
             d = d.on_change(move |e, w, app| {
                 match (e.value.strip_prefix("window\t"), &on_window, &on_change) {
                     (Some(editor), Some(f), _) => f(&AreaEvent { editor: editor.to_owned() }, w, app),
-                    (None, _, Some(f)) if e.value.starts_with('{') => {
+                    (None, _, Some(f)) if is_layout(&e.value) => {
                         f(&ScreenEvent { layout: e.value.clone() }, w, app);
                     }
                     _ => {}
@@ -779,10 +779,43 @@ struct KitScreen {
     placed: [i32; 4],
 }
 
+impl KitScreen {
+    /// Forget its areas and free its kit node (with its areas and regions).
+    fn free(&self) {
+        LIVE.with(|l| {
+            let mut l = l.borrow_mut();
+            for a in &self.areas {
+                l.remove(&(a.node as usize));
+            }
+        });
+        // SAFETY: our screen node (and its areas and regions), detached and freed.
+        unsafe { sys::BK_node_free(self.node) };
+    }
+}
+
+/// What every layout the kit writes starts with (`screen_layout_get`): a
+/// change whose value doesn't is not the screen's (a text field inside it
+/// whose own change nobody handled reaches the screen's handler too).
+const LAYOUT_PREFIX: &str = "{\"bui_screen\"";
+
+/// Whether a change's value is a screen layout.
+fn is_layout(value: &str) -> bool {
+    value.starts_with(LAYOUT_PREFIX)
+}
+
 /// The screens of one window, by element key.
 #[derive(Default)]
 pub(crate) struct Screens {
     map: HashMap<Key, (String, KitScreen)>,
+}
+
+impl Screens {
+    /// The window goes: every screen's kit node is freed and its areas forgotten.
+    pub(crate) fn free_all(&mut self) {
+        for (_, (_, scr)) in self.map.drain() {
+            scr.free();
+        }
+    }
 }
 
 /// What a kit node of a screen is, for its events.
@@ -1100,14 +1133,7 @@ impl Screens {
     pub(crate) fn after_layout(&mut self, frame: &Frame, scale: f32) {
         self.map.retain(|key, (_, scr)| {
             if !std::mem::take(&mut scr.seen) {
-                LIVE.with(|l| {
-                    let mut l = l.borrow_mut();
-                    for a in &scr.areas {
-                        l.remove(&(a.node as usize));
-                    }
-                });
-                // SAFETY: our screen node (and its areas and regions), detached and freed.
-                unsafe { sys::BK_node_free(scr.node) };
+                scr.free();
                 return false;
             }
             scr.place(frame, *key, scale);

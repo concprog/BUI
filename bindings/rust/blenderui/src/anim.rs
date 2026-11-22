@@ -1310,6 +1310,9 @@ pub(crate) struct Animations {
     motion: crate::motion::Elements,
     /// Per-box buffers of the CSS redraws, kept so a frame allocates nothing.
     scratch: CssScratch,
+    /// The last CSS redraw moved a clip under one that stays (see
+    /// [`move_reclips`](crate::layout::move_reclips)): place the frame again.
+    reclip: bool,
 }
 
 /// A CSS redraw's per-box marks: which boxes hold child elements, which it
@@ -1349,6 +1352,12 @@ impl Animations {
                                 viewport: (f32, f32)) -> Option<bool> {
         crate::motion::tick();
         self.motion.redraw(frame, styles, viewport)
+    }
+
+    /// Whether the last redraws moved a clip under one that stays (see
+    /// [`move_reclips`](crate::layout::move_reclips)): the frame must be placed again.
+    pub(crate) fn take_reclip(&mut self) -> bool {
+        std::mem::take(&mut self.reclip) | self.motion.take_reclip()
     }
 
     /// Motion's drag: the pointer pressed on `path`, moved, let go (true:
@@ -1634,6 +1643,7 @@ impl Animations {
                 let own = shift[j];
                 let d = (own.0 + shift[parent].0, own.1 + shift[parent].1);
                 if d != (0.0, 0.0) {
+                    self.reclip |= crate::layout::move_reclips(nodes, styles, j);
                     // a clip made inside the moved box moves with it
                     let inner = shift[parent] == d && own == (0.0, 0.0);
                     let parent_clip = nodes[parent].clip;

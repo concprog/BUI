@@ -208,6 +208,9 @@ pub(crate) struct Elements {
     /// the boxes a redraw walks (see `build_region`), and scratch for building them
     region: Vec<u32>,
     mark: Vec<bool>,
+    /// The last redraw moved a clip under one that stays (see
+    /// [`move_reclips`](crate::layout::move_reclips)).
+    reclip: bool,
 }
 
 impl Drop for Elements {
@@ -219,6 +222,10 @@ impl Drop for Elements {
 }
 
 impl Elements {
+    pub(crate) fn take_reclip(&mut self) -> bool {
+        std::mem::take(&mut self.reclip)
+    }
+
     pub(crate) fn take_dirty(&mut self) -> Vec<bool> {
         std::mem::take(&mut self.dirty)
     }
@@ -710,6 +717,7 @@ impl Elements {
                 let d = (own.0 + up.0, own.1 + up.1);
                 self.shift[j] = d;
                 if d != (0.0, 0.0) {
+                    self.reclip |= crate::layout::move_reclips(nodes, styles, j);
                     let b = &mut nodes[j].bounds;
                     b.origin.x += d.0;
                     b.origin.y += d.1;

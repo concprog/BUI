@@ -405,6 +405,9 @@ pub struct App {
     activation_hooks: Vec<Box<dyn FnMut(WindowId, bool, &mut App)>>,
     /// Counts `notify_all` calls (see `WindowHandle::update`).
     notified: u64,
+    /// [`shutdown`](App::shutdown) was asked while a window was lent to a
+    /// callback: it runs once every window is back.
+    shutdown_later: bool,
 }
 
 type RemoteJob = Box<dyn FnOnce(&mut App) + Send>;
@@ -450,7 +453,7 @@ impl App {
         crate::motion::start_clock(real_clock);
         App { windows: Vec::new(), entities: Vec::new(), headless, real_clock, globals: HashMap::new(), propagate: true,
               remote: None, close_hooks: Vec::new(), closed_later: None,
-              activation_hooks: Vec::new(), notified: 0 }
+              activation_hooks: Vec::new(), notified: 0, shutdown_later: false }
     }
 
     /// Create an entity (gpui's `cx.new`).
@@ -656,6 +659,9 @@ impl App {
         if closing {
             self.window_closed(id);
         }
+        if self.shutdown_later {
+            self.shutdown();
+        }
         Some(r)
     }
 
@@ -678,7 +684,10 @@ impl App {
     /// Handle queued kit events, then re-render what changed.
     fn drain(&mut self) {
         while let Some(ev) = queue_pop() {
-            self.with_window(ev.window, |w, app| w.dispatch(ev, app));
+            // a closed window's queued events go with it (its handlers and hooks are done)
+            if self.window(WindowId(ev.window)).is_some_and(|w| w.life == Life::Open) {
+                self.with_window(ev.window, |w, app| w.dispatch(ev, app));
+            }
         }
         // work from other threads (UiSender)
         loop {
@@ -731,8 +740,14 @@ impl App {
     }
 
     /// Free every window's native and raster resources. Safe to call again (and done on drop): a host
-    /// that took the app from [`Application::start`] calls it when the page is done with it.
+    /// that took the app from [`Application::start`] calls it when the page is done with it. Called from
+    /// a window's callback (an event handler, a render), it runs once that callback has returned.
     pub fn shutdown(&mut self) {
+        // a window lent to a callback is out of its slot: free them all once it is back
+        self.shutdown_later = self.windows.iter().any(Option::is_none);
+        if self.shutdown_later {
+            return;
+        }
         for w in self.windows.iter_mut().flatten() {
             w.destroy();
         }
@@ -1303,6 +1318,7 @@ impl Window {
                 let t = CString::new(title).unwrap_or_default();
                 let n = sys::BK_window_new(ctx, t.as_ptr(), w.round() as c_int, h.round() as c_int);
                 if n.is_null() {
+                    win.destroy();
                     return Err("could not create a native window".into());
                 }
                 let cb = sys::BKWindowCallbacks { data: id as *mut c_void, on_timer: Some(on_timer),
@@ -1318,12 +1334,22 @@ impl Window {
         }
     }
 
+    /// Free what the window holds of the kit. The order is the kit's: the
+    /// native window gives the context its host back, the context lets go of
+    /// its root (and of the raster it rendered last), then the tree goes
+    /// (with the canvases), then the raster.
     fn destroy(&mut self) {
         self.widgets.free_all();
+        self.screens.free_all();
+        // SAFETY: each pointer is this window's and freed once (nulled after).
         unsafe {
             if let Some(n) = self.native.take() {
                 sys::BK_window_free(n);
             }
+            sys::BK_context_free(std::mem::replace(&mut self.ctx, std::ptr::null_mut()));
+            sys::BK_node_free(std::mem::replace(&mut self.root, std::ptr::null_mut()));
+            self.overlays.clear();
+            self.canvases.clear();
             if !self.raster.is_null() {
                 sys::BUI_raster_free(self.raster);
                 self.raster = std::ptr::null_mut();
@@ -1785,22 +1811,6 @@ impl Window {
                                crate::widgets::WidgetAsk::Height(w) => (0.0, widgets.height_for(key, w, scale)),
                            });
         crate::vlist::run_after_layout(&frame, self, app);
-        // CSS animations / transitions still moving: render again next frame;
-        // Motion's values alone: redraw (nothing running: no frames, so an
-        // idle window costs no CPU)
-        let (css, motion) = self.caches.anim.end();
-        // `@container`: sizes changed under a query, or an element came into
-        // view (`whileInView`): render once more
-        let (mut in_view, flipped) = self.caches.anim.after_layout(&frame, &self.caches.styles, vp);
-        // useScroll: the values follow the scroll; what they move draws again
-        let scrolled = crate::motion::update_scroll(&frame);
-        if flipped {
-            // a layout animation starts where the element was seen: this frame too
-            in_view |= self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp) == Some(true);
-        }
-        let container_changed = self.caches.after_layout(&frame) | in_view;
-        // screens: their kit nodes go where their elements are (the kit reports what moves)
-        self.screens.after_layout(&frame, self.scale);
         // `data-stick="bottom"`: a scroll container that grew goes to its end
         // (`"bottom"`: only if it was at the end; `"always"`: whatever it showed)
         let mut stuck = false;
@@ -1818,10 +1828,27 @@ impl Window {
             }
         }
         // an element asked into view this render: its container scrolls, in
-        // this very frame for a jump
+        // this very frame for a jump (placed before what follows placement:
+        // in-view states, scroll-linked values, screens)
         if self.reveal(&frame) {
             crate::layout::replace(&mut frame, vp, &self.state, &mut self.caches);
         }
+        // CSS animations / transitions still moving: render again next frame;
+        // Motion's values alone: redraw (nothing running: no frames, so an
+        // idle window costs no CPU)
+        let (css, motion) = self.caches.anim.end();
+        // `@container`: sizes changed under a query, or an element came into
+        // view (`whileInView`): render once more
+        let (mut in_view, flipped) = self.caches.anim.after_layout(&frame, &self.caches.styles, vp);
+        // useScroll: the values follow the scroll; what they move draws again
+        let scrolled = crate::motion::update_scroll(&frame);
+        if flipped {
+            // a layout animation starts where the element was seen: this frame too
+            in_view |= self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp) == Some(true);
+        }
+        let container_changed = self.caches.after_layout(&frame) | in_view;
+        // screens: their kit nodes go where their elements are (the kit reports what moves)
+        self.screens.after_layout(&frame, self.scale);
         // a scroll is a placement alone unless the view reads placements or a
         // container sticks to its end (animations follow it: see scroll_frame)
         self.scroll_free = !sticks && !self.scroll_read.get();
@@ -1885,6 +1912,10 @@ impl Window {
             Some((Vec::new(), false))
         }?;
         self.dirty |= self.caches.anim.redraw_motion(frame, &mut self.caches.styles, vp)?;
+        if self.caches.anim.take_reclip() {
+            // a clip moved under one that stays: placed again, the moved values are in the styles
+            crate::layout::replace(frame, vp, &self.state, &mut self.caches);
+        }
         Some(moved_css)
     }
 
@@ -2342,7 +2373,8 @@ impl Window {
                 if let Some(&deepest) = path.last() {
                     self.emit(app, deepest, &e, |l| l.scroll.iter().collect());
                 }
-                self.scroll_by(&path, -pixels.unwrap_or(ev.a as f32 * 40.0), modifiers.shift);
+                // a touch drag follows the finger: it snaps no step (browsers snap such a gesture at its end)
+                self.scroll_by(&path, -pixels.unwrap_or(ev.a as f32 * 40.0), modifiers.shift, pixels.is_none());
             }
             sys::BK_EV_KEY | sys::BK_EV_KEYRELEASE => {
                 let mut parts = ev.text.splitn(2, '\t');
@@ -2405,7 +2437,7 @@ impl Window {
             .find(|n| n.scroll_range.1 > 0.0)
             .map(|n| n.bounds.size.height * 0.9);
         if let Some(page) = page {
-            self.scroll_by(&path, dir * page, false);
+            self.scroll_by(&path, dir * page, false, true);
         }
     }
 
@@ -2457,8 +2489,9 @@ impl Window {
         self.scrolled = true;
     }
 
-    /// Scroll the innermost scroll container along `path` that can move.
-    fn scroll_by(&mut self, path: &[Key], dy: f32, horizontal: bool) {
+    /// Scroll the innermost scroll container along `path` that can move; a
+    /// discrete step (`snaps`: a wheel notch, a page) lands on its snap positions.
+    fn scroll_by(&mut self, path: &[Key], dy: f32, horizontal: bool, snaps: bool) {
         let Some(f) = &self.frame else { return };
         for key in path.iter().rev() {
             let Some(&i) = f.by_key().get(key) else { continue };
@@ -2470,7 +2503,7 @@ impl Window {
             } else {
                 (sx, (sy + dy).clamp(0.0, ry))
             };
-            let (nx, ny) = snap(f, &self.caches.styles, i, (sx, sy), (nx, ny));
+            let (nx, ny) = if snaps { snap(f, &self.caches.styles, i, (sx, sy), (nx, ny)) } else { (nx, ny) };
             if (nx, ny) != (sx, sy) {
                 // the user scrolls: a glide there stops
                 self.glides.retain(|g| g.container != *key);

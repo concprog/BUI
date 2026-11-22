@@ -219,3 +219,47 @@ fn rsx_screen(saved: Option<String>) -> impl IntoElement {
                 saved={saved.as_deref()} onChange={|e: &ScreenEvent| { let _ = e.layout(); }} />
     }
 }
+
+static FIELD_LAYOUTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+struct FieldInScreen;
+
+impl Render for FieldInScreen {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let editors = Editors::new()
+            .editor("Text", "TEXT", |_| Editor::new(div().child(input().id("field").w(px(200.0)))))
+            .editor("Other", "OTHER", |_| Editor::new(div().id("other").child("other")));
+        body().m_0().w(px(900.0)).h(px(600.0)).child(
+            Screen()
+                .editors(editors)
+                .layout(AreaSplit::v(0.5, "Text", "Other"))
+                .on_change(|e: &ScreenEvent, _, _| FIELD_LAYOUTS.lock().unwrap().push(e.layout().to_owned())),
+        )
+    }
+}
+
+/// A text field in a screen whose change nobody handles reaches the screen's handler: its text
+/// is not taken for a layout, even when it looks like JSON.
+#[test]
+fn a_field_change_in_a_screen_is_not_a_layout() {
+    Application::headless().run(|cx| {
+        let opts = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(900.0), px(600.0)),
+            })),
+            ..Default::default()
+        };
+        let id = cx.open_window(opts, |_, cx| cx.new(|_| FieldInScreen)).unwrap().id;
+        for _ in 0..3 {
+            cx.draw(id);
+        }
+        let f = cx.element_bounds(id, "field").expect("the field");
+        cx.simulate_click(id, f.origin.x + 10.0, f.origin.y + f.size.height / 2.0);
+        cx.simulate_key(id, "{", "braceleft");
+        cx.simulate_key(id, "", "Return");
+        cx.draw(id);
+        let seen = FIELD_LAYOUTS.lock().unwrap().clone();
+        assert!(seen.iter().all(|l| l.starts_with("{\"bui_screen\"")), "only layouts: {seen:?}");
+    });
+}

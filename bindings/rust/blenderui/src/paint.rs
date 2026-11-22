@@ -453,7 +453,7 @@ impl Painter {
             let (start, end) = self.ranges[i];
             let n = &frame.nodes[i];
             let at = self.items.len();
-            if n.visible && n.opacity > 0.0 && self.in_view(frame, styles, i, vp) {
+            if n.visible && n.opacity > 0.0 && self.in_view(mats, frame, styles, i, vp) {
                 self.opacity = n.opacity;
                 self.clip = n.clip;
                 paint_node(frame, styles, tc, i, self, vp, app);
@@ -473,6 +473,7 @@ impl Painter {
         self.opacity = 1.0;
         self.clip = None;
         self.partial = true;
+        end_layers_frame();
         true
     }
 
@@ -539,9 +540,11 @@ impl Painter {
         (x0 <= x1).then(|| rect(x0, y0, x1 - x0, y1 - y0))
     }
 
-    /// Whether box `i` is painted: a selection paints everything, else only what the view shows.
-    fn in_view(&self, frame: &Frame, styles: &StyleStore, i: usize, vp: (f32, f32)) -> bool {
-        self.sel.is_some() || !offscreen(frame, styles, i, vp)
+    /// Whether box `i` is painted: a selection paints everything, a box under
+    /// a vector transform paints where the transform puts it (not where its
+    /// bounds are), else only what the view shows.
+    fn in_view(&self, mats: &Mats, frame: &Frame, styles: &StyleStore, i: usize, vp: (f32, f32)) -> bool {
+        self.sel.is_some() || mats.m[i] != crate::effects::IDENTITY || !offscreen(frame, styles, i, vp)
     }
 
     fn push(&mut self, kind: Kind, coords: Coords, fill: Rgba) {
@@ -1027,8 +1030,7 @@ fn paint_frame_with(s: &mut PaintScratch, frame: &Frame, styles: &StyleStore, tc
                 p.note_widget(n.key, n.clip.map_or(n.bounds, |c| c.intersect(&n.bounds)));
             }
             let start = p.items.len();
-            // a box under a vector transform paints where the transform puts it, not where its bounds are
-            if mats.m[i] != crate::effects::IDENTITY || p.in_view(frame, styles, i, vp) {
+            if p.in_view(mats, frame, styles, i, vp) {
                 paint_node(frame, styles, tc, i, p, vp, app);
             }
             mats.map(p, start, i);
@@ -1043,8 +1045,8 @@ fn paint_frame_with(s: &mut PaintScratch, frame: &Frame, styles: &StyleStore, tc
         tour.build(frame);
         let mut cx = LayerCx { frame, styles, tc, vp, scale, app, done, mats, tour, subs };
         paint_list(&mut cx, order, p, None, 1.0);
-        LAYERS.with(|l| l.borrow_mut().end_frame());
     }
+    end_layers_frame();
 }
 
 /// Buffers a paint fills, kept between paints so a frame allocates none of them.
@@ -1093,11 +1095,22 @@ struct Mats {
     m: Vec<crate::effects::Affine>,
     outer: Vec<OuterClip>,
     /// Boxes whose move and scale goes through a pixel layer all the same: a
-    /// non-uniform scale over text (a text item scales by one size).
+    /// non-uniform scale over text (a text item scales by one size), or one
+    /// over effects on pixels (a mask, a clip path, a filter, a backdrop:
+    /// they work at the boxes' own bounds, not where the scale puts them).
     pixel: Vec<bool>,
-    /// Whether each box's subtree draws text (the buffer of [`vector_mats`]).
-    text: Vec<bool>,
+    /// What each box's subtree holds (the buffer of [`vector_mats`]).
+    under: Vec<Under>,
     layered: bool,
+}
+
+/// What a box's subtree holds that a vector scale over it can't carry.
+#[derive(Clone, Copy, Default)]
+struct Under {
+    /// It draws text (the box included).
+    text: bool,
+    /// A box under it (not the box) has effects on pixels.
+    pixels: bool,
 }
 
 /// The clip from outside a box's nearest transformed ancestor: as layout gave
@@ -1142,15 +1155,19 @@ fn vector_mats(frame: &Frame, styles: &StyleStore, vp: (f32, f32), out: &mut Mat
     out.outer.clear();
     out.pixel.clear();
     out.layered = false;
-    // children come after their parents: backwards, a subtree's text reaches its root
-    out.text.clear();
-    out.text.resize(nodes.len(), false);
+    // children come after their parents: backwards, what a subtree holds reaches its root
+    out.under.clear();
+    out.under.resize(nodes.len(), Under::default());
     for (i, n) in nodes.iter().enumerate().rev() {
-        let text = out.text[i] || matches!(n.content, Content::Word { .. } | Content::Text(_));
+        let text = out.under[i].text || matches!(n.content, Content::Word { .. } | Content::Text(_));
+        out.under[i].text = text;
         if let Some(p) = n.parent {
-            out.text[p] |= text;
+            let pixels = out.under[i].pixels
+                || effects_of(frame, styles, i).is_some_and(|e| e.needs_pixels() || !e.backdrop.is_empty());
+            let up = &mut out.under[p];
+            up.text |= text;
+            up.pixels |= pixels;
         }
-        out.text[i] = text;
     }
     for (i, n) in nodes.iter().enumerate() {
         // parents come before their children
@@ -1159,7 +1176,8 @@ fn vector_mats(frame: &Frame, styles: &StyleStore, vp: (f32, f32), out: &mut Mat
             let u = Units { font_size: styles[n.style].font_size, viewport: vp };
             out.layered |= !e.backdrop.is_empty() || e.needs_layer(n.bounds, &u);
             let vector = e.vector(n.bounds, &u);
-            let pixel = out.text[i] && vector.is_some_and(|v| (v[0] - v[3]).abs() > crate::effects::AXIS_EPSILON);
+            let under = out.under[i];
+            let pixel = vector.is_some_and(|v| under.pixels || (under.text && (v[0] - v[3]).abs() > crate::effects::AXIS_EPSILON));
             out.layered |= pixel;
             out.pixel.push(pixel);
             if let Some(own) = vector.filter(|_| !pixel) {
@@ -1244,6 +1262,13 @@ struct Caches {
     images: Cache<(Arc<Image>, Bounds<f32>)>,
     /// Filtered layers as GPU textures, for the GPU to turn (see [`gpu_turn`]).
     textures: Cache<Arc<Texture>>,
+}
+
+/// A paint is done: count it for every cached layer result, dropping those
+/// unused for [`KEEP_PAINTS`] paints. Every paint counts, layered or not, so
+/// a page that stops using layers frees their buffers.
+fn end_layers_frame() {
+    LAYERS.with(|l| l.borrow_mut().end_frame());
 }
 
 impl Caches {

@@ -2549,6 +2549,27 @@ pub(crate) fn layout(root: AnyElement, viewport: (f32, f32), state: &UiState, ca
     frame
 }
 
+/// The edges of a box's `clip` (css2 11.1.2): only an absolutely positioned box has one.
+fn clip_edges(st: &Computed) -> Option<[Option<crate::geometry::Length>; 4]> {
+    st.clip_rect.filter(|_| matches!(st.layout.position, Position::Absolute | Position::Fixed))
+}
+
+/// Whether a box's `overflow` clips what is under it to its padding box.
+fn overflow_clips(st: &Computed) -> bool {
+    let ov = st.layout.overflow;
+    ov.x != Overflow::Visible || ov.y != Overflow::Visible
+}
+
+/// Whether a redraw that moves box `j` (with everything under it) leaves
+/// clips that are not the old ones moved: `j` clips (its `overflow`, or its
+/// `clip`) inside a clip from above, which stays where it is, so the clips
+/// it makes are new intersections. Then the frame is placed again
+/// ([`replace`]); without a clip above, the clips move with the box.
+pub(crate) fn move_reclips(nodes: &[BoxNode], styles: &StyleStore, j: usize) -> bool {
+    let st = &styles[nodes[j].style];
+    nodes[j].clip.is_some() && (overflow_clips(st) || clip_edges(st).is_some())
+}
+
 /// Place `frame` again where only the scroll offsets (`state.scroll`) changed
 /// since it was laid out: the taffy tree and the boxes are the ones of that
 /// layout, so only positions, clips and the scroll positions are redone.
@@ -2606,7 +2627,7 @@ impl Walk<'_> {
             nodes[i].clip = clip;
             nodes[i].seq = self.seq;
             self.seq += 1;
-            if let Some(cr) = st.clip_rect.filter(|_| matches!(st.layout.position, Position::Absolute | Position::Fixed)) {
+            if let Some(cr) = clip_edges(st) {
                 // edges from the border box's top-left corner; auto = that edge
                 let e = |k: usize, auto: f32, basis: f32| cr[k].map_or(auto, |l| l.resolve(&u, basis));
                 let (top, right, bottom, left) = (e(0, 0.0, h), e(1, w, w), e(2, h, h), e(3, 0.0, w));
@@ -2618,8 +2639,8 @@ impl Walk<'_> {
                 nodes[i].clip = Some(r);
                 child_clip = Some(r);
             }
-            let ov = st.layout.overflow;
-            if ov.x != Overflow::Visible || ov.y != Overflow::Visible {
+            if overflow_clips(st) {
+                let ov = st.layout.overflow;
                 let b = l.border;
                 let pad = rect(x + b.left, y + b.top, (w - b.left - b.right).max(0.0),
                                (h - b.top - b.bottom).max(0.0));
