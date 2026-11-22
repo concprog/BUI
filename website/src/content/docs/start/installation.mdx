@@ -8,7 +8,7 @@ languages: ["python", "rust", "javascript", "c", "imgui"]
 sources: ["README.md", "docs/getting-started.md", "docs/rust.md", "docs/javascript.md", "docs/imgui.md", "docs/c-api.md", "pyproject.toml"]
 ---
 
-The quickest way in is [the `bui` command](/docs/start/bui-command): one line installs it, and `bui new my-app` makes a project in any of the languages below, with the tools checked and the newest BUI installed.
+The quickest way in is [the `bui` command](/docs/start/bui-command): one line installs it, and `bui new my-app` makes a project in any of the languages below. It checks the language's tools first and installs the newest BUI once you say yes; if a tool is still missing (or you pass `--no-install`) it writes the project without installing, and `bui doctor` finishes the install later.
 
 Or install by hand: for Python and JavaScript, installing BUI is one command. Rust is one line in `Cargo.toml`, and C is a normal CMake build.
 

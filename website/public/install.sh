@@ -89,11 +89,19 @@ add_to_path() {
   case ":$PATH:" in *":$INSTALL_DIR:"*) return 0 ;; esac
   [ -n "${BUI_NO_MODIFY_PATH:-}" ] && { say "${DIM}Add $INSTALL_DIR to your PATH to use it.${RESET}"; return 0; }
   line="export PATH=\"$INSTALL_DIR:\$PATH\" # added by the bui installer"
+  zshrc="${ZDOTDIR:-$HOME}/.zshrc"
+  # the login shell's own file, made when it is missing (a new Mac has no .zshrc, and zsh does not read .profile)
+  case "${SHELL##*/}" in
+    zsh) own="$zshrc" ;;
+    bash) own="$HOME/.bashrc" ;;
+    *) own="" ;;
+  esac
   changed=""
-  for rc in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
-    # profiles that exist (and .profile always, as login shells read it)
-    if [ -f "$rc" ] || [ "$rc" = "$HOME/.profile" ]; then
-      if ! grep -qs "added by the bui installer" "$rc" 2>/dev/null; then
+  for rc in "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc" "$zshrc"; do
+    # profiles that exist, .profile always (login shells read it) and the login shell's own
+    if [ -f "$rc" ] || [ "$rc" = "$HOME/.profile" ] || [ "$rc" = "$own" ]; then
+      # this folder's line: a line for another BUI_INSTALL_DIR does not put this one on PATH
+      if ! grep -qsxF "$line" "$rc"; then
         printf '\n%s\n' "$line" >> "$rc"
         changed="$changed $rc"
       fi

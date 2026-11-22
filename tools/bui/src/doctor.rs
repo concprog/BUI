@@ -29,7 +29,7 @@ pub fn run(args: &DoctorArgs) -> Result<ExitCode> {
         ui::banner(false);
         ui::intro("bui doctor");
     }
-    let project = project::find(Path::new("."));
+    let project = project::find(Path::new("."))?;
     let mut sections = gather(project.as_ref(), args.all);
     if args.json {
         print_json(&sections);

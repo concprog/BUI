@@ -36,7 +36,7 @@ pub fn run(args: &UpdateArgs) -> Result<()> {
         ui::outro("Done");
         return Ok(());
     }
-    let Some(p) = project::find(Path::new(".")) else {
+    let Some(p) = project::find(Path::new("."))? else {
         ui::outro("Done (run it inside a project to update its packages too)");
         return Ok(());
     };

@@ -25,7 +25,7 @@ pub enum Tool {
     Lua,
     Luarocks,
     Cmake,
-    /// A C compiler (on Windows, Visual Studio's C++ tools).
+    /// A C and a C++ compiler (on Windows, Visual Studio's C++ tools).
     Cc,
     Git,
 }
@@ -68,7 +68,7 @@ impl Tool {
             Self::Lua => "Lua 5.4",
             Self::Luarocks => "LuaRocks",
             Self::Cmake => "CMake",
-            Self::Cc => "a C compiler",
+            Self::Cc => "a C and C++ compiler",
             Self::Git => "Git",
         }
     }
@@ -100,7 +100,7 @@ impl Tool {
                 note: Some("Rust on Windows also needs Visual Studio's C++ build tools (bui offers them next)."),
             },
             (Self::Rust, _) => none(vec![Cmd::script("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y")]),
-            (Self::Bun, Os::Windows) => none(vec![Cmd::script("irm bun.sh/install.ps1 | iex")]),
+            (Self::Bun, Os::Windows) => none(vec![Cmd::script("irm https://bun.sh/install.ps1 | iex")]),
             (Self::Bun, _) => none(vec![Cmd::script("curl -fsSL https://bun.sh/install | bash")]),
             (Self::Node, Os::Windows) => none(vec![winget("OpenJS.NodeJS.LTS")]),
             (Self::Node, Os::Mac) if which("brew").is_some() => none(vec![brew("node")]),
@@ -112,7 +112,7 @@ impl Tool {
             (Self::Uv, _) => none(vec![Cmd::script("curl -LsSf https://astral.sh/uv/install.sh | sh")]),
             (Self::Lua | Self::Luarocks, Os::Windows) => Install {
                 cmds: vec![Cmd::script("scoop install lua luarocks")],
-                note: Some("Needs Scoop (https://scoop.sh): `irm get.scoop.sh | iex`."),
+                note: Some("Needs Scoop (https://scoop.sh): `irm https://get.scoop.sh | iex`."),
             },
             (Self::Lua | Self::Luarocks, Os::Mac) => none(vec![brew("lua luarocks")]),
             (Self::Lua | Self::Luarocks, Os::Linux) => none(vec![pkg(
@@ -156,7 +156,9 @@ fn cc_probe() -> Option<String> {
         let path = out.trim();
         return (!path.is_empty()).then(|| "Visual Studio C++ tools".to_owned());
     }
-    ["cc", "gcc", "clang"].into_iter().find_map(|c| which(c).map(|_| c.to_owned()))
+    // BUI's kit is C++: every flavour that builds it (C, Rust, Lua) needs both compilers
+    let found = |names: [&'static str; 3]| names.into_iter().find(|c| which(c).is_some());
+    Some(format!("{} and {}", found(["cc", "gcc", "clang"])?, found(["c++", "g++", "clang++"])?))
 }
 
 /// Looks for each tool; for the missing ones shows how to install the newest, offers to run it and

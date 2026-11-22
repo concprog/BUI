@@ -43,10 +43,11 @@ impl PackageManager {
         Cmd::new(self.bin(), args).in_dir(dir)
     }
 
-    /// Runs a `package.json` script; npm and pnpm need `--` before the user's arguments.
+    /// Runs a `package.json` script with the user's arguments. npm needs `--` before them (it takes `--x` as
+    /// its own option); pnpm and Bun pass everything after the script's name, and pnpm would pass a `--` too.
     fn run(self, dir: &Path, script: &str, args: &[String]) -> Cmd {
         let mut cmd = Cmd::new(self.bin(), ["run", script]).in_dir(dir);
-        if !args.is_empty() && self != Self::Bun {
+        if !args.is_empty() && self == Self::Npm {
             cmd = cmd.with_args(&["--".to_owned()]);
         }
         cmd.with_args(args)
@@ -163,6 +164,26 @@ impl JsApp {
         }
         (prod, dev)
     }
+
+    /// The commands that add BUI and the tooling at their newest versions: what `new` installs, and what
+    /// `doctor` runs for a project made with `--no-install` (`install` alone would fetch nothing).
+    fn adds(&self, dir: &Path) -> [Cmd; 2] {
+        let (prod, dev) = self.packages();
+        [self.pm.add(dir, false, &prod), self.pm.add(dir, true, &dev)]
+    }
+
+    /// BUI's packages moved to their newest release (`@latest`, as the C project moves its tag: `update` stays
+    /// inside the range, and `^0.5` never reaches 0.6), then everything else as far as its range allows.
+    fn upgrade(&self, dir: &Path) -> [Cmd; 2] {
+        let bui: Vec<String> = self.packages().0.iter().filter(|p| p.starts_with("@blender-ui/")).map(|p| format!("{p}@latest")).collect();
+        let bui: Vec<&str> = bui.iter().map(String::as_str).collect();
+        [self.pm.add(dir, false, &bui), self.pm.update(dir)]
+    }
+}
+
+/// Whether the manifest lists `package` among its dependencies.
+fn depends_on(manifest: &serde_json::Value, package: &str) -> bool {
+    ["dependencies", "devDependencies"].iter().any(|k| manifest[k].get(package).is_some())
 }
 
 impl Flavour for JsApp {
@@ -252,10 +273,10 @@ impl Flavour for JsApp {
     }
 
     fn deps(&self, dir: &Path) -> Vec<Step> {
-        let (prod, dev) = self.packages();
+        let [bui, tooling] = self.adds(dir);
         vec![
-            step("Adding BUI (newest)", self.pm.add(dir, false, &prod)),
-            step("Adding TypeScript, Biome and the rest (newest)", self.pm.add(dir, true, &dev)),
+            step("Adding BUI (newest)", bui),
+            step("Adding TypeScript, Biome and the rest (newest)", tooling),
             // the generated files in Biome's own style, so `lint` starts clean
             step("Formatting the new files", self.pm.run(dir, "fix", &[])),
         ]
@@ -270,6 +291,11 @@ impl Flavour for JsApp {
     }
 
     fn checks(&self, dir: &Path) -> Vec<Check> {
+        let manifest = read(dir, "package.json").and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok());
+        if !manifest.is_some_and(|m| depends_on(&m, "@blender-ui/native")) {
+            let add = Fix::run("adds BUI and the tooling at their newest", self.adds(dir).into());
+            return vec![Check::fail("@blender-ui/native", "not a dependency in package.json", Some(add))];
+        }
         let install = Fix::run("installs the packages", vec![Cmd::new(self.pm.bin(), ["install"]).in_dir(dir)]);
         if !dir.join("node_modules").is_dir() {
             return vec![Check::fail("node_modules", "packages are not installed", Some(install))];
@@ -279,18 +305,20 @@ impl Flavour for JsApp {
         let Some(have) = have else {
             return vec![Check::fail("@blender-ui/native", "not installed", Some(install))];
         };
-        let fix = Fix::run("updates the packages to the newest", vec![self.pm.update(dir)]);
+        let fix = Fix::run("moves BUI's packages to the newest", self.upgrade(dir).into());
         vec![check::newest("@blender-ui/native", &have, registry::npm_version("@blender-ui/native").as_deref(), fix)]
     }
 
     fn update(&self, dir: &Path) -> Vec<Step> {
-        vec![step("Updating packages", self.pm.update(dir))]
+        let [bui, rest] = self.upgrade(dir);
+        vec![step("Moving BUI's packages to the newest", bui), step("Updating the other packages", rest)]
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::check::Work;
 
     fn app() -> JsApp {
         JsApp { framework: Framework::Vanilla, language: Language::JavaScript, pm: PackageManager::Npm }
@@ -344,6 +372,35 @@ mod tests {
         assert!(app().adopt(&dir).is_ok(), "plain JavaScript can");
         assert_eq!(app().adopt(&scratch("none")).unwrap().len(), 0, "no manifest, nothing adopted");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_project_made_without_installing_is_fixed_by_adding_the_packages() {
+        let dir = scratch("noinstall");
+        std::fs::write(dir.join("package.json"), app().package_json("demo")).unwrap();
+        let checks = app().checks(&dir);
+        let fix = checks[0].fix().expect("a fix");
+        let cmds: Vec<String> = fix.work.iter().map(Work::display).collect();
+        assert_eq!(cmds, app().adds(&dir).map(|c| c.display()), "the packages are added, not only installed");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_npm_gets_a_separator_before_the_arguments() {
+        let args = ["--flag".to_owned()];
+        let line = |pm: PackageManager| pm.run(Path::new("."), "dev", &args).display();
+        assert_eq!(line(PackageManager::Npm), "npm run dev -- --flag");
+        assert_eq!(line(PackageManager::Pnpm), "pnpm run dev --flag");
+        assert_eq!(line(PackageManager::Bun), "bun run dev --flag");
+        assert_eq!(PackageManager::Npm.run(Path::new("."), "dev", &[]).display(), "npm run dev");
+    }
+
+    #[test]
+    fn updating_moves_buis_packages_past_their_range() {
+        let react = JsApp { framework: Framework::React, language: Language::TypeScript, pm: PackageManager::Bun };
+        let [bui, rest] = react.upgrade(Path::new("."));
+        assert_eq!(bui.display(), "bun add @blender-ui/native@latest @blender-ui/react@latest", "not react itself");
+        assert_eq!(rest.display(), "bun update");
     }
 
     #[test]

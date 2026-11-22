@@ -97,17 +97,23 @@ impl Meta {
 }
 
 /// The project that contains `from`: the nearest folder up with a `bui.toml`, else the folder itself
-/// when its files say what it is.
-pub fn find(from: &Path) -> Option<Project> {
+/// when its files say what it is. A `bui.toml` that cannot be read or parsed is an error, not a reason to
+/// look further up (that would run another project's commands).
+pub fn find(from: &Path) -> Result<Option<Project>> {
     let start = from.canonicalize().unwrap_or_else(|_| from.to_owned());
     // Windows' canonical paths start with `\\?\`, which many tools cannot read
     let start = start.to_string_lossy().strip_prefix(r"\\?\").map_or_else(|| start.clone(), PathBuf::from);
     for dir in start.ancestors() {
-        if let Some(doc) = fs::read_to_string(dir.join(FILE)).ok().and_then(|t| toml::from_str::<Doc>(&t).ok()) {
-            return Some(Project { dir: dir.to_owned(), meta: doc.project, declared: true });
-        }
+        let path = dir.join(FILE);
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let doc: Doc = toml::from_str(&text).with_context(|| format!("{} is not a valid {FILE}: fix it, or remove it", path.display()))?;
+        return Ok(Some(Project { dir: dir.to_owned(), meta: doc.project, declared: true }));
     }
-    guess(&start).map(|meta| Project { dir: start, meta, declared: false })
+    Ok(guess(&start).map(|meta| Project { dir: start, meta, declared: false }))
 }
 
 fn read(dir: &Path, file: &str) -> String {
@@ -149,12 +155,12 @@ fn guess(dir: &Path) -> Option<Meta> {
 }
 
 /// A `pyproject.toml` that uses blenderui (not the one of blenderui itself, which is named that).
-fn depends_on_blenderui(pyproject: &str) -> bool {
+pub fn depends_on_blenderui(pyproject: &str) -> bool {
     pyproject.contains("blenderui") && !pyproject.contains("name = \"blenderui\"")
 }
 
 pub fn require(from: &Path) -> Result<Project> {
-    find(from).with_context(|| "this folder is not a BUI project (no bui.toml). Make one with `bui new` or `bui init`.")
+    find(from)?.with_context(|| "this folder is not a BUI project (no bui.toml). Make one with `bui new` or `bui init`.")
 }
 
 #[cfg(test)]
@@ -193,7 +199,7 @@ mod tests {
 
     #[test]
     fn every_stack_renders_files_with_no_placeholder_left() {
-        let vars = Vars::new("my-app", "v1.2.3");
+        let vars = Vars::with_tag("my-app", "v1.2.3");
         for stack in every_stack() {
             let files = stack.app().files(&vars);
             assert!(!files.is_empty(), "{}", stack.app().label());
@@ -223,9 +229,14 @@ dependencies = [\"blenderui>=0.5\"]
         fs::create_dir_all(&inner).unwrap();
         let meta = Meta { name: "demo".into(), stack: Stack::Lua(LuaApp {}) };
         fs::write(dir.join(FILE), meta.to_toml().unwrap()).unwrap();
-        let found = find(&inner).expect("found");
+        let found = find(&inner).unwrap().expect("found");
         assert!(found.declared);
         assert_eq!(found.meta.name, "demo");
+        // a broken bui.toml below it is reported, not skipped for the one above
+        fs::write(inner.join(FILE), "[project
+name = ").unwrap();
+        let err = format!("{:#}", find(&inner).err().expect("an error"));
+        assert!(err.contains("is not a valid bui.toml"), "{err}");
         fs::remove_dir_all(&dir).unwrap();
     }
 }

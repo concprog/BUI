@@ -8,6 +8,7 @@ pub mod lua;
 pub mod python;
 pub mod rust;
 
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -15,6 +16,7 @@ use anyhow::Result;
 use include_dir::{Dir, include_dir};
 
 use crate::check::{Check, Work};
+use crate::registry;
 use crate::sys::Cmd;
 use crate::tools::Tool;
 
@@ -60,12 +62,18 @@ pub struct Vars {
     pub ident: String,
     /// The name as words (`My App`).
     pub title: String,
-    /// The newest BUI release tag (`v0.5.1`), for projects that fetch the sources.
-    pub tag: String,
+    /// The newest BUI release tag (`v0.5.1`), for projects that fetch the sources: looked up the first time a
+    /// template asks for it, so only those projects wait on the registry.
+    tag: OnceCell<String>,
+}
+
+/// The newest BUI release as a git tag, or this `bui`'s own version when the registry cannot be reached.
+fn newest_tag() -> String {
+    registry::bui_version().map_or_else(|| format!("v{}", env!("CARGO_PKG_VERSION")), |v| format!("v{v}"))
 }
 
 impl Vars {
-    pub fn new(name: &str, tag: &str) -> Self {
+    pub fn new(name: &str) -> Self {
         let ident: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect();
         let ident = if ident.starts_with(|c: char| c.is_ascii_digit()) { format!("app_{ident}") } else { ident };
         let title = name
@@ -77,14 +85,18 @@ impl Vars {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        Self { name: name.to_owned(), ident, title, tag: tag.to_owned() }
+        Self { name: name.to_owned(), ident, title, tag: OnceCell::new() }
+    }
+
+    /// The same, with the release tag given instead of looked up.
+    #[cfg(test)]
+    pub fn with_tag(name: &str, tag: &str) -> Self {
+        Self { tag: OnceCell::from(tag.to_owned()), ..Self::new(name) }
     }
 
     fn fill(&self, text: &str) -> String {
-        text.replace("{{name}}", &self.name)
-            .replace("{{ident}}", &self.ident)
-            .replace("{{title}}", &self.title)
-            .replace("{{tag}}", &self.tag)
+        let text = text.replace("{{name}}", &self.name).replace("{{ident}}", &self.ident).replace("{{title}}", &self.title);
+        if text.contains("{{tag}}") { text.replace("{{tag}}", self.tag.get_or_init(newest_tag)) } else { text }
     }
 }
 
@@ -149,4 +161,16 @@ pub trait Flavour {
 /// A file's text, if it can be read.
 pub fn read(dir: &Path, file: &str) -> Option<String> {
     std::fs::read_to_string(dir.join(file)).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_template_with_the_tag_looks_it_up() {
+        let vars = Vars::new("demo");
+        assert_eq!(vars.fill("{{name}} {{title}}"), "demo Demo");
+        assert!(vars.tag.get().is_none(), "no registry lookup for a template without {{tag}}");
+    }
 }

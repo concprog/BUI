@@ -14,7 +14,7 @@ use crate::flavours::{c::CApp, js::JsApp, lua::LuaApp, python::PythonApp, rust::
 use crate::project::{FILE, Framework, Language, Meta, PackageManager, PyApi, Stack};
 use crate::sys::{Cmd, which};
 use crate::ui::{self, choice};
-use crate::{registry, tools};
+use crate::tools;
 
 pub fn new(args: NewArgs) -> Result<()> {
     ui::banner(true);
@@ -86,7 +86,7 @@ fn make(name: &str, dir: &Path, choices: &Choices, new_folder: bool) -> Result<(
     let adopted = app.adopt(dir)?;
     let writing = ui::task("Writing your app");
     fs::create_dir_all(dir)?;
-    let mut files = app.files(&Vars::new(name, &release_tag()));
+    let mut files = app.files(&Vars::new(name));
     files.push(File { path: FILE.into(), body: Meta { name: name.to_owned(), stack: stack.clone() }.to_toml()? });
     let (wrote, mut skipped) = write_files(dir, files)?;
     skipped.retain(|f| !adopted.iter().any(|a| a.path == f));
@@ -107,11 +107,6 @@ fn make(name: &str, dir: &Path, choices: &Choices, new_folder: bool) -> Result<(
     ui::note("What's next", &next_steps(name, new_folder));
     ui::outro(&format!("{} {name} is ready {}", ui::accent("✦"), ui::dim(&format!("({})", took(started)))));
     Ok(())
-}
-
-/// The newest BUI release, as a git tag (for the C template; the others install through their package manager).
-fn release_tag() -> String {
-    registry::bui_version().map_or_else(|| format!("v{}", env!("CARGO_PKG_VERSION")), |v| format!("v{v}"))
 }
 
 /// The install steps with the command each runs.

@@ -54,15 +54,16 @@ fn render(entries: &[Entry]) -> String {
     lines.join("\n")
 }
 
-pub fn show() {
+pub fn show() -> anyhow::Result<()> {
     ui::banner(true);
-    if let Some(p) = project::find(Path::new(".")) {
+    if let Some(p) = project::find(Path::new("."))? {
         ui::note("This app", &format!("{}  {}", p.meta.name, ui::dim(&p.meta.stack.app().label())));
     }
     ui::note("Commands", &render(COMMANDS));
     let everywhere: Vec<String> = EVERYWHERE.iter().map(|(f, m)| format!("{}  {}", ui::code(&format!("{f:<16}")), m)).collect();
     ui::note("Options for every command", &everywhere.join("\n"));
     ui::outro(&format!("New here? Run {}. Docs: {}", ui::code("bui new"), ui::code("https://bui.preetham.top")));
+    Ok(())
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{File, Flavour, Step, Vars, read, render, step};
 use crate::check::{self, Check, Fix};
-use crate::project::PyApi;
+use crate::project::{PyApi, depends_on_blenderui};
 use crate::registry;
 use crate::sys::Cmd;
 use crate::tools::Tool;
@@ -19,6 +19,12 @@ pub struct PythonApp {
 
 fn uv(dir: &Path, args: &[&str]) -> Cmd {
     Cmd::new("uv", args.iter().copied()).in_dir(dir)
+}
+
+/// The commands that add blenderui and Ruff at their newest versions: what `new` installs, and what `doctor`
+/// runs for a project made with `--no-install` (`uv sync` alone would install nothing).
+fn adds(dir: &Path) -> [Cmd; 2] {
+    [uv(dir, &["add", "blenderui"]), uv(dir, &["add", "--dev", "ruff"])]
 }
 
 impl Flavour for PythonApp {
@@ -45,10 +51,8 @@ impl Flavour for PythonApp {
     }
 
     fn deps(&self, dir: &Path) -> Vec<Step> {
-        vec![
-            step("Adding blenderui (newest)", uv(dir, &["add", "blenderui"])),
-            step("Adding Ruff (newest)", uv(dir, &["add", "--dev", "ruff"])),
-        ]
+        let [bui, ruff] = adds(dir);
+        vec![step("Adding blenderui (newest)", bui), step("Adding Ruff (newest)", ruff)]
     }
 
     fn dev(&self, dir: &Path, args: &[String]) -> Result<Vec<Cmd>> {
@@ -60,6 +64,10 @@ impl Flavour for PythonApp {
     }
 
     fn checks(&self, dir: &Path) -> Vec<Check> {
+        if !depends_on_blenderui(&read(dir, "pyproject.toml").unwrap_or_default()) {
+            let add = Fix::run("adds blenderui and Ruff at their newest", adds(dir).into());
+            return vec![Check::fail("blenderui", "not a dependency in pyproject.toml", Some(add))];
+        }
         let sync = Fix::run("creates the environment and installs the packages", vec![uv(dir, &["sync"])]);
         let Some(lock) = read(dir, "uv.lock") else {
             return vec![Check::fail("environment", "no uv.lock: nothing installed yet", Some(sync))];
@@ -73,8 +81,7 @@ impl Flavour for PythonApp {
             }
         }
         let Some(have) = have else {
-            let add = Fix::run("adds blenderui", vec![uv(dir, &["add", "blenderui"])]);
-            return vec![Check::fail("blenderui", "not a dependency", Some(add))];
+            return vec![Check::fail("blenderui", "not in uv.lock yet", Some(sync))];
         };
         let mut checks = Vec::new();
         if !dir.join(".venv").is_dir() {

@@ -186,7 +186,8 @@ impl Flavour for CApp {
     }
 
     fn build(&self, dir: &Path, args: &[String]) -> Result<Vec<Cmd>> {
-        Ok(vec![cmake(dir, &["--preset", "default"]), cmake(dir, &["--build", "--preset", "release"]).with_args(args)])
+        // its own build folder: a single-config generator (Ninja, Make) builds one CMAKE_BUILD_TYPE per folder
+        Ok(vec![cmake(dir, &["--preset", "release"]), cmake(dir, &["--build", "--preset", "release"]).with_args(args)])
     }
 
     fn checks(&self, dir: &Path) -> Vec<Check> {
@@ -335,6 +336,25 @@ fetchcontent_declare(
         assert!(!work.perform("test").unwrap(), "a file that changed since is not edited");
         assert_eq!(std::fs::read_to_string(dir.join("CMakeLists.txt")).unwrap(), "project(x)\n");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Each build preset builds the configuration its configure preset was made for: Ninja and Make take it
+    /// from `CMAKE_BUILD_TYPE`, Visual Studio and Xcode from `--config`.
+    #[test]
+    fn every_preset_names_its_build_type() {
+        let file = render(&["c"], &Vars::with_tag("demo", "v1.0.0")).into_iter().find(|f| f.path == "CMakePresets.json").unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&file.body).unwrap();
+        let configure = doc["configurePresets"].as_array().unwrap();
+        let builds = doc["buildPresets"].as_array().unwrap();
+        for (preset, config) in [("default", "Debug"), ("release", "Release")] {
+            let build = builds.iter().find(|b| b["name"] == preset).unwrap();
+            assert_eq!(build["configuration"], config);
+            let made = configure.iter().find(|c| c["name"] == build["configurePreset"]).unwrap();
+            assert_eq!(made["cacheVariables"]["CMAKE_BUILD_TYPE"], config, "{preset}");
+        }
+        let dirs: Vec<&str> = configure.iter().filter_map(|c| c["binaryDir"].as_str()).collect();
+        assert_eq!(dirs.len(), 2);
+        assert_ne!(dirs[0], dirs[1], "one folder per build type");
     }
 
     #[test]
