@@ -398,9 +398,12 @@ final class Node {
         }
     }
 
-    /// Put this node's local handlers on its current owner, if it has one.
-    private void rehomeHandlers() {
-        auto owner = handlerOwner();
+    /// Put this node's local handlers on `owner`, or on its current owner
+    /// when that is null, if it has one.
+    private void rehomeHandlers(Node owner) {
+        if (owner is null) {
+            owner = handlerOwner();
+        }
         if (owner !is null && owner !is this) {
             moveHandlersTo(owner);
         }
@@ -422,19 +425,20 @@ final class Node {
         }
     }
 
-    /// Give a subtree's handlers to its new owner after a move.
-    private void rehomeSubtreeHandlers() {
+    /// Give a subtree's handlers to its new owner after a move: `owner`, or
+    /// each node's own when null (an owner known before the move is done).
+    private void rehomeSubtreeHandlers(Node owner = null) {
         if (hasHandlers_ && handle !is null) {
-            rehomeSubtree(handle);
+            rehomeSubtree(handle, owner);
         }
     }
 
-    private static void rehomeSubtree(BKNode* h) {
+    private static void rehomeSubtree(BKNode* h, Node owner) {
         if (auto wrapper = wrapperAt(h)) {
-            wrapper.rehomeHandlers();
+            wrapper.rehomeHandlers(owner);
         }
         for (int i = 0, n = BK_node_child_count(h); i < n; ++i) {
-            rehomeSubtree(BK_node_child(h, i));
+            rehomeSubtree(BK_node_child(h, i), owner);
         }
     }
 
@@ -622,13 +626,19 @@ final class Node {
 
     /// `BK_AREA_CLOSE`: `area` is leaving its screen (closed, joined, docked away, a layout
     /// restored over it, or the user's drag), and its own handlers have run. The kit detaches a
-    /// D-owned area, which takes its subtree's handlers along; it frees one the screen made,
-    /// whose D-owned nodes are detached and each takes its own subtree's handlers, while the
-    /// entries of the freed nodes go. Walked now, before the kit removes it: a node a close
-    /// handler freed is no longer in the tree, and freed pointers are compared, never read.
+    /// D-owned area: as `remove()` does, its subtree's handlers go to the owner it will have,
+    /// itself, so no node inside (a close button) roots it through a closure. It frees one the
+    /// screen made, whose D-owned nodes are detached and each takes its own subtree's handlers,
+    /// while the entries of the freed nodes go, as when a D-owned node is freed. Walked now,
+    /// before the kit removes it: a node a close handler freed is no longer in the tree, and
+    /// freed pointers are compared, never read.
+    ///
+    /// The kit tells a screen's host, and so only a screen in a `Context`. With none, nothing
+    /// says an area left; see the README.
     package static void areaLeaving(BKNode* area) {
         if (auto wrapper = cast(Node) BK_node_ref(area)) {
             wrapper.stashSubtreeHandlers();
+            wrapper.rehomeSubtreeHandlers(wrapper);
             return;
         }
         auto holder = ownerOf(area);

@@ -1381,6 +1381,22 @@ void testScreen() {
     check(closing.close(), "close an area whose handler frees its node");
     check(freed.handle is null, "the handler freed it");
 
+    // A D-owned area that closes takes its nodes' handlers, as `remove()` does: its close
+    // button, whose handler holds the area, keeps the handler when the area is freed after.
+    auto other = first.split('v', 0.5f);
+    auto closeButton = new Node("button");
+    first.add(closeButton);
+    int pressed;
+    closeButton.onClick((NodeEvent) {
+        if (first !is null) {
+            ++pressed;
+        }
+    });
+    check(other !is null && first.close(), "close the D-owned area");
+    first.free();
+    closeButton.dispatch(BK_EV_CLICK, null, 0, 0);
+    check(pressed == 1, "the area's nodes keep their handlers once it is freed");
+
     auto area = new Node("area");
     auto side = new Node("sidebar");
     check(BK_set_num(side.handle, "size", 200) == 1, "a sidebar's size");
