@@ -154,9 +154,24 @@ fn guess(dir: &Path) -> Option<Meta> {
     Some(Meta { name, stack })
 }
 
-/// A `pyproject.toml` that uses blenderui (not the one of blenderui itself, which is named that).
+/// A `pyproject.toml` that depends on blenderui: a requirement of `[project]`'s dependencies or
+/// optional ones or of `[dependency-groups]` (uv's), or a key of Poetry's dependencies. The word
+/// anywhere else (the project's own name, a description, a comment) is not a dependency.
 pub fn depends_on_blenderui(pyproject: &str) -> bool {
-    pyproject.contains("blenderui") && !pyproject.contains("name = \"blenderui\"")
+    let Ok(doc) = toml::from_str::<toml::Table>(pyproject) else { return false };
+    // PEP 508: a requirement starts with the name; blenderui has no separator for PEP 503 to normalize
+    let is_bui = |name: &str| name.eq_ignore_ascii_case("blenderui");
+    let requirement = |v: &toml::Value| {
+        v.as_str().is_some_and(|r| is_bui(r.trim_start().split(|c: char| !(c.is_ascii_alphanumeric() || "-_.".contains(c))).next().unwrap_or("")))
+    };
+    let list = |v: Option<&toml::Value>| v.and_then(toml::Value::as_array).is_some_and(|a| a.iter().any(requirement));
+    let lists = |v: Option<&toml::Value>| v.and_then(toml::Value::as_table).is_some_and(|t| t.values().any(|l| list(Some(l))));
+    let project = doc.get("project");
+    let poetry = doc.get("tool").and_then(|t| t.get("poetry")).and_then(|p| p.get("dependencies"));
+    list(project.and_then(|p| p.get("dependencies")))
+        || lists(project.and_then(|p| p.get("optional-dependencies")))
+        || lists(doc.get("dependency-groups"))
+        || poetry.and_then(toml::Value::as_table).is_some_and(|t| t.keys().any(|k| is_bui(k)))
 }
 
 pub fn require(from: &Path) -> Result<Project> {
@@ -220,6 +235,35 @@ name = \"blenderui\"
 name = \"x\"
 dependencies = [\"blenderui>=0.5\"]
 "));
+    }
+
+    #[test]
+    fn only_a_dependency_entry_counts_as_blenderui() {
+        for yes in [
+            "[project]
+dependencies = [\"BlenderUI[gpu] >=0.5\"]",
+            "[project.optional-dependencies]
+ui = [\"blenderui\"]",
+            "[dependency-groups]
+dev = [\"blenderui==0.5.1\"]",
+            "[tool.poetry.dependencies]
+blenderui = \"^0.5\"",
+        ] {
+            assert!(depends_on_blenderui(yes), "{yes}");
+        }
+        for no in [
+            "[project]
+name = \"blenderui-demo\"
+dependencies = [\"numpy\"]",
+            "[project]
+description = \"made without blenderui\" # blenderui
+dependencies = []",
+            "[project]
+dependencies = [\"blenderui-extras\"]",
+            "not toml blenderui",
+        ] {
+            assert!(!depends_on_blenderui(no), "{no}");
+        }
     }
 
     #[test]
