@@ -43,10 +43,11 @@ impl PackageManager {
         Cmd::new(self.bin(), args).in_dir(dir)
     }
 
-    /// Runs a `package.json` script; npm and pnpm need `--` before the user's arguments.
+    /// Runs a `package.json` script with the user's arguments. npm needs `--` before them (it takes `--x` as
+    /// its own option); pnpm and Bun pass everything after the script's name, and pnpm would pass a `--` too.
     fn run(self, dir: &Path, script: &str, args: &[String]) -> Cmd {
         let mut cmd = Cmd::new(self.bin(), ["run", script]).in_dir(dir);
-        if !args.is_empty() && self != Self::Bun {
+        if !args.is_empty() && self == Self::Npm {
             cmd = cmd.with_args(&["--".to_owned()]);
         }
         cmd.with_args(args)
@@ -373,6 +374,16 @@ mod tests {
         let cmds: Vec<String> = fix.work.iter().map(Work::display).collect();
         assert_eq!(cmds, app().adds(&dir).map(|c| c.display()), "the packages are added, not only installed");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_npm_gets_a_separator_before_the_arguments() {
+        let args = ["--flag".to_owned()];
+        let line = |pm: PackageManager| pm.run(Path::new("."), "dev", &args).display();
+        assert_eq!(line(PackageManager::Npm), "npm run dev -- --flag");
+        assert_eq!(line(PackageManager::Pnpm), "pnpm run dev --flag");
+        assert_eq!(line(PackageManager::Bun), "bun run dev --flag");
+        assert_eq!(PackageManager::Npm.run(Path::new("."), "dev", &[]).display(), "npm run dev");
     }
 
     #[test]
