@@ -736,6 +736,12 @@ int main(void)
     CHECK(BK_set_str(s, "layout", three));
     CHECK(g_layout_on_new == NULL && BK_node_child_count(s) == 2);
     rect_of(a, rr);
+    /* ... and an area that restore takes over still hears of itself */
+    CHECK(BK_area_close(BK_node_child(s, 1)));
+    const int owed = g_new;
+    g_layout_on_new = three;
+    CHECK(BK_set_str(s, "layout", three));
+    CHECK(g_layout_on_new == NULL && BK_node_child_count(s) == 3 && g_new == owed + 2);
     free(three);
     free(two);
     free_screen(s);
