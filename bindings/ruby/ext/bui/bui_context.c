@@ -12,7 +12,7 @@
 VALUE bui_cContext;
 VALUE bui_cRaster;
 
-static ID id_dispatch, id_request, id_raster;
+static ID id_dispatch, id_request;
 
 /* The kit's BK_EV_* as Symbols, in the enum's order. */
 static const char *const k_event_names[] = {
@@ -31,8 +31,9 @@ static ID g_event_ids[EVENT_KINDS];
 
 typedef struct Context {
   BKContext *ctx;
-  uintptr_t id; /* the host data: this wrapper, kept while the context lives */
-  int windows;  /* windows showing it: it outlives them */
+  uintptr_t id;      /* the host data: this wrapper, kept while the context lives */
+  int windows;       /* windows showing it: it outlives them */
+  VALUE last_raster; /* the kit's last frame (the eyedropper reads it), nil before a render */
 } Context;
 
 static size_t context_size(const void *p)
@@ -40,16 +41,32 @@ static size_t context_size(const void *p)
   return sizeof(Context);
 }
 
+static void context_mark(void *p)
+{
+  rb_gc_mark_movable(((Context *)p)->last_raster);
+}
+
+static void context_compact(void *p)
+{
+  Context *c = (Context *)p;
+  c->last_raster = rb_gc_location(c->last_raster);
+}
+
 static const rb_data_type_t context_type = {
     .wrap_struct_name = "BUI::Context",
-    .function = {.dfree = RUBY_TYPED_DEFAULT_FREE, .dsize = context_size},
+    .function = {.dmark = context_mark,
+                 .dfree = RUBY_TYPED_DEFAULT_FREE,
+                 .dsize = context_size,
+                 .dcompact = context_compact},
     .flags = RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED,
 };
 
 static VALUE context_alloc(VALUE klass)
 {
   Context *c;
-  return TypedData_Make_Struct(klass, Context, &context_type, c);
+  VALUE self = TypedData_Make_Struct(klass, Context, &context_type, c);
+  c->last_raster = Qnil;
+  return self;
 }
 
 BKContext *bui_context_ptr(VALUE v)
@@ -156,10 +173,9 @@ static VALUE context_free(VALUE self)
     BK_context_free(c->ctx);
     c->ctx = NULL;
     bui_ref_release((void *)c->id);
-    const VALUE last = rb_ivar_get(self, id_raster);
-    if (!NIL_P(last)) {
-      raster_hold(last, -1); /* no longer anyone's last frame */
-      rb_ivar_set(self, id_raster, Qnil);
+    if (!NIL_P(c->last_raster)) {
+      raster_hold(c->last_raster, -1); /* no longer anyone's last frame */
+      c->last_raster = Qnil;
     }
   }
   return Qnil;
@@ -203,16 +219,21 @@ static VALUE context_render(int argc, VALUE *argv, VALUE self)
   if (w <= 0 || h <= 0 || w > 16384 || h > 16384) {
     rb_raise(rb_eArgError, "a frame of %d x %d (1 to 16384 each)", w, h);
   }
-  const int n = BK_render(ctx, r, w, h, RTEST(bui_opt(opts, "full")));
+  const int full = RTEST(bui_opt(opts, "full"));
+  /* held from now: a handler the render runs (a configure) cannot free it under the kit */
+  raster_hold(raster, 1);
+  const int n = BK_render(ctx, r, w, h, full);
   /* the context keeps the raster as its last frame (the eyedropper reads it): so does this
-   * wrapper, and the raster refuses to be freed meanwhile */
-  const VALUE last = rb_ivar_get(self, id_raster);
-  if (last != raster) {
-    raster_hold(raster, 1);
-    if (!NIL_P(last)) {
-      raster_hold(last, -1);
+   * wrapper, which lets go of the previous one (a render nested in a handler included) */
+  Context *c = (Context *)rb_check_typeddata(self, &context_type);
+  if (c->last_raster == raster) {
+    raster_hold(raster, -1); /* held already */
+  }
+  else {
+    if (!NIL_P(c->last_raster)) {
+      raster_hold(c->last_raster, -1);
     }
-    rb_ivar_set(self, id_raster, raster);
+    RB_OBJ_WRITE(self, &c->last_raster, raster);
   }
   bui_settle();
   return INT2NUM(n);
@@ -222,7 +243,7 @@ static VALUE context_render(int argc, VALUE *argv, VALUE self)
 static VALUE context_configure(VALUE self, VALUE width, VALUE height)
 {
   const int changed = BK_configure(bui_context_ptr(self), bui_int(width), bui_int(height));
-  bui_raise_pending();
+  bui_settle();
   return changed ? Qtrue : Qfalse;
 }
 
@@ -339,7 +360,7 @@ static VALUE context_button(int argc, VALUE *argv, VALUE self)
 static VALUE context_timer(VALUE self, VALUE id)
 {
   BK_timer(bui_context_ptr(self), bui_int(id));
-  bui_raise_pending();
+  bui_settle();
   return self;
 }
 
@@ -359,7 +380,7 @@ static VALUE context_bind(VALUE self, VALUE combo)
 static VALUE context_close_popups(VALUE self)
 {
   BK_close_popups(bui_context_ptr(self));
-  bui_raise_pending();
+  bui_settle();
   return self;
 }
 
@@ -407,7 +428,7 @@ static VALUE context_set_focus(VALUE self, VALUE node)
 {
   BKContext *ctx = bui_context_ptr(self);
   BK_focus_node(ctx, bui_node_ptr_opt(node));
-  bui_raise_pending();
+  bui_settle();
   return node;
 }
 
@@ -501,7 +522,7 @@ static void open_menu_call(int argc, VALUE *argv, VALUE self, int pie)
   }
   bui_with_menu(items, open_menu, &m);
   RB_GC_GUARD(opts);
-  bui_raise_pending();
+  bui_settle();
 }
 
 /* open_menu(items, x:, y:, owner: nil, title: nil): items as Node#menu= takes them. */
@@ -653,7 +674,6 @@ void bui_init_context(void)
 {
   id_dispatch = rb_intern("dispatch");
   id_request = rb_intern("request_render");
-  id_raster = rb_intern("@raster");
   VALUE kinds = rb_ary_new_capa(EVENT_KINDS - 1);
   for (int i = 1; i < EVENT_KINDS; i++) {
     g_event_ids[i] = rb_intern(k_event_names[i]);

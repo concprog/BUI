@@ -383,9 +383,10 @@ static VALUE node_set_image_source(int argc, VALUE *argv, VALUE self)
   rb_scan_args(argc, argv, "11", &src, &fit);
   FilePathValue(src); /* may run to_path: before the node is looked at */
   const int f = fit_of(fit);
+  BKNode *n = bui_node_ptr(self);
   rb_check_frozen(self);
-  rb_ivar_set(self, id_image, Qnil);
-  BK_node_set_image_source(bui_node_ptr(self), bui_cstr(src), f);
+  BK_node_set_image_source(n, bui_cstr(src), f);
+  rb_ivar_set(self, id_image, Qnil); /* the old image only once the node lets go of it */
   return self;
 }
 
@@ -502,8 +503,8 @@ static void item_fill(BuiArena *a, VALUE h, BKCanvasItem *it)
     it->src = bui_arena_str(a, v);
   }
   if (!NIL_P(v = item_opt(h, id_k_rgba))) {
-    /* straight RGBA pixels, with image_size: [w, h] */
-    StringValue(v);
+    /* straight RGBA pixels, with image_size: [w, h]: a String (no to_str, which could run Ruby) */
+    Check_Type(v, T_STRING);
     VALUE size = item_opt(h, id_k_image_size);
     Check_Type(size, T_ARRAY);
     const int w = bui_int(rb_ary_entry(size, 0)), hgt = bui_int(rb_ary_entry(size, 1));

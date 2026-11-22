@@ -35,6 +35,7 @@ module BUI
     # Frees the context (not its tree; its key bindings go with it). From inside
     # one of its callbacks, it is freed once the callback returns.
     def free
+      BUI.kit_thread!
       BUI.later { free_native }
     end
 

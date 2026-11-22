@@ -85,7 +85,7 @@ def main() -> None:
         DEST = dest.resolve()  # another package (the Ruby gem): the crates' licenses are not its business
         # it is emptied before the copy: it must hold none of what is copied
         sources = [ROOT / d for d in DIRS]
-        if ROOT.is_relative_to(DEST) or any(DEST.is_relative_to(s) for s in sources):
+        if ROOT.is_relative_to(DEST) or any(DEST.is_relative_to(s) or s.is_relative_to(DEST) for s in sources):
             sys.exit(f"--dest {DEST} overlaps the sources it would copy (pick a folder of its own)")
     else:
         shipped = ship_licenses()

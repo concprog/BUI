@@ -76,8 +76,10 @@ and an interrupt stops the loop.
 
 The kit belongs to the thread that loaded the gem: calls from another raise
 `BUI::Error` (use `BUI.on_main` or `Window#update`; decoding a `BUI::Image` works
-anywhere). Arguments are converted without running Ruby code (`to_str`, `to_int`
-are not called), so a handler cannot free an object halfway through a call. A
+anywhere). Arguments that reach the kit are taken as they are: Strings and
+Symbols, Integers and Floats, not objects converted with `to_str` or `to_int`, so
+no Ruby code runs, and no handler frees an object, halfway through a call (file
+paths are the exception: `to_path` runs before the node is looked at). A
 context keeps the raster it last rendered into as its frame for the eyedropper,
 and `Raster#free` refuses while it does.
 

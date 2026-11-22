@@ -80,7 +80,9 @@ module BUI
     # callback runs: a loop nested in one must not free what the kit still uses),
     # then the blocks other threads queued.
     def drain_main
-      run_later unless in_callback?
+      run_later unless @later.empty? || in_callback?
+      return if @main_queue.empty?
+
       loop do
         block = begin
           @main_queue.pop(true)

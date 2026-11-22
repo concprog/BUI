@@ -85,6 +85,8 @@ module BUI
     # A window whose context another window shows too is freed after that one.
     def free
       return if freed? || @freeing
+
+      BUI.kit_thread! # before anything changes
       if @made_context && @made_context.send(:windows_showing) > 1
         raise Error, "another window shows this window's context: free that window first"
       end

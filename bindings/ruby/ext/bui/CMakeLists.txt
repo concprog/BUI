@@ -57,5 +57,6 @@ if(RUBY_EXT_OUT)
   add_custom_target(bui_ext_export ALL
                     COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:bui_ext> "${RUBY_EXT_OUT}"
                     DEPENDS bui_ext
-                    COMMENT "bui_ruby: ${_ext_name}")
+                    COMMENT "bui_ruby: ${_ext_name}"
+                    VERBATIM)
 endif()

@@ -257,6 +257,14 @@ static VALUE m_references(VALUE self)
 }
 
 /* BUI.in_callback?: a kit callback is running (an event handler, a window's). */
+/* BUI.kit_thread!: raises BUI::Error off the kit's thread (lib/ checks before it
+ * changes its own state). */
+static VALUE m_kit_thread(VALUE self)
+{
+  bui_kit_thread();
+  return Qnil;
+}
+
 static VALUE m_in_callback_p(VALUE self)
 {
   return g_depth > 0 ? Qtrue : Qfalse;
@@ -279,11 +287,17 @@ static VALUE drain_main(VALUE unused)
 void bui_settle(void)
 {
   /* what callbacks left for later (frees) runs before their error is raised, outside
-   * callbacks only: inside one, the kit still has frames on the stack */
+   * callbacks only: inside one, the kit still has frames on the stack. The error is put
+   * aside meanwhile, so the frees run to the end; it wins over one of theirs. */
   if (g_depth == 0) {
+    const VALUE err = g_pending;
+    g_pending = Qnil;
     int state = 0;
     rb_protect(drain_main, Qnil, &state);
     keep_error(state);
+    if (!NIL_P(err)) {
+      g_pending = err;
+    }
   }
   bui_raise_pending();
 }
@@ -846,6 +860,7 @@ RUBY_FUNC_EXPORTED void Init_bui_ext(void)
   rb_define_module_function(bui_mBUI, "load_theme_file", m_load_theme_file, 1);
   rb_define_module_function(bui_mBUI, "file_dialog", m_file_dialog, -1);
   rb_define_module_function(bui_mBUI, "in_callback?", m_in_callback_p, 0);
+  rb_define_module_function(bui_mBUI, "kit_thread!", m_kit_thread, 0);
   rb_define_module_function(bui_mBUI, "references", m_references, 0);
 
   bui_init_node();

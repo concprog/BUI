@@ -52,6 +52,19 @@ class TestWindow < Minitest::Test
     assert win.freed?
   end
 
+  def test_a_window_freed_by_a_failing_timer_is_freed
+    before = BUI.references
+    win = BUI::Window.new("Test", width: 200, height: 100)
+    win.timer(10) do
+      win.free
+      raise ArgumentError, "after the free"
+    end
+    assert_raises(ArgumentError) { BUI.run }
+    assert win.freed?
+    assert win.context.freed?
+    assert_equal before, BUI.references
+  end
+
   def test_a_failing_builder_leaves_nothing
     before = BUI.references
     assert_raises(ArgumentError) do

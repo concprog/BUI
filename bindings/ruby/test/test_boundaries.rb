@@ -49,6 +49,18 @@ class TestBoundaries < Minitest::Test
     end
   end
 
+  def test_a_render_holds_its_raster
+    raster = BUI::Raster.new(64, 64)
+    root = BUI::Node.new("column")
+    root.on(:configure) { raster.free } # runs inside the render, which draws into it
+    ctx = BUI::Context.new(root)
+    assert_raises(BUI::Error) { ctx.render(raster, full: true) }
+    assert_equal 64, raster.width # still there
+  ensure
+    ctx&.free
+    root&.free
+  end
+
   def test_a_raster_a_context_keeps_is_not_freed
     root = BUI::Node.new("column")
     ctx = BUI::Context.new(root)
@@ -58,8 +70,8 @@ class TestBoundaries < Minitest::Test
     ctx.render(BUI::Raster.new(32, 32), full: true)
     first.free # another raster is the last frame now
     assert_raises(BUI::FreedError) { first.width }
-    ctx.free
   ensure
+    ctx&.free
     root&.free
   end
 end

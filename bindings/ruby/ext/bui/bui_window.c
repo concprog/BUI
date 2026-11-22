@@ -138,7 +138,7 @@ static VALUE window_open_native(VALUE self, VALUE context, VALUE title, VALUE wi
   cb.on_frame = on_frame;
   cb.on_focus = on_focus;
   BK_window_set_callbacks(win, &cb);
-  bui_raise_pending();
+  bui_settle();
   return self;
 }
 
@@ -154,7 +154,7 @@ static VALUE window_free_native(VALUE self)
   w->win = NULL;
   bui_context_windows(rb_ivar_get(self, id_context), -1);
   bui_ref_release((void *)w->id);
-  bui_raise_pending();
+  bui_settle();
   return Qnil;
 }
 
@@ -166,7 +166,7 @@ static VALUE window_freed_p(VALUE self)
 static VALUE window_show(VALUE self)
 {
   BK_window_show(window_ptr(self));
-  bui_raise_pending();
+  bui_settle();
   return self;
 }
 
@@ -174,7 +174,7 @@ static VALUE window_show(VALUE self)
 static VALUE window_close(VALUE self)
 {
   BK_window_close(window_ptr(self));
-  bui_raise_pending();
+  bui_settle();
   return self;
 }
 
@@ -200,7 +200,7 @@ static VALUE window_resize(VALUE self, VALUE width, VALUE height)
     rb_raise(rb_eArgError, "a size of %d x %d", w, h);
   }
   BK_window_set_size(win, w, h);
-  bui_raise_pending();
+  bui_settle();
   return self;
 }
 
@@ -238,7 +238,7 @@ static VALUE window_frames(VALUE self)
 static VALUE window_render_now(VALUE self)
 {
   BK_window_render_now(window_ptr(self));
-  bui_raise_pending();
+  bui_settle();
   return self;
 }
 
@@ -257,7 +257,7 @@ static VALUE window_wm(int argc, VALUE *argv, VALUE self)
   BKWindow *win = window_ptr(self);
   const double va = NIL_P(a) ? 0.0 : bui_num(a), vb = NIL_P(b) ? 0.0 : bui_num(b);
   BK_window_wm(win, bui_cstr(key), va, vb);
-  bui_raise_pending();
+  bui_settle();
   return self;
 }
 
