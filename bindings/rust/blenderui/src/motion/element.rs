@@ -285,7 +285,7 @@ impl Elements {
 
     /// Which elements are in view where `frame` places them now (`whileInView`): true when
     /// one came into view or went out of it (render again).
-    fn in_view(&mut self, frame: &crate::layout::Frame, viewport: (f32, f32)) -> bool {
+    pub(crate) fn in_view(&mut self, frame: &crate::layout::Frame, viewport: (f32, f32)) -> bool {
         let mut changed = false;
         for k in 0..self.els.live.len() {
             let i = self.els.live[k];
@@ -629,7 +629,8 @@ impl Elements {
     /// elements and what is under them, not the rest of the frame. Then the
     /// in-view states where the boxes are now (a translate, this redraw's or
     /// the CSS one before it, may move one into view): `Some(true)` when one
-    /// changed (render again).
+    /// changed (render again). Not when it moved a clip ([`take_reclip`](Self::take_reclip)):
+    /// the caller places the frame again, then asks [`in_view`](Self::in_view).
     pub(crate) fn redraw(&mut self, frame: &mut crate::layout::Frame, styles: &mut crate::layout::StyleStore,
                          viewport: (f32, f32)) -> Option<bool> {
         let Arena { chunks, live, .. } = &mut self.els;
@@ -733,7 +734,8 @@ impl Elements {
             }
             self.clear_shift();
         }
-        Some(self.in_view(frame, viewport))
+        // a moved clip: the frame is placed again first, and the states follow that placement
+        Some(!self.reclip && self.in_view(frame, viewport))
     }
 }
 

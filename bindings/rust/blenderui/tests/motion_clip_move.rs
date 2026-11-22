@@ -50,3 +50,45 @@ fn a_moved_clip_moves_its_children_clip() {
         assert_eq!(CLICKS.load(Relaxed), 1, "inside it: g");
     });
 }
+
+struct Hidden;
+
+impl Render for Hidden {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        rsx! {
+            <body style="margin: 0">
+                <div style="position: relative; width: 100px; height: 100px; overflow: hidden">
+                    <motion.div style="position: relative; width: 100px; height: 100px; overflow: hidden"
+                        animate={{ x: 50, transition: { duration: 0.1, ease: "none" } }}>
+                        <motion.div id="v" style="position: absolute; left: -5px; top: 0; width: 4px; height: 100px"
+                            whileInView={{ width: 30 }} viewport={{ once: true }} />
+                    </motion.div>
+                </div>
+            </body>
+        }
+    }
+}
+
+/// `whileInView` under a moved clip is judged by the clip placed again: `v` stays just left of
+/// its moving parent's clip, inside where that clip was the frame before (8 px a frame).
+#[test]
+fn a_moved_clip_hides_what_it_moved_out() {
+    Application::headless().run(|cx| {
+        blenderui::motion::lag_smoothing(0.0, 0.0);
+        let opts = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(300.0), px(200.0)),
+            })),
+            ..Default::default()
+        };
+        let w = cx.open_window(opts, |_, cx| cx.new(|_| Hidden)).unwrap().id;
+        cx.draw(w);
+        for _ in 0..20 {
+            cx.advance_clock(Duration::from_millis(16));
+            cx.draw(w);
+        }
+        let b = cx.element_bounds(w, "v").expect("v");
+        assert!((b.size.width - 4.0).abs() < 0.6, "clipped all along: {b:?}");
+    });
+}

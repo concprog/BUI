@@ -1360,6 +1360,12 @@ impl Animations {
         std::mem::take(&mut self.reclip) | self.motion.take_reclip()
     }
 
+    /// Motion's in-view states where `frame` places the boxes now (`whileInView`), after the
+    /// frame a redraw reclipped was placed again: true when one changed (render again).
+    pub(crate) fn in_view(&mut self, frame: &crate::layout::Frame, viewport: (f32, f32)) -> bool {
+        self.motion.in_view(frame, viewport)
+    }
+
     /// Motion's drag: the pointer pressed on `path`, moved, let go (true:
     /// something drags, or a drag ended).
     pub(crate) fn pointer_down(&mut self, path: &[u64], x: f32, y: f32) -> bool {

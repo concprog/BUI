@@ -1915,8 +1915,10 @@ impl Window {
         }?;
         self.dirty |= self.caches.anim.redraw_motion(frame, &mut self.caches.styles, vp)?;
         if self.caches.anim.take_reclip() {
-            // a clip moved under one that stays: placed again, the moved values are in the styles
+            // a clip moved under one that stays: placed again, the moved values are in the styles,
+            // and the in-view states follow the new clips
             crate::layout::replace(frame, vp, &self.state, &mut self.caches);
+            self.dirty |= self.caches.anim.in_view(frame, vp);
         }
         Some(moved_css)
     }
