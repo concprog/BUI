@@ -113,7 +113,8 @@ export const Region = {
   emits: ['resize'],
   setup (props, { slots, emit }) {
     const onChange = (e) => {
-      if (e.target.localName === 'bui-region') emit('resize', { size: e.target.valueAsNumber, hidden: e.target.checked })
+      const c = screen.regionResize(e)
+      if (c !== null) emit('resize', c)
     }
     return () => h('bui-region', { region: props.region, ...screen.regionAttrs(props), onChange }, slots.default?.())
   },

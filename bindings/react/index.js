@@ -274,7 +274,8 @@ const screen = require('@blender-ui/native/screen')
  *  `resizable`, `maxsize`, `hotkey`, `onResize({ size, hidden })`. */
 function Region ({ region, children, onResize, ...props }) {
   const onChange = onResize && ((e) => {
-    if (e.target.localName === 'bui-region') onResize({ size: e.target.valueAsNumber, hidden: e.target.checked })
+    const c = screen.regionResize(e)
+    if (c !== null) onResize(c)
   })
   return React.createElement('bui-region', { region, ...screen.regionAttrs(props), onChange }, children)
 }

@@ -8,7 +8,8 @@
 
   let { region, children, onresize, ...props } = $props()
   const onchange = (e) => {
-    if (e.target.localName === 'bui-region') onresize?.({ size: e.target.valueAsNumber, hidden: e.target.checked })
+    const c = screen.regionResize(e)
+    if (c !== null) onresize?.(c)
   }
 </script>
 

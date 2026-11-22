@@ -3,7 +3,7 @@
 // grammar's escaping, editor lookup, and createScreen's reconciling on a minimal fake document.
 const test = require('node:test')
 const assert = require('node:assert')
-const { AreaSplit, layoutText, screenChange, ownScreenChange, editorFor, createScreen } = require('../screen')
+const { AreaSplit, layoutText, screenChange, ownScreenChange, regionResize, editorFor, createScreen } = require('../screen')
 
 /** A layout document as the kit writes it: `rects` are [x0, y0, x1, y1]. */
 function doc (...areas) {
@@ -66,6 +66,9 @@ test('screenChange: window and foreign values', () => {
   assert.deepStrictEqual(screenChange('window\tView'), { window: 'View' })
   assert.strictEqual(screenChange('x'), null)
   assert.strictEqual(screenChange(3), null)
+  // a text field's change reaches the screen when the field has no change listener of its own
+  assert.strictEqual(screenChange('{'), null)
+  assert.strictEqual(screenChange('{"a": 1}'), null)
   const screen = { value: doc(['A', [0, 0, 100, 100]]) }
   assert.strictEqual(ownScreenChange({ target: {} }, screen), null) // a nested screen's event
   assert.strictEqual(ownScreenChange({ target: screen }, screen).areas.length, 1)
@@ -119,4 +122,10 @@ test('an area without an id never takes one a neighbor has', () => {
   const again = screenChange(JSON.stringify(next), areas).areas
   assert.strictEqual(new Set(again.map((a) => a.id)).size, 2)
   assert.strictEqual(again[1].id, areas[0].id)
+})
+
+test('regionResize: only a change the listening region itself sent', () => {
+  const region = { valueAsNumber: 240, checked: true }
+  assert.deepStrictEqual(regionResize({ target: region, currentTarget: region }), { size: 240, hidden: true })
+  assert.strictEqual(regionResize({ target: { valueAsNumber: 9, checked: false }, currentTarget: region }), null)
 })
