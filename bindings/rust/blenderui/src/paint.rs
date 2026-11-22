@@ -453,7 +453,7 @@ impl Painter {
             let (start, end) = self.ranges[i];
             let n = &frame.nodes[i];
             let at = self.items.len();
-            if n.visible && n.opacity > 0.0 && self.in_view(frame, styles, i, vp) {
+            if n.visible && n.opacity > 0.0 && self.in_view(mats, frame, styles, i, vp) {
                 self.opacity = n.opacity;
                 self.clip = n.clip;
                 paint_node(frame, styles, tc, i, self, vp, app);
@@ -539,9 +539,11 @@ impl Painter {
         (x0 <= x1).then(|| rect(x0, y0, x1 - x0, y1 - y0))
     }
 
-    /// Whether box `i` is painted: a selection paints everything, else only what the view shows.
-    fn in_view(&self, frame: &Frame, styles: &StyleStore, i: usize, vp: (f32, f32)) -> bool {
-        self.sel.is_some() || !offscreen(frame, styles, i, vp)
+    /// Whether box `i` is painted: a selection paints everything, a box under
+    /// a vector transform paints where the transform puts it (not where its
+    /// bounds are), else only what the view shows.
+    fn in_view(&self, mats: &Mats, frame: &Frame, styles: &StyleStore, i: usize, vp: (f32, f32)) -> bool {
+        self.sel.is_some() || mats.m[i] != crate::effects::IDENTITY || !offscreen(frame, styles, i, vp)
     }
 
     fn push(&mut self, kind: Kind, coords: Coords, fill: Rgba) {
@@ -1027,8 +1029,7 @@ fn paint_frame_with(s: &mut PaintScratch, frame: &Frame, styles: &StyleStore, tc
                 p.note_widget(n.key, n.clip.map_or(n.bounds, |c| c.intersect(&n.bounds)));
             }
             let start = p.items.len();
-            // a box under a vector transform paints where the transform puts it, not where its bounds are
-            if mats.m[i] != crate::effects::IDENTITY || p.in_view(frame, styles, i, vp) {
+            if p.in_view(mats, frame, styles, i, vp) {
                 paint_node(frame, styles, tc, i, p, vp, app);
             }
             mats.map(p, start, i);
