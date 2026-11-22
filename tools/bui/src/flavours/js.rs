@@ -229,8 +229,7 @@ impl Flavour for JsApp {
         let note = if added.is_empty() {
             "has every script bui runs; left as it was".to_owned()
         } else {
-            std::fs::write(&path, format!("{}
-", serde_json::to_string_pretty(&doc)?)).with_context(|| format!("writing {}", path.display()))?;
+            std::fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&doc)?)).with_context(|| format!("writing {}", path.display()))?;
             format!("kept as it was, and added the scripts {}", added.join(", "))
         };
         Ok(vec![Adopted { path: "package.json", note }])

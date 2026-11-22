@@ -1,5 +1,6 @@
 //! C: CMake fetching BUI at a release tag, clang-format and clang-tidy configured.
 
+use std::ops::Range;
 use std::path::Path;
 
 use anyhow::Result;
@@ -18,80 +19,122 @@ fn cmake(dir: &Path, args: &[&str]) -> Cmd {
     Cmd::new("cmake", args.iter().copied()).in_dir(dir)
 }
 
-/// `text` lower-cased, with the comments (`# ...` and `#[[ ... ]]`) blanked to spaces. Every byte offset stays the
-/// same, so a position found here slices `text`. A `#` inside a quoted or bracket argument is not a comment.
-fn mask(text: &str) -> String {
-    let src = text.as_bytes();
-    let mut out = src.to_ascii_lowercase();
-    // the length of a bracket opener `[==[` at `i` (its `=` count + 2), if there is one
-    let bracket = |i: usize| -> Option<usize> {
-        let eq = src[i + 1..].iter().take_while(|&&b| b == b'=').count();
-        (src.get(i) == Some(&b'[') && src.get(i + 1 + eq) == Some(&b'[')).then_some(eq + 2)
-    };
-    // the end of a bracket body that opened with `eq` signs, from `i`
-    let close = |i: usize, eq: usize| -> usize {
-        let mut shut = vec![b']'];
-        shut.extend(std::iter::repeat_n(b'=', eq));
-        shut.push(b']');
-        src[i..].windows(shut.len()).position(|w| w == shut.as_slice()).map_or(src.len(), |at| i + at + shut.len())
-    };
-    let mut i = 0;
-    while i < src.len() {
-        match src[i] {
-            b'"' => {
-                i += 1;
-                while i < src.len() && src[i] != b'"' {
-                    i += if src[i] == b'\\' { 2 } else { 1 };
-                }
-                i += 1;
-            }
-            b'[' if bracket(i).is_some() => i = close(i + bracket(i).unwrap_or(2), bracket(i).unwrap_or(2) - 2),
-            b'#' => {
-                let end = match bracket(i + 1) {
-                    Some(n) => close(i + 1 + n, n - 2),
-                    None => src[i..].iter().position(|&b| b == b'\n').map_or(src.len(), |at| i + at),
-                };
-                for b in &mut out[i..end.min(src.len())] {
-                    if *b != b'\n' && *b != b'\r' {
-                        *b = b' ';
-                    }
-                }
-                i = end;
-            }
-            _ => i += 1,
-        }
+/// What a CMake token is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// `v0.5.1`, `GIT_TAG`, a command's name
+    Unquoted,
+    /// `"..."`, with `\` escapes
+    Quoted,
+    /// `[[...]]`, `[=[...]=]`
+    Bracket,
+    /// `# ...` and `#[[ ... ]]`
+    Comment,
+    Open,
+    Close,
+}
+
+/// CMake's tokens of a text in order, whitespace dropped, each with its byte range. A `#` or `)` inside a quoted or
+/// bracket argument belongs to the argument; an unterminated one runs to the end of the text.
+struct Tokens<'a> {
+    src: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Tokens<'a> {
+    const fn new(text: &'a str) -> Self {
+        Self { src: text.as_bytes(), at: 0 }
     }
-    String::from_utf8(out).unwrap_or_else(|_| text.to_ascii_lowercase())
+
+    /// The length of a bracket opener `[==[` at `i` (its `=` count + 2), if one starts there.
+    fn bracket(&self, i: usize) -> Option<usize> {
+        let rest = self.src.get(i..)?;
+        let eq = rest.iter().skip(1).take_while(|&&b| b == b'=').count();
+        (rest.first() == Some(&b'[') && rest.get(1 + eq) == Some(&b'[')).then_some(eq + 2)
+    }
+
+    /// The end of the bracket body whose `n`-byte opener is at `i`: past its `]==]`, or the end of the text.
+    fn close(&self, i: usize, n: usize) -> usize {
+        let body = i + n;
+        let shut = |w: &[u8]| w[0] == b']' && w[n - 1] == b']' && w[1..n - 1].iter().all(|&b| b == b'=');
+        self.src[body..].windows(n).position(shut).map_or(self.src.len(), |at| body + at + n)
+    }
+
+    /// The end of a run from `i` that stops before a byte `stop` accepts, stepping over `\` escapes.
+    fn run(&self, mut i: usize, stop: impl Fn(u8) -> bool) -> usize {
+        while i < self.src.len() && !stop(self.src[i]) {
+            i += if self.src[i] == b'\\' { 2 } else { 1 };
+        }
+        i.min(self.src.len())
+    }
+}
+
+impl Iterator for Tokens<'_> {
+    type Item = (Kind, Range<usize>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let src = self.src;
+        let start = self.at + src.get(self.at..)?.iter().take_while(|b| b.is_ascii_whitespace()).count();
+        let (kind, end) = match *src.get(start)? {
+            b'(' => (Kind::Open, start + 1),
+            b')' => (Kind::Close, start + 1),
+            b'"' => (Kind::Quoted, (self.run(start + 1, |b| b == b'"') + 1).min(src.len())),
+            b'#' => match self.bracket(start + 1) {
+                Some(n) => (Kind::Comment, self.close(start + 1, n)),
+                None => (Kind::Comment, src[start..].iter().position(|&b| b == b'\n').map_or(src.len(), |at| start + at)),
+            },
+            _ => match self.bracket(start) {
+                Some(n) => (Kind::Bracket, self.close(start, n)),
+                None => (Kind::Unquoted, self.run(start, |b| b.is_ascii_whitespace() || matches!(b, b'(' | b')' | b'#' | b'"'))),
+            },
+        };
+        self.at = end;
+        Some((kind, start..end))
+    }
 }
 
 /// BUI's own `FetchContent_Declare(...)` in a CMakeLists: the text up to where its tag begins, and the
 /// tag (`v0.5.1`). Other dependencies' blocks have tags of their own, which are not ours to read or move.
+/// `GIT_TAG` counts only as a whole unquoted argument and its value is the next argument, so a commented-out,
+/// quoted or bracket `GIT_TAG` is not the tag.
 fn bui_pin(text: &str) -> Option<(&str, &str)> {
-    const DECLARE: &str = "fetchcontent_declare";
-    let lower = mask(text); // a commented-out tag is not the tag
-    let mut from = 0;
-    while let Some(i) = lower[from..].find(DECLARE) {
-        let start = from + i;
-        let after = start + DECLARE.len();
-        let open = lower[after..].trim_start_matches([' ', '\t']);
-        if !open.starts_with('(') {
-            from = after;
+    let mut tokens = Tokens::new(text).filter(|&(kind, _)| kind != Kind::Comment);
+    let mut name: Option<Range<usize>> = None; // the unquoted token just before: a command's name if `(` follows
+    while let Some((kind, span)) = tokens.next() {
+        let declare = name.take().filter(|n| {
+            kind == Kind::Open
+                && text[n.clone()].eq_ignore_ascii_case("FetchContent_Declare")
+                && text[n.end..span.start].bytes().all(|b| b == b' ' || b == b'\t')
+        });
+        let Some(declare) = declare else {
+            name = (kind == Kind::Unquoted).then_some(span);
             continue;
+        };
+        let (mut depth, mut first, mut ours, mut key, mut tag) = (0u32, true, false, false, None);
+        for (kind, span) in tokens.by_ref() {
+            match kind {
+                Kind::Close if depth == 0 => break,
+                Kind::Close => depth -= 1,
+                Kind::Open => depth += 1,
+                _ => {}
+            }
+            let arg = &text[span.clone()];
+            ours |= first && ["bui", "blender-ui", "blenderui"].iter().any(|n| arg.eq_ignore_ascii_case(n));
+            ours |= arg.as_bytes().windows(15).any(|w| w.eq_ignore_ascii_case(b"ppmpreetham/bui"));
+            if key {
+                tag = match kind {
+                    Kind::Unquoted => Some(span),
+                    Kind::Quoted => Some(span.start + 1..span.end.saturating_sub(1).max(span.start + 1)),
+                    _ => None,
+                };
+            }
+            key = tag.is_none() && kind == Kind::Unquoted && arg.eq_ignore_ascii_case("GIT_TAG");
+            first = false;
         }
-        let body = lower.len() - open.len() + 1;
-        let end = lower[body..].find(')').map_or(text.len(), |j| body + j);
-        from = end;
-        let block = &lower[body..end];
-        let name = block.split_whitespace().next().unwrap_or_default();
-        if !(matches!(name, "bui" | "blender-ui" | "blenderui") || block.contains("ppmpreetham/bui")) {
-            continue;
+        if ours {
+            let tag = tag?;
+            return Some((&text[declare.start..tag.start], &text[tag]));
         }
-        let key = lower[start..end].find("git_tag")? + "git_tag".len();
-        let rest = &lower[start + key..end]; // found in the masked text, a comment between key and value is blank
-        let tag_at = start + key + (rest.len() - rest.trim_start().len());
-        let tag_len = lower[tag_at..end].split_whitespace().next()?.len();
-        let tag = &text[tag_at..tag_at + tag_len];
-        return Some((&text[start..tag_at], tag));
     }
     None
 }
@@ -184,9 +227,7 @@ fetchcontent_declare(
     fn the_tag_is_read_from_buis_own_declaration() {
         let (_, tag) = bui_pin(TWO).unwrap();
         assert_eq!(tag, "v0.5.1");
-        let other = TWO.replace("GIT_TAG v0.5.1
-  GIT_SHALLOW", "GIT_TAG v0.6.0
-  GIT_SHALLOW");
+        let other = TWO.replace("GIT_TAG v0.5.1\n  GIT_SHALLOW", "GIT_TAG v0.6.0\n  GIT_SHALLOW");
         assert_eq!(bui_pin(&other).unwrap().1, "v0.6.0", "not the first dependency's");
         assert!(bui_pin("FetchContent_Declare(fmt GIT_TAG 1)").is_none());
     }
@@ -199,9 +240,7 @@ fetchcontent_declare(
         let work = move_tag(&dir, "v0.9.0").unwrap();
         assert!(work.perform("test").unwrap());
         let text = std::fs::read_to_string(dir.join("CMakeLists.txt")).unwrap();
-        assert_eq!(text, TWO.replacen("GIT_TAG v0.5.1
-  GIT_SHALLOW", "GIT_TAG v0.9.0
-  GIT_SHALLOW", 1));
+        assert_eq!(text, TWO.replacen("GIT_TAG v0.5.1\n  GIT_SHALLOW", "GIT_TAG v0.9.0\n  GIT_SHALLOW", 1));
         assert_eq!(pinned_tag(&dir).as_deref(), Some("v0.9.0"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -230,5 +269,38 @@ fetchcontent_declare(
         let (head, tag) = bui_pin(text).unwrap();
         assert_eq!(tag, "v0.5.1");
         assert!(head.ends_with("pinned \u{e9}\n    "));
+    }
+
+    /// `text` with BUI's tag moved to `to` the way `move_tag` rewrites it, checked to read back.
+    fn moved(text: &str, to: &str) -> String {
+        let (head, tag) = bui_pin(text).unwrap();
+        let out = text.replacen(&format!("{head}{tag}"), &format!("{head}{to}"), 1);
+        assert_eq!(bui_pin(&out).unwrap().1, to, "the rewrite still parses: {out}");
+        out
+    }
+
+    #[test]
+    fn git_tag_counts_only_as_a_whole_unquoted_argument() {
+        let text = "FetchContent_Declare(bui SOURCE_DIR [[bui#src GIT_TAG old]] GIT_TAG v0.5.1)\n";
+        assert_eq!(bui_pin(text).unwrap().1, "v0.5.1");
+        assert_eq!(moved(text, "v0.9.0"), text.replace("v0.5.1", "v0.9.0"));
+        let text = "FetchContent_Declare(bui SOURCE_DIR \"GIT_TAG old\" MY_GIT_TAG x GIT_TAG \"v0.5.1\")\n";
+        assert_eq!(bui_pin(text).unwrap().1, "v0.5.1");
+        assert_eq!(moved(text, "v0.9.0"), text.replace("v0.5.1", "v0.9.0"));
+        assert_eq!(moved(TWO, "v0.9.0"), TWO.replacen("v0.5.1\n  GIT_SHALLOW", "v0.9.0\n  GIT_SHALLOW", 1));
+    }
+
+    #[test]
+    fn a_parenthesis_in_a_quoted_or_bracket_argument_does_not_end_the_block() {
+        let text = "FetchContent_Declare(bui SOURCE_DIR \"a)b\" PATCH_COMMAND [=[x)]=] GIT_TAG v0.5.1)\n";
+        assert_eq!(bui_pin(text).unwrap().1, "v0.5.1");
+        assert_eq!(moved(text, "v0.9.0"), text.replace("v0.5.1", "v0.9.0"));
+    }
+
+    #[test]
+    fn unterminated_text_at_the_end_does_not_panic() {
+        for text in ["project(x)\n#", "#", "#[", "#[=", "x [=", "[[", "\"\\", "\\", "FetchContent_Declare(bui GIT_TAG"] {
+            assert!(bui_pin(text).is_none(), "{text:?}");
+        }
     }
 }
