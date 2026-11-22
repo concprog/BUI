@@ -92,3 +92,45 @@ fn a_moved_clip_hides_what_it_moved_out() {
         assert!((b.size.width - 4.0).abs() < 0.6, "clipped all along: {b:?}");
     });
 }
+
+struct CssHidden;
+
+impl Render for CssHidden {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        rsx! {
+            <body style="margin: 0">
+                <style>"@keyframes slide { from { transform: translateX(0px) } to { transform: translateX(50px) } }"</style>
+                <div style="position: relative; width: 100px; height: 100px; overflow: hidden">
+                    <div style="position: relative; width: 100px; height: 100px; overflow: hidden; animation: slide 0.1s linear both">
+                        <motion.div id="v" style="position: absolute; left: -5px; top: 0; width: 4px; height: 100px"
+                            whileInView={{ width: 30 }} viewport={{ once: true }} />
+                    </div>
+                </div>
+            </body>
+        }
+    }
+}
+
+/// The same with the clip moved by a CSS animation: Motion's redraw after it moved no clip of its
+/// own, and still waits for the frame placed again before it judges `v`.
+#[test]
+fn a_css_moved_clip_hides_what_it_moved_out() {
+    Application::headless().run(|cx| {
+        blenderui::motion::lag_smoothing(0.0, 0.0);
+        let opts = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(300.0), px(200.0)),
+            })),
+            ..Default::default()
+        };
+        let w = cx.open_window(opts, |_, cx| cx.new(|_| CssHidden)).unwrap().id;
+        cx.draw(w);
+        for _ in 0..20 {
+            cx.advance_clock(Duration::from_millis(16));
+            cx.draw(w);
+        }
+        let b = cx.element_bounds(w, "v").expect("v");
+        assert!((b.size.width - 4.0).abs() < 0.6, "clipped all along: {b:?}");
+    });
+}

@@ -629,10 +629,11 @@ impl Elements {
     /// elements and what is under them, not the rest of the frame. Then the
     /// in-view states where the boxes are now (a translate, this redraw's or
     /// the CSS one before it, may move one into view): `Some(true)` when one
-    /// changed (render again). Not when it moved a clip ([`take_reclip`](Self::take_reclip)):
-    /// the caller places the frame again, then asks [`in_view`](Self::in_view).
+    /// changed (render again). Not when it moved a clip ([`take_reclip`](Self::take_reclip)), or
+    /// the CSS redraw before it did (`reclip`): the caller places the frame again, then asks
+    /// [`in_view`](Self::in_view).
     pub(crate) fn redraw(&mut self, frame: &mut crate::layout::Frame, styles: &mut crate::layout::StyleStore,
-                         viewport: (f32, f32)) -> Option<bool> {
+                         viewport: (f32, f32), reclip: bool) -> Option<bool> {
         let Arena { chunks, live, .. } = &mut self.els;
         let at = |i: u32| (i as usize / CHUNK, i as usize % CHUNK);
         // a layout value moving now (also one whose first value came after the last full frame)
@@ -735,7 +736,7 @@ impl Elements {
             self.clear_shift();
         }
         // a moved clip: the frame is placed again first, and the states follow that placement
-        Some(!self.reclip && self.in_view(frame, viewport))
+        Some(!(reclip || self.reclip) && self.in_view(frame, viewport))
     }
 }
 
