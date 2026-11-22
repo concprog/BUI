@@ -683,7 +683,9 @@ impl ScreenBuilder {
 
     fn into_div(self) -> Div {
         let ScreenBuilder { id, editors, layout, saved, resize_only, on_change, on_window, class, style, attrs } = self;
-        let mut d = Div::new("bui-screen").key(id.unwrap_or(Cow::Borrowed("bui-screen")));
+        let id = id.unwrap_or(Cow::Borrowed("bui-screen"));
+        let own = crate::layout::id_key(&id); // the key `Screens::sync` gives it
+        let mut d = Div::new("bui-screen").key(id);
         if let Some(c) = class {
             d = d.class(c);
         }
@@ -700,7 +702,8 @@ impl ScreenBuilder {
             d = d.on_change(move |e, w, app| {
                 match (e.value.strip_prefix("window\t"), &on_window, &on_change) {
                     (Some(editor), Some(f), _) => f(&AreaEvent { editor: editor.to_owned() }, w, app),
-                    (None, _, Some(f)) if is_layout(&e.value) => {
+                    // the screen's own change, not one bubbling up from a field inside it
+                    (None, _, Some(f)) if w.event_target() == Some(own) => {
                         f(&ScreenEvent { layout: e.value.clone() }, w, app);
                     }
                     _ => {}
@@ -795,16 +798,6 @@ impl KitScreen {
         // SAFETY: our screen node (and its areas and regions), detached and freed.
         unsafe { sys::BK_node_free(self.node) };
     }
-}
-
-/// What every layout the kit writes starts with (`screen_layout_get`): a
-/// change whose value doesn't is not the screen's (a text field inside it
-/// whose own change nobody handled reaches the screen's handler too).
-const LAYOUT_PREFIX: &str = "{\"bui_screen\"";
-
-/// Whether a change's value is a screen layout.
-fn is_layout(value: &str) -> bool {
-    value.starts_with(LAYOUT_PREFIX)
 }
 
 /// The screens of one window, by element key.

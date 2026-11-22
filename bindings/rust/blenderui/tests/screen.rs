@@ -239,7 +239,7 @@ impl Render for FieldInScreen {
 }
 
 /// A text field in a screen whose change nobody handles reaches the screen's handler: its text
-/// is not taken for a layout, even when it looks like JSON.
+/// is not taken for a layout, even when it starts like one.
 #[test]
 fn a_field_change_in_a_screen_is_not_a_layout() {
     Application::headless().run(|cx| {
@@ -256,11 +256,25 @@ fn a_field_change_in_a_screen_is_not_a_layout() {
         }
         let f = cx.element_bounds(id, "field").expect("the field");
         cx.simulate_click(id, f.origin.x + 10.0, f.origin.y + f.size.height / 2.0);
-        cx.simulate_key(id, "{", "braceleft");
+        let forged = "{\"bui_screen\": 1}";
+        for c in forged.chars() {
+            let sym = match c {
+                '{' => "braceleft",
+                '}' => "braceright",
+                '"' => "quotedbl",
+                '_' => "underscore",
+                ':' => "colon",
+                ' ' => "space",
+                _ => "",
+            };
+            let text = c.to_string();
+            cx.simulate_key(id, &text, if sym.is_empty() { &text } else { sym });
+        }
         cx.simulate_key(id, "", "Return");
         cx.draw(id);
         let seen = FIELD_LAYOUTS.lock().unwrap().clone();
-        assert!(seen.iter().all(|l| l.starts_with("{\"bui_screen\"")), "only layouts: {seen:?}");
+        assert!(!seen.is_empty(), "the screen's own layout came");
+        assert!(seen.iter().all(|l| l != forged && l.starts_with("{\"bui_screen\"")), "only layouts: {seen:?}");
     });
 }
 
