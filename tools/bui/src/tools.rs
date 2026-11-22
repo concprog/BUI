@@ -100,7 +100,7 @@ impl Tool {
                 note: Some("Rust on Windows also needs Visual Studio's C++ build tools (bui offers them next)."),
             },
             (Self::Rust, _) => none(vec![Cmd::script("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y")]),
-            (Self::Bun, Os::Windows) => none(vec![Cmd::script("irm bun.sh/install.ps1 | iex")]),
+            (Self::Bun, Os::Windows) => none(vec![Cmd::script("irm https://bun.sh/install.ps1 | iex")]),
             (Self::Bun, _) => none(vec![Cmd::script("curl -fsSL https://bun.sh/install | bash")]),
             (Self::Node, Os::Windows) => none(vec![winget("OpenJS.NodeJS.LTS")]),
             (Self::Node, Os::Mac) if which("brew").is_some() => none(vec![brew("node")]),
@@ -112,7 +112,7 @@ impl Tool {
             (Self::Uv, _) => none(vec![Cmd::script("curl -LsSf https://astral.sh/uv/install.sh | sh")]),
             (Self::Lua | Self::Luarocks, Os::Windows) => Install {
                 cmds: vec![Cmd::script("scoop install lua luarocks")],
-                note: Some("Needs Scoop (https://scoop.sh): `irm get.scoop.sh | iex`."),
+                note: Some("Needs Scoop (https://scoop.sh): `irm https://get.scoop.sh | iex`."),
             },
             (Self::Lua | Self::Luarocks, Os::Mac) => none(vec![brew("lua luarocks")]),
             (Self::Lua | Self::Luarocks, Os::Linux) => none(vec![pkg(
