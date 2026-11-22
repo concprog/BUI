@@ -678,7 +678,10 @@ impl App {
     /// Handle queued kit events, then re-render what changed.
     fn drain(&mut self) {
         while let Some(ev) = queue_pop() {
-            self.with_window(ev.window, |w, app| w.dispatch(ev, app));
+            // a closed window's queued events go with it (its handlers and hooks are done)
+            if self.window(WindowId(ev.window)).is_some_and(|w| w.life == Life::Open) {
+                self.with_window(ev.window, |w, app| w.dispatch(ev, app));
+            }
         }
         // work from other threads (UiSender)
         loop {
