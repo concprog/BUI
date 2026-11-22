@@ -1846,7 +1846,7 @@ impl Window {
         let scrolled = crate::motion::update_scroll(&frame);
         if flipped {
             // a layout animation starts where the element was seen: this frame too
-            in_view |= self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp) == Some(true);
+            in_view |= self.redraw_motion_placed(&mut frame, vp) == Some(true);
         }
         let container_changed = self.caches.after_layout(&frame) | in_view;
         // screens: their kit nodes go where their elements are (the kit reports what moves)
@@ -1913,14 +1913,20 @@ impl Window {
         } else {
             Some((Vec::new(), false))
         }?;
-        self.dirty |= self.caches.anim.redraw_motion(frame, &mut self.caches.styles, vp)?;
-        if self.caches.anim.take_reclip() {
-            // a clip moved under one that stays: placed again, the moved values are in the styles,
-            // and the in-view states follow the new clips
-            crate::layout::replace(frame, vp, &self.state, &mut self.caches);
-            self.dirty |= self.caches.anim.in_view(frame, vp);
-        }
+        self.dirty |= self.redraw_motion_placed(frame, vp)?;
         Some(moved_css)
+    }
+
+    /// Motion's redraw of `frame`, placed again when a redraw moved a clip under one that stays:
+    /// the moved values are in the styles, and the in-view states follow the new clips. `None`: it
+    /// can't be redrawn (render); else whether anything changed.
+    fn redraw_motion_placed(&mut self, frame: &mut Frame, vp: (f32, f32)) -> Option<bool> {
+        let mut changed = self.caches.anim.redraw_motion(frame, &mut self.caches.styles, vp)?;
+        if self.caches.anim.take_reclip() {
+            crate::layout::replace(frame, vp, &self.state, &mut self.caches);
+            changed |= self.caches.anim.in_view(frame, vp);
+        }
+        Some(changed)
     }
 
     /// Another frame of values when CSS animations (`css_running`) or Motion's run on.
@@ -1957,7 +1963,7 @@ impl Window {
         // Animations alone don't: their values are in the styles placement reads
         let (mut in_view, flipped) = self.caches.anim.after_layout(&frame, &self.caches.styles, vp);
         if flipped {
-            in_view |= self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp) == Some(true);
+            in_view |= self.redraw_motion_placed(&mut frame, vp) == Some(true);
         }
         if crate::motion::update_scroll(&frame) {
             self.request_motion_frame();

@@ -292,7 +292,8 @@ func TestFreeInsideAHandlerWhileRequestRenders(t *testing.T) {
 	defer root.Free()
 	c := NewNode("checkbox").Set("label", "Gone")
 	root.Add(c)
-	c.OnChange(func(Event) { c.Free() })
+	queued := false
+	c.OnChange(func(Event) { c.Free(); queued = true })
 	ctx := NewContext(root)
 	defer ctx.Free()
 	r := NewRaster(200, 80)
@@ -302,7 +303,7 @@ func TestFreeInsideAHandlerWhileRequestRenders(t *testing.T) {
 	ctx.OnRequest(func() { // the kit asks for a render inside the press
 		ctx.Render(r, 200, 80, false)
 		early = early || (clicking && c.Freed())
-		if clicking {
+		if clicking && queued { // only a render after the free was queued tests it
 			requests++
 		}
 	})

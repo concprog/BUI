@@ -1330,6 +1330,7 @@ impl Animations {
         self.now = now;
         self.frame += 1;
         self.running = false;
+        self.take_reclip(); // the layout that follows places every clip
         self.motion.begin();
         crate::motion::tick();
     }
