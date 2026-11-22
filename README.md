@@ -34,6 +34,11 @@ People spent decades building and optimizing Blender's GUI. It's battery and mem
       <a href="https://hackergit.org/r/ppmpreetham/BUI"><img src="https://hackergit.org/badge/ppmpreetham/BUI.svg?style=rank" alt="Hacker News" width="250" height="55"></a>
     </td>
   </tr>
+  <tr>
+    <td>
+      <a href="https://trendshift.io/repositories/340142?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-340142" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/340142/daily?language=C%2B%2B" alt="ppmpreetham%2FBUI | Trendshift" width="250" height="55"/></a>
+    </td>
+  </tr>
 </table>
 
 **Website and full documentation: [bui.preetham.top](https://bui.preetham.top)** · **Chat: [Discord](https://discord.gg/MWXZfdyM3D)**
@@ -209,6 +214,7 @@ If you're starting fresh in Python, the Blender components are the friendliest.
 - **Ctrl+Z / Ctrl+Shift+Z** on every UI edit, and inside a text field while you type; Tab between fields.
 - Blender's float display precision, multi-field vertical drags, and panels that collapse with Blender's animation.
 - The HSV color wheel, color ramps, curves, trees, lists, text areas, canvases, a node editor and Blender's File Browser.
+- **Blender's screen layout**: areas you resize by dragging the edges between them (Shift moves aligned edges, Ctrl snaps), split, join and dock by dragging a corner, swap with Ctrl, maximize with Ctrl+Space; headers, toolbars and sidebars that resize, hide and flip; panels that reorder and pin; the arrangement saved and restored as JSON ([Screens, areas and regions](https://bui.preetham.top/docs/concepts/screens/)).
 - **Blender's Dark and Light themes**, switchable at run time, and **your own themes** from a JSON file (gpui-kit's format, Blender's color names, per-widget corners and borders; [docs/theming.md](docs/theming.md)).
 
 ### Python
@@ -243,6 +249,8 @@ If you're starting fresh in Python, the Blender components are the friendliest.
 - **Damage rendering**: an idle UI costs 0% CPU, and a hover redraws only the widget it touches.
 - **Opt-in GPU renderer** (Direct3D 11 on Windows, OpenGL 3.3 on Linux), modeled on Blender's instanced widget drawing. It draws the same pixels as the CPU raster.
 - **GPU effects**: your own GLSL pixel shader in a canvas (`BK_ITEM_EFFECT`, Rust `Painter::effect`), run on Direct3D 11 and OpenGL in paint order with an image as the fallback; the compile log comes back as a string.
+- **Android** (`platform/android`, [docs/android.md](docs/android.md)): the kit's window host on a `NativeActivity`, so C, Lua and Rust apps run as on a desktop (`Application::run`, `bui.open`); damage-driven rendering, touch scrolling and the soft keyboard; `python platform/android/build.py [--lua DIR | --rust CRATE]` makes a signed APK of 1 to 2 MB. Run on an emulator; the arm64 builds were not run.
+- **GPU render targets**: an effect can draw into a texture (`RenderTarget`, `BUI_target_create`, `Painter::effect_to`, `Rgba8` / `Rgba16F` / `Rgba32F`) and sample it in a later pass, so simulations can feed back on themselves. Tested on Direct3D 11; the OpenGL backend has the same code and has not been run.
 - In the benchmark, **2–4× less CPU per frame than gpui-fast**, with **less RAM** and a **~5 ms first frame**.
 - **Blender's text**: Inter (Blender's UI font) is embedded and rendered with FreeType the way Blender renders it, so text looks the same on every platform. On the GPU, glyphs are drawn from their outlines with [Slug](https://github.com/EricLengyel/Slug), falling back to a per-glyph atlas like Blender's.
 
@@ -1123,7 +1131,16 @@ Blender-widgets build, and every C kit widget.
   collect them, then sideways to change them together. Drag across checkboxes
   (or panel headers) to set them all in one stroke.
 - **Panels** collapse with Blender's animation; Ctrl+click opens one and
-  closes the others; drag the grip to reorder.
+  closes the others; drag the grip to reorder; Shift+click pins one in a
+  tabbed sidebar.
+- **Screens** (Blender's `editors/screen`): drag the edge between two areas
+  to resize them (Shift: every aligned edge, Ctrl: snap, Esc or right-click:
+  cancel); drag an area's corner inward to split it, into a neighbor to join,
+  into any other area to dock beside it or replace it, out of the window to
+  ask the host to open it in a window of its own; Ctrl-drag swaps two areas; Ctrl+Space maximizes and
+  Ctrl+Alt+Space is focus mode; right-click an edge or a header for the same
+  as menus. Regions resize from their inner edge, hide when dragged closed,
+  come back from their tab or hotkey, and flip sides.
 - **Menus** work press-drag-release or click; hover switches menu-bar menus;
   **pie menus** open around the pointer.
 - **Menu search** is Blender's string search: start typing in any open menu.
@@ -1841,24 +1858,24 @@ Bun 1.4.4; cells runs interleaved, medians of 3; `bench/cells.js 3000 --gpu --vu
 `bench/startup.js --vue`). This machine ran every variant at 49–56 FPS, so compare these rows with
 each other, not with the tables above.
 
-| 3,000 cells                                         |  FPS | CPU per frame |    RAM | JS heap | JavaScript per update |
-| --------------------------------------------------- | ---: | ------------: | -----: | ------: | --------------------: |
-| Node 26: React with state                           | 51.0 |       24.9 ms | 228 MB |   45 MB |                3.1 ms |
-| Node 26: Svelte with runes                          | 54.9 |       17.7 ms | 115 MB |   22 MB |                 50 µs |
-| Node 26: Vue, state in the root component           | 54.7 |       25.6 ms | 260 MB |   44 MB |                5.4 ms |
-| Node 26: Vue, cell 0 a component of its own         | 53.9 |       18.5 ms | 112 MB |   21 MB |                 25 µs |
-| Bun 1.4: React with state                           | 53.6 |       25.8 ms | 118 MB |    8 MB |                3.9 ms |
-| Bun 1.4: Svelte with runes                          | 53.4 |       19.2 ms |  98 MB |   10 MB |                 48 µs |
-| Bun 1.4: Vue, state in the root component           | 53.4 |  8–15 ms (\*) | 142 MB |   16 MB |                6.7 ms |
-| Bun 1.4: Vue, cell 0 a component of its own         | 56.0 |       18.2 ms | 107 MB |   11 MB |                 27 µs |
+| 3,000 cells                                 |  FPS | CPU per frame |    RAM | JS heap | JavaScript per update |
+| ------------------------------------------- | ---: | ------------: | -----: | ------: | --------------------: |
+| Node 26: React with state                   | 51.0 |       24.9 ms | 228 MB |   45 MB |                3.1 ms |
+| Node 26: Svelte with runes                  | 54.9 |       17.7 ms | 115 MB |   22 MB |                 50 µs |
+| Node 26: Vue, state in the root component   | 54.7 |       25.6 ms | 260 MB |   44 MB |                5.4 ms |
+| Node 26: Vue, cell 0 a component of its own | 53.9 |       18.5 ms | 112 MB |   21 MB |                 25 µs |
+| Bun 1.4: React with state                   | 53.6 |       25.8 ms | 118 MB |    8 MB |                3.9 ms |
+| Bun 1.4: Svelte with runes                  | 53.4 |       19.2 ms |  98 MB |   10 MB |                 48 µs |
+| Bun 1.4: Vue, state in the root component   | 53.4 |  8–15 ms (\*) | 142 MB |   16 MB |                6.7 ms |
+| Bun 1.4: Vue, cell 0 a component of its own | 56.0 |       18.2 ms | 107 MB |   11 MB |                 27 µs |
 
 (\*) CPU per frame varied between runs for this one variant (80%, 45% and 50% of a core, against a steady
 ~100% for every other), so it has no single number.
 
-| First frame, median of 8         | React |  Vue | RAM (React / Vue) |
-| -------------------------------- | ----: | ---: | ----------------: |
-| QuickJS executable (`bui build`) | 43 ms | 66 ms |     14.5 / 17.5 MB |
-| Bun executable (`--bun`)         | 46 ms | 77 ms |     29.9 / 40.3 MB |
+| First frame, median of 8         | React |    Vue | RAM (React / Vue) |
+| -------------------------------- | ----: | -----: | ----------------: |
+| QuickJS executable (`bui build`) | 43 ms |  66 ms |    14.5 / 17.5 MB |
+| Bun executable (`--bun`)         | 46 ms |  77 ms |    29.9 / 40.3 MB |
 | Bun (`--preload …/register`)     | 58 ms | 101 ms |    34.7 / 48.7 MB |
 | Node.js (`--import …/register`)  | 72 ms | 125 ms |    43.7 / 56.3 MB |
 
@@ -1982,12 +1999,12 @@ and on an NVIDIA GPU.
 
 **Packages:**
 
-| Package                                                                | Platforms                                                        | Notes                                                                           |
-| ---------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `blenderui` on PyPI                                                    | Windows x86_64, Linux x86_64 (manylinux), macOS arm64 and x86_64 | CPython 3.11 to 3.14. No musllinux or 32-bit wheels.                            |
-| `blenderui` on crates.io                                               | Any platform with CMake and a C compiler                         | Rust 1.88+. `blenderui-imgui` (Dear ImGui) is on crates.io too.                 |
+| Package                                                                                   | Platforms                                                        | Notes                                                                                   |
+| ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `blenderui` on PyPI                                                                       | Windows x86_64, Linux x86_64 (manylinux), macOS arm64 and x86_64 | CPython 3.11 to 3.14. No musllinux or 32-bit wheels.                                    |
+| `blenderui` on crates.io                                                                  | Any platform with CMake and a C compiler                         | Rust 1.88+. `blenderui-imgui` (Dear ImGui) is on crates.io too.                         |
 | `@blender-ui/native`, `@blender-ui/react`, `@blender-ui/svelte`, `@blender-ui/vue` on npm | Windows x64                                                      | Node.js 18+ (22.15+ for Svelte and Vue) or Bun. Elsewhere, build the addon from source. |
-| C and C++ (CMake)                                                      | Windows, Linux, macOS                                            | CMake 3.20+, a C11 and C++20 compiler.                                          |
+| C and C++ (CMake)                                                                         | Windows, Linux, macOS                                            | CMake 3.20+, a C11 and C++20 compiler.                                                  |
 
 ## 37. Environment variables
 
@@ -2042,21 +2059,21 @@ python examples/components_demo.py
 (cd bindings/ruby && bundle install && rake test)   # Ruby: the kit, blocks, events, the GC, headless
 ```
 
-| Option                      | Default                  | What it does                                                                                        |
-| --------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------- |
-| `BUI_BUILD_TESTS`           | `ON`                     | C test programs and the `ctest` suites                                                              |
-| `BUI_BUILD_EXAMPLES`        | `OFF`                    | The C examples (`bui_kit_hello`, `bui_svg_demo`, the site screenshot programs)                      |
-| `BUI_BUILD_PYTHON_BINDINGS` | `ON`                     | The `buipy` extension (and the ImGui extension); skipped without Python's dev files                 |
+| Option                      | Default                  | What it does                                                                                           |
+| --------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `BUI_BUILD_TESTS`           | `ON`                     | C test programs and the `ctest` suites                                                                 |
+| `BUI_BUILD_EXAMPLES`        | `OFF`                    | The C examples (`bui_kit_hello`, `bui_svg_demo`, the site screenshot programs)                         |
+| `BUI_BUILD_PYTHON_BINDINGS` | `ON`                     | The `buipy` extension (and the ImGui extension); skipped without Python's dev files                    |
 | `BUI_BUILD_LUA_BINDINGS`    | `OFF`                    | The Lua 5.4 host (`bui-lua`, `bui.so` / `bui.dll`); fetches Lua at configure time without a system one |
-| `BUI_BUILD_IMGUI`           | `ON` with a C++ compiler | Dear ImGui on BUI, its C API, demo and test                                                         |
-| `BUI_IMGUI_BLENDER_WIDGETS` | `OFF`                    | Dear ImGui with Blender's widgets                                                                   |
-| `BUI_BUILD_QT_BACKEND`      | `OFF`                    | The C++ Qt/QPainter render-sink backend (needs Qt 5 or 6)                                           |
-| `BUI_BUILD_UI`              | `OFF`                    | Also compile Blender's original `ui/` sources (reference only)                                      |
-| `BUI_TEXT_FREETYPE`         | `ON`                     | Render glyphs with FreeType like Blender's BLF; `OFF` uses stb_truetype                             |
-| `BUI_TEXT_GDI`              | `OFF`                    | Windows' GDI text and system fonts                                                                  |
-| `BUI_SLUG`                  | `ON`                     | Slug as the GPU's default text method (switchable at run time)                                      |
-| `BUI_IMAGE_SVG`             | `ON`                     | SVG images through the kit's nanosvg (no extra code: Blender's icons already use it)                |
-| `BUI_WARNINGS_AS_ERRORS`    | `OFF`                    | GCC and Clang only: when `OFF` the build adds `-Wno-error`; it never adds `-Werror` or `/WX` itself |
+| `BUI_BUILD_IMGUI`           | `ON` with a C++ compiler | Dear ImGui on BUI, its C API, demo and test                                                            |
+| `BUI_IMGUI_BLENDER_WIDGETS` | `OFF`                    | Dear ImGui with Blender's widgets                                                                      |
+| `BUI_BUILD_QT_BACKEND`      | `OFF`                    | The C++ Qt/QPainter render-sink backend (needs Qt 5 or 6)                                              |
+| `BUI_BUILD_UI`              | `OFF`                    | Also compile Blender's original `ui/` sources (reference only)                                         |
+| `BUI_TEXT_FREETYPE`         | `ON`                     | Render glyphs with FreeType like Blender's BLF; `OFF` uses stb_truetype                                |
+| `BUI_TEXT_GDI`              | `OFF`                    | Windows' GDI text and system fonts                                                                     |
+| `BUI_SLUG`                  | `ON`                     | Slug as the GPU's default text method (switchable at run time)                                         |
+| `BUI_IMAGE_SVG`             | `ON`                     | SVG images through the kit's nanosvg (no extra code: Blender's icons already use it)                   |
+| `BUI_WARNINGS_AS_ERRORS`    | `OFF`                    | GCC and Clang only: when `OFF` the build adds `-Wno-error`; it never adds `-Werror` or `/WX` itself    |
 
 Rebuild the docs screenshots with `python tools/gen_doc_images.py` (and the
 website's dark and light shots with `--site`). More:
@@ -2108,6 +2125,7 @@ How each was counted: [Coverage](https://bui.preetham.top/docs/reference/coverag
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`examples/tk_unchanged_app.py`](examples/tk_unchanged_app.py)                                                                                                                                                                | A plain tkinter app: menus, notebook, form, table, text, canvas                                                                                                                                                                                                 |
 | [`examples/components_demo.py`](examples/components_demo.py)                                                                                                                                                                  | Every Blender component in a properties-editor layout                                                                                                                                                                                                           |
+| [`examples/screen_demo.py`](examples/screen_demo.py)                                                                                                                                                                          | Blender's screen: seven editors whose areas you resize, split, join, dock and maximize, with toolbars, sidebars and pinned panels; the layout is kept between runs                                                                                                                                                                                                                                                                                                                     |
 | [`examples/qt_syntax_demo.py`](examples/qt_syntax_demo.py)                                                                                                                                                                    | Qt syntax: layouts, form widgets, signals                                                                                                                                                                                                                       |
 | [`examples/tk_syntax_demo.py`](examples/tk_syntax_demo.py)                                                                                                                                                                    | tkinter syntax laid out like a Blender properties editor                                                                                                                                                                                                        |
 | [`examples/kit_hello.c`](examples/kit_hello.c)                                                                                                                                                                                | The C kit: a slider and a button in a native window                                                                                                                                                                                                             |
