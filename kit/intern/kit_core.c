@@ -755,7 +755,7 @@ void bk_set_value_silent(BKNode *n, double v)
   v = bk_clamp_value(n, v);
   if (v != n->value) {
     n->value = v;
-    bk_stale(n); /* a number's width follows its text */
+    bk_relayout(n); /* a number's width follows its text */
     bk_invalidate(n);
   }
 }
@@ -766,7 +766,7 @@ void bk_set_value(BKNode *n, double v)
   if (v != n->value) {
     bk_undo_record(n, 0);
     n->value = v;
-    bk_stale(n);
+    bk_relayout(n);
     bk_changed(n);
   }
 }
