@@ -149,7 +149,7 @@ fn guess(dir: &Path) -> Option<Meta> {
 }
 
 /// A `pyproject.toml` that uses blenderui (not the one of blenderui itself, which is named that).
-fn depends_on_blenderui(pyproject: &str) -> bool {
+pub fn depends_on_blenderui(pyproject: &str) -> bool {
     pyproject.contains("blenderui") && !pyproject.contains("name = \"blenderui\"")
 }
 

@@ -163,6 +163,18 @@ impl JsApp {
         }
         (prod, dev)
     }
+
+    /// The commands that add BUI and the tooling at their newest versions: what `new` installs, and what
+    /// `doctor` runs for a project made with `--no-install` (`install` alone would fetch nothing).
+    fn adds(&self, dir: &Path) -> [Cmd; 2] {
+        let (prod, dev) = self.packages();
+        [self.pm.add(dir, false, &prod), self.pm.add(dir, true, &dev)]
+    }
+}
+
+/// Whether the manifest lists `package` among its dependencies.
+fn depends_on(manifest: &serde_json::Value, package: &str) -> bool {
+    ["dependencies", "devDependencies"].iter().any(|k| manifest[k].get(package).is_some())
 }
 
 impl Flavour for JsApp {
@@ -252,10 +264,10 @@ impl Flavour for JsApp {
     }
 
     fn deps(&self, dir: &Path) -> Vec<Step> {
-        let (prod, dev) = self.packages();
+        let [bui, tooling] = self.adds(dir);
         vec![
-            step("Adding BUI (newest)", self.pm.add(dir, false, &prod)),
-            step("Adding TypeScript, Biome and the rest (newest)", self.pm.add(dir, true, &dev)),
+            step("Adding BUI (newest)", bui),
+            step("Adding TypeScript, Biome and the rest (newest)", tooling),
             // the generated files in Biome's own style, so `lint` starts clean
             step("Formatting the new files", self.pm.run(dir, "fix", &[])),
         ]
@@ -270,6 +282,11 @@ impl Flavour for JsApp {
     }
 
     fn checks(&self, dir: &Path) -> Vec<Check> {
+        let manifest = read(dir, "package.json").and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok());
+        if !manifest.is_some_and(|m| depends_on(&m, "@blender-ui/native")) {
+            let add = Fix::run("adds BUI and the tooling at their newest", self.adds(dir).into());
+            return vec![Check::fail("@blender-ui/native", "not a dependency in package.json", Some(add))];
+        }
         let install = Fix::run("installs the packages", vec![Cmd::new(self.pm.bin(), ["install"]).in_dir(dir)]);
         if !dir.join("node_modules").is_dir() {
             return vec![Check::fail("node_modules", "packages are not installed", Some(install))];
@@ -291,6 +308,7 @@ impl Flavour for JsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::check::Work;
 
     fn app() -> JsApp {
         JsApp { framework: Framework::Vanilla, language: Language::JavaScript, pm: PackageManager::Npm }
@@ -343,6 +361,17 @@ mod tests {
         assert!(tsx.adopt(&dir).is_err(), "tsx cannot import the CommonJS react package as ESM");
         assert!(app().adopt(&dir).is_ok(), "plain JavaScript can");
         assert_eq!(app().adopt(&scratch("none")).unwrap().len(), 0, "no manifest, nothing adopted");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_project_made_without_installing_is_fixed_by_adding_the_packages() {
+        let dir = scratch("noinstall");
+        std::fs::write(dir.join("package.json"), app().package_json("demo")).unwrap();
+        let checks = app().checks(&dir);
+        let fix = checks[0].fix().expect("a fix");
+        let cmds: Vec<String> = fix.work.iter().map(Work::display).collect();
+        assert_eq!(cmds, app().adds(&dir).map(|c| c.display()), "the packages are added, not only installed");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
