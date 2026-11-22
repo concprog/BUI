@@ -62,10 +62,10 @@ impl<S: ItemSource, P: Measurer + ItemPainter> ListState<S, P> {
     /// whether another frame is wanted (easing, or measuring left to do).
     pub(crate) fn sync(&mut self, bounds: Bounds<f32>, scale: f32, window: &mut Window) -> bool {
         self.bounds = bounds;
-        let (w, h) = (bounds.size.width, bounds.size.height);
-        if w < 1.0 || h < 1.0 {
+        if !has_area(bounds) {
             return false;
         }
+        let (w, h) = (bounds.size.width, bounds.size.height);
         if (self.list.view.viewport().0 - w).abs() > f32::EPSILON || (self.list.view.viewport().1 - h).abs() > f32::EPSILON {
             self.list.resize(w, h);
         }
@@ -106,8 +106,14 @@ impl<S: ItemSource, P: Measurer + ItemPainter> ListState<S, P> {
 
     /// Draw the laid-out frame into `p` (logical px, `b` = the element's box).
     pub(crate) fn draw(&self, b: Bounds<f32>, p: &mut crate::Painter, scale: f32) {
-        if self.bounds.size.width >= 1.0 {
+        if has_area(self.bounds) {
             with_sink(p, b.origin, scale, |sink| self.list.paint(sink));
         }
     }
+}
+
+/// Whether a list box of `b` shows anything: under a pixel either way it is
+/// neither laid out ([`ListState::sync`]) nor drawn (its last layout is stale).
+const fn has_area(b: Bounds<f32>) -> bool {
+    b.size.width >= 1.0 && b.size.height >= 1.0
 }
