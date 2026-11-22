@@ -93,23 +93,23 @@ impl Iterator for Tokens<'_> {
     }
 }
 
-/// BUI's own `FetchContent_Declare(...)` in a CMakeLists: the text up to where its tag begins, and the
-/// tag (`v0.5.1`). Other dependencies' blocks have tags of their own, which are not ours to read or move.
+/// The byte range of the tag (`v0.5.1`) in BUI's own `FetchContent_Declare(...)` in a CMakeLists, inside its
+/// quotes if it has them. Other dependencies' blocks have tags of their own, which are not ours to read or move.
 /// `GIT_TAG` counts only as a whole unquoted argument and its value is the next argument, so a commented-out,
 /// quoted or bracket `GIT_TAG` is not the tag.
-fn bui_pin(text: &str) -> Option<(&str, &str)> {
+fn bui_pin(text: &str) -> Option<Range<usize>> {
     let mut tokens = Tokens::new(text).filter(|&(kind, _)| kind != Kind::Comment);
     let mut name: Option<Range<usize>> = None; // the unquoted token just before: a command's name if `(` follows
     while let Some((kind, span)) = tokens.next() {
-        let declare = name.take().filter(|n| {
+        let declare = name.take().is_some_and(|n| {
             kind == Kind::Open
                 && text[n.clone()].eq_ignore_ascii_case("FetchContent_Declare")
                 && text[n.end..span.start].bytes().all(|b| b == b' ' || b == b'\t')
         });
-        let Some(declare) = declare else {
+        if !declare {
             name = (kind == Kind::Unquoted).then_some(span);
             continue;
-        };
+        }
         let (mut depth, mut first, mut ours, mut key, mut tag) = (0u32, true, false, false, None);
         for (kind, span) in tokens.by_ref() {
             match kind {
@@ -132,8 +132,7 @@ fn bui_pin(text: &str) -> Option<(&str, &str)> {
             first = false;
         }
         if ours {
-            let tag = tag?;
-            return Some((&text[declare.start..tag.start], &text[tag]));
+            return tag;
         }
     }
     None
@@ -141,14 +140,20 @@ fn bui_pin(text: &str) -> Option<(&str, &str)> {
 
 /// The release tag `CMakeLists.txt` fetches BUI at.
 fn pinned_tag(dir: &Path) -> Option<String> {
-    bui_pin(&read(dir, "CMakeLists.txt")?).map(|(_, tag)| tag.to_owned())
+    let mut text = read(dir, "CMakeLists.txt")?;
+    let tag = bui_pin(&text)?;
+    text.truncate(tag.end);
+    text.drain(..tag.start);
+    Some(text)
 }
 
-/// The edit that moves BUI's tag to `to`: it spans from BUI's declaration, so it cannot land on another dependency's tag.
+/// The edit that moves BUI's tag to `to`: exactly the bytes `bui_pin` read, so it cannot land on another
+/// dependency's tag or on a commented-out copy of the declaration.
 fn move_tag(dir: &Path, to: &str) -> Option<Work> {
     let text = read(dir, "CMakeLists.txt")?;
-    let (head, tag) = bui_pin(&text)?;
-    Some(Work::Rewrite { path: dir.join("CMakeLists.txt"), from: format!("{head}{tag}"), to: format!("{head}{to}") })
+    let at = bui_pin(&text)?;
+    let was = text[at.clone()].to_owned();
+    Some(Work::Rewrite { path: dir.join("CMakeLists.txt"), at, was, to: to.to_owned() })
 }
 
 impl Flavour for CApp {
@@ -210,6 +215,18 @@ impl Flavour for CApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::check::splice;
+
+    /// BUI's tag in `text`, as `pinned_tag` reads it.
+    fn tag(text: &str) -> Option<&str> {
+        bui_pin(text).map(|at| &text[at])
+    }
+
+    /// `text` up to BUI's tag, and the tag.
+    fn split(text: &str) -> (&str, &str) {
+        let at = bui_pin(text).unwrap();
+        (&text[..at.start], &text[at])
+    }
 
     const TWO: &str = "include(FetchContent)
 FetchContent_Declare(
@@ -225,10 +242,9 @@ fetchcontent_declare(
 
     #[test]
     fn the_tag_is_read_from_buis_own_declaration() {
-        let (_, tag) = bui_pin(TWO).unwrap();
-        assert_eq!(tag, "v0.5.1");
+        assert_eq!(tag(TWO), Some("v0.5.1"));
         let other = TWO.replace("GIT_TAG v0.5.1\n  GIT_SHALLOW", "GIT_TAG v0.6.0\n  GIT_SHALLOW");
-        assert_eq!(bui_pin(&other).unwrap().1, "v0.6.0", "not the first dependency's");
+        assert_eq!(tag(&other).unwrap(), "v0.6.0", "not the first dependency's");
         assert!(bui_pin("FetchContent_Declare(fmt GIT_TAG 1)").is_none());
     }
 
@@ -248,7 +264,7 @@ fetchcontent_declare(
     #[test]
     fn spaces_before_the_parenthesis_and_comments_are_cmake_syntax() {
         let text = "FetchContent_Declare (bui # the \u{e9}tag below\n  GIT_REPOSITORY https://github.com/ppmpreetham/BUI.git\n  # GIT_TAG v0.4.0\n  GIT_TAG v0.5.1)\n";
-        let (head, tag) = bui_pin(text).unwrap();
+        let (head, tag) = split(text);
         assert_eq!(tag, "v0.5.1");
         assert!(head.ends_with("# GIT_TAG v0.4.0\n  GIT_TAG "));
     }
@@ -256,36 +272,37 @@ fetchcontent_declare(
     #[test]
     fn a_hash_in_a_quoted_or_bracket_argument_is_not_a_comment() {
         let text = "FetchContent_Declare(bui SOURCE_DIR \"bui#src \\\" #x\" GIT_TAG v0.5.1)\n";
-        assert_eq!(bui_pin(text).unwrap().1, "v0.5.1");
+        assert_eq!(tag(text).unwrap(), "v0.5.1");
         let text = "FetchContent_Declare(bui #[==[ GIT_TAG v0.1 ]] ]==] GIT_TAG v0.5.1 #[[ x\n GIT_TAG v0.2 ]])\n";
-        assert_eq!(bui_pin(text).unwrap().1, "v0.5.1");
+        assert_eq!(tag(text).unwrap(), "v0.5.1");
         let text = "FetchContent_Declare(bui SOURCE_DIR [[a#b]] GIT_TAG v0.5.1)\n";
-        assert_eq!(bui_pin(text).unwrap().1, "v0.5.1");
+        assert_eq!(tag(text).unwrap(), "v0.5.1");
     }
 
     #[test]
     fn a_comment_between_the_key_and_the_value_is_skipped() {
         let text = "FetchContent_Declare (bui\n  GIT_TAG # pinned \u{e9}\n    v0.5.1)\n";
-        let (head, tag) = bui_pin(text).unwrap();
+        let (head, tag) = split(text);
         assert_eq!(tag, "v0.5.1");
         assert!(head.ends_with("pinned \u{e9}\n    "));
     }
 
     /// `text` with BUI's tag moved to `to` the way `move_tag` rewrites it, checked to read back.
     fn moved(text: &str, to: &str) -> String {
-        let (head, tag) = bui_pin(text).unwrap();
-        let out = text.replacen(&format!("{head}{tag}"), &format!("{head}{to}"), 1);
-        assert_eq!(bui_pin(&out).unwrap().1, to, "the rewrite still parses: {out}");
+        let at = bui_pin(text).unwrap();
+        let mut out = text.to_owned();
+        assert!(splice(&mut out, at.clone(), &text[at], to));
+        assert_eq!(tag(&out).unwrap(), to, "the rewrite still parses: {out}");
         out
     }
 
     #[test]
     fn git_tag_counts_only_as_a_whole_unquoted_argument() {
         let text = "FetchContent_Declare(bui SOURCE_DIR [[bui#src GIT_TAG old]] GIT_TAG v0.5.1)\n";
-        assert_eq!(bui_pin(text).unwrap().1, "v0.5.1");
+        assert_eq!(tag(text).unwrap(), "v0.5.1");
         assert_eq!(moved(text, "v0.9.0"), text.replace("v0.5.1", "v0.9.0"));
         let text = "FetchContent_Declare(bui SOURCE_DIR \"GIT_TAG old\" MY_GIT_TAG x GIT_TAG \"v0.5.1\")\n";
-        assert_eq!(bui_pin(text).unwrap().1, "v0.5.1");
+        assert_eq!(tag(text).unwrap(), "v0.5.1");
         assert_eq!(moved(text, "v0.9.0"), text.replace("v0.5.1", "v0.9.0"));
         assert_eq!(moved(TWO, "v0.9.0"), TWO.replacen("v0.5.1\n  GIT_SHALLOW", "v0.9.0\n  GIT_SHALLOW", 1));
     }
@@ -293,8 +310,31 @@ fetchcontent_declare(
     #[test]
     fn a_parenthesis_in_a_quoted_or_bracket_argument_does_not_end_the_block() {
         let text = "FetchContent_Declare(bui SOURCE_DIR \"a)b\" PATCH_COMMAND [=[x)]=] GIT_TAG v0.5.1)\n";
-        assert_eq!(bui_pin(text).unwrap().1, "v0.5.1");
+        assert_eq!(tag(text).unwrap(), "v0.5.1");
         assert_eq!(moved(text, "v0.9.0"), text.replace("v0.5.1", "v0.9.0"));
+    }
+
+    /// A commented-out copy of the declaration before the real one is the same text up to the tag: the edit
+    /// moves the tag `bui_pin` read, not the first match of that text.
+    #[test]
+    fn a_commented_out_declaration_before_the_real_one_is_left_alone() {
+        const DECL: &str = "FetchContent_Declare(bui\n  GIT_REPOSITORY https://github.com/ppmpreetham/BUI.git\n  GIT_TAG v0.5.1)\n";
+        let line = format!("# {}\n", DECL.trim_end().replace('\n', "\n# "));
+        for old in [format!("#[[\n{DECL}]]\n"), format!("#[==[ {DECL} ]==]\n"), line] {
+            let text = format!("{old}{DECL}");
+            assert_eq!(moved(&text, "v0.9.0"), format!("{old}{}", DECL.replace("v0.5.1", "v0.9.0")), "{text}");
+        }
+        let dir = std::env::temp_dir().join(format!("bui-c-comment-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("CMakeLists.txt"), format!("#[[\n{DECL}]]\n{DECL}")).unwrap();
+        let work = move_tag(&dir, "v0.9.0").unwrap();
+        assert!(work.perform("test").unwrap());
+        let out = std::fs::read_to_string(dir.join("CMakeLists.txt")).unwrap();
+        assert_eq!(out, format!("#[[\n{DECL}]]\n{}", DECL.replace("v0.5.1", "v0.9.0")));
+        std::fs::write(dir.join("CMakeLists.txt"), "project(x)\n").unwrap();
+        assert!(!work.perform("test").unwrap(), "a file that changed since is not edited");
+        assert_eq!(std::fs::read_to_string(dir.join("CMakeLists.txt")).unwrap(), "project(x)\n");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

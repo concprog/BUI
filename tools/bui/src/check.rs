@@ -2,6 +2,7 @@
 //! that makes it right.
 
 use std::fs;
+use std::ops::Range;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -13,7 +14,17 @@ use crate::ui;
 /// One piece of work: a command, or a change to a file that no command can make portably.
 pub enum Work {
     Run(Cmd),
-    Rewrite { path: PathBuf, from: String, to: String },
+    /// Puts `to` in place of the bytes `at` of `path`, which held `was` when the work was made.
+    Rewrite { path: PathBuf, at: Range<usize>, was: String, to: String },
+}
+
+/// `text` with `to` in place of the bytes `at`, if they still are `was` (the file may have changed since it was read).
+pub fn splice(text: &mut String, at: Range<usize>, was: &str, to: &str) -> bool {
+    let fits = text.get(at.clone()) == Some(was);
+    if fits {
+        text.replace_range(at, to);
+    }
+    fits
 }
 
 impl Work {
@@ -21,7 +32,7 @@ impl Work {
     pub fn display(&self) -> String {
         match self {
             Self::Run(c) => c.display(),
-            Self::Rewrite { path, from, to } => format!("edit {}: {from} -> {to}", path.display()),
+            Self::Rewrite { path, was, to, .. } => format!("edit {}: {was} -> {to}", path.display()),
         }
     }
 
@@ -29,9 +40,13 @@ impl Work {
     pub fn perform(&self, title: &str) -> Result<bool> {
         match self {
             Self::Run(cmd) => ui::run(title, cmd),
-            Self::Rewrite { path, from, to } => {
-                let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-                fs::write(path, text.replacen(from.as_str(), to, 1)).with_context(|| format!("writing {}", path.display()))?;
+            Self::Rewrite { path, at, was, to } => {
+                let mut text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+                if !splice(&mut text, at.clone(), was, to) {
+                    ui::error(format_args!("{} changed since it was read: no {was} where it was", path.display()));
+                    return Ok(false);
+                }
+                fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
                 ui::success(title);
                 Ok(true)
             }
