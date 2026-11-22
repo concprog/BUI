@@ -230,19 +230,20 @@ static int l_ctx_render(lua_State *L) {
   int h = (int)luaL_checkinteger(L, 3);
   int full = (int)luaL_optinteger(L, 4, 0);
 
-  /* Create a temporary raster */
-  BuiRaster *r = BUI_raster_create(w, h);
-  if (!r) { lua_pushnil(L); return 1; }
+  /* One raster per context, kept: the context reads its last frame later (the eyedropper),
+   * and BK_render only redraws what changed in it. It takes the new size as it draws. */
+  if (!cud->raster) cud->raster = BUI_raster_create(w, h);
+  if (!cud->raster) { lua_pushnil(L); return 1; }
+  BuiRaster *r = cud->raster;
 
   int regions = BK_render(cud->ctx, r, w, h, full);
 
   /* Return pixel data as a Lua string (BGRA premultiplied) */
-  lua_pushlstring(L, (const char *)BUI_raster_pixels(r), (size_t)w * h * 4);
+  const int rw = BUI_raster_width(r), rh = BUI_raster_height(r);
+  lua_pushlstring(L, (const char *)BUI_raster_pixels(r), (size_t)rw * rh * 4);
   lua_pushinteger(L, regions);
-  lua_pushinteger(L, w);
-  lua_pushinteger(L, h);
-
-  BUI_raster_free(r);
+  lua_pushinteger(L, rw);
+  lua_pushinteger(L, rh);
   return 4;
 }
 
@@ -669,25 +670,28 @@ static void nullify_ctx_nodes(lua_State *L, BKContext *ctx) {
   for (int i = 0; i < ctx->npopups; i++) nullify_popup_subtree(L, ctx->popups[i], 0);
 }
 
-static int l_ctx_free(lua_State *L) {
-  luabui_Context *cud = CHECK_CTX(L, 1);
-  if (cud->ctx) {
-    nullify_ctx_nodes(L, cud->ctx);
-    luabui_unmap_ctx(L, cud->ctx);
-    BK_context_free(cud->ctx); /* releases bind + menu refs via the hooks */
-    cud->ctx = NULL;
-  }
-  return 0;
-}
-
-static int l_ctx_gc(lua_State *L) {
-  luabui_Context *cud = (luabui_Context *)luaL_checkudata(L, 1, LUABUI_CONTEXT_MT);
+/* ctx:free() and the collector: the context (bind and menu refs go through the hooks), then
+ * the raster it rendered into. */
+static void ctx_release(lua_State *L, luabui_Context *cud) {
   if (cud->ctx) {
     nullify_ctx_nodes(L, cud->ctx);
     luabui_unmap_ctx(L, cud->ctx);
     BK_context_free(cud->ctx);
     cud->ctx = NULL;
   }
+  if (cud->raster) {
+    BUI_raster_free(cud->raster);
+    cud->raster = NULL;
+  }
+}
+
+static int l_ctx_free(lua_State *L) {
+  ctx_release(L, CHECK_CTX(L, 1));
+  return 0;
+}
+
+static int l_ctx_gc(lua_State *L) {
+  ctx_release(L, (luabui_Context *)luaL_checkudata(L, 1, LUABUI_CONTEXT_MT));
   return 0;
 }
 

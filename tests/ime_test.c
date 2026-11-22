@@ -168,6 +168,7 @@ int main(void)
 
   BUI_raster_free(g_raster);
   BK_context_free(g_ctx);
+  BK_node_free(col);
   if (!g_fail) {
     printf("ime ok\n");
   }
