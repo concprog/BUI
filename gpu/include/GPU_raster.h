@@ -304,6 +304,11 @@ int BUI_text_add_font(const char *family, int flags, const void *data, int len);
 /* The embedded default UI face (Inter, Blender's UI font: the variable
  * TrueType, read-only, static). NULL when the build left it out. */
 const void *BUI_text_default_font(int *r_len);
+/* Font folder `i` the text engine looks for font files in (BUI_FONT_DIR, then
+ * the platform's), most specific first: written to `r_dir` (`cap` bytes, cut to
+ * fit) and its length returned; 0 past the last. A file `name` there is
+ * "<folder>/<name>", read from that folder alone (not the ones inside it). */
+int BUI_text_font_dir(int i, char *r_dir, int cap);
 
 /* GPU rendering (Direct3D 11 on Windows, OpenGL 3.3 on Linux). A raster in
  * GPU mode records its primitives as instances and draws them on the GPU at

@@ -261,7 +261,7 @@ BK_custom_set(node, &cls, my_data);
 | Undo | `BK_undo(ctx)`, `BK_redo(ctx)`: Blender's <Kbd keys="Ctrl+Z" /> over UI value edits |
 | Number expressions | `BK_eval_number("2*pi", &v)`: Blender's expression evaluator |
 | File browser | `BK_node_new("filebrowser")` in any window, or `BK_file_dialog(...)` for a ready-made dialog |
-| Text | `BUI_text_measure`, `BUI_raster_text`, `BUI_text_add_font` |
+| Text | `BUI_text_measure`, `BUI_raster_text`, `BUI_text_add_font`, `BUI_text_font_dir` |
 | Raster alpha | `BUI_raster_set_alpha`, `BUI_raster_alpha`, `BUI_raster_clear`: premultiplied alpha in a CPU raster; opaque rasters draw the same bytes |
 | Meshes and textures | `BUI_texture_create` / `update` / `free`, `BUI_raster_mesh`: indexed triangles, the same pixels on every renderer |
 | GPU effects | `BK_effect_create` / `free` / `error`, the `BK_ITEM_EFFECT` canvas item, `BUI_raster_effect`: your own GLSL pixel shader on Direct3D 11 and OpenGL, with an image as the fallback |

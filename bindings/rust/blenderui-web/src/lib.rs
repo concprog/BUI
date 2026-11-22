@@ -73,7 +73,7 @@ pub fn start(width: u32, height: u32, scale: f32, build: impl FnOnce(&mut App, W
 pub fn resize(width: u32, height: u32, scale: f32) {
     with_host(|h| {
         let device = ((width as f32 * scale).round() as usize, (height as f32 * scale).round() as usize);
-        h.app.resize_window(h.window, device.0, device.1, scale);
+        h.app.set_canvas_size(h.window, device.0, device.1, scale);
         h.size = device;
     });
 }

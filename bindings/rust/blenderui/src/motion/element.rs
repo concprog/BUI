@@ -270,6 +270,15 @@ impl Elements {
     pub(crate) fn after_layout(&mut self, frame: &crate::layout::Frame, styles: &crate::layout::StyleStore,
                                viewport: (f32, f32)) -> (bool, bool) {
         let flipped = self.flip(frame, styles, viewport);
+        let changed = self.in_view(frame, viewport);
+        self.check_exits();
+        self.build_region(&frame.nodes);
+        (changed, flipped)
+    }
+
+    /// Which elements are in view where `frame` places them now (`whileInView`): true when
+    /// one came into view or went out of it (render again).
+    fn in_view(&mut self, frame: &crate::layout::Frame, viewport: (f32, f32)) -> bool {
         let mut changed = false;
         for k in 0..self.els.live.len() {
             let i = self.els.live[k];
@@ -298,9 +307,7 @@ impl Elements {
                 changed = true;
             }
         }
-        self.check_exits();
-        self.build_region(&frame.nodes);
-        (changed, flipped)
+        changed
     }
 
     /// Forget elements gone this frame (their motions stop).
@@ -322,11 +329,6 @@ impl Elements {
 
     pub(crate) fn has(&self, key: u64) -> bool {
         self.els.keys.contains_key(&key)
-    }
-
-    /// Whether any element has motion state.
-    pub(crate) fn any(&self) -> bool {
-        !self.els.live.is_empty()
     }
 
     /// Element `el` (`key`) with motion `spec` and style `base` this frame:
@@ -601,14 +603,28 @@ impl Elements {
         }
     }
 
+    /// A CSS redraw moved field `f` of element `key` (`css`: its style now):
+    /// the base this element's values go over takes it, so they compose with
+    /// the CSS value (a CSS rotation under a Motion scale) rather than put back
+    /// the last full frame's.
+    pub(crate) fn rebase(&mut self, key: u64, f: Field, css: &Computed) {
+        let Some(&i) = self.els.keys.get(&key) else { return };
+        if let Some(base) = &mut self.els.at(i).base {
+            crate::anim::copy_field(f, css, base);
+        }
+    }
+
     /// A frame where only moving values changed (no render, cascade or
     /// layout): each element's values go over its style again, and boxes
-    /// moved by `x` / `y` move with their contents. False when that can't do
+    /// moved by `x` / `y` move with their contents. `None` when that can't do
     /// (a moving value changes layout, or the frame isn't the one the slots
     /// know): the window then renders as usual. It touches the animated
-    /// elements and what is under them, not the rest of the frame.
+    /// elements and what is under them, not the rest of the frame. Then the
+    /// in-view states where the boxes are now (a translate, this redraw's or
+    /// the CSS one before it, may move one into view): `Some(true)` when one
+    /// changed (render again).
     pub(crate) fn redraw(&mut self, frame: &mut crate::layout::Frame, styles: &mut crate::layout::StyleStore,
-                         viewport: (f32, f32)) -> bool {
+                         viewport: (f32, f32)) -> Option<bool> {
         let Arena { chunks, live, .. } = &mut self.els;
         let at = |i: u32| (i as usize / CHUNK, i as usize % CHUNK);
         // a layout value moving now (also one whose first value came after the last full frame)
@@ -617,7 +633,7 @@ impl Elements {
             let s = &chunks[c][o];
             s.base.is_some() && (s.layout || s.props.iter().any(|p| p.cur.is_some() && !paint_only(p)))
         }) {
-            return false;
+            return None;
         }
         let nodes = &mut frame.nodes;
         let mut moved = false;
@@ -637,7 +653,7 @@ impl Elements {
             let Some(base) = &s.base else { continue };
             let Some(n) = nodes.get(s.node).filter(|n| n.key == s.key) else {
                 self.clear_shift();
-                return false;
+                return None;
             };
             for &(id, mv) in &s.bound {
                 if let Some(p) = s.props.iter_mut().find(|p| p.id == id) {
@@ -709,7 +725,7 @@ impl Elements {
             }
             self.clear_shift();
         }
-        true
+        Some(self.in_view(frame, viewport))
     }
 }
 
