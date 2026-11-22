@@ -97,7 +97,9 @@ VALUE bui_with_arena(VALUE (*fn)(BuiArena *a, void *data), void *data);
 /* -- conversions --------------------------------------------------------------- */
 
 /* Conversions run no Ruby code (no to_str, to_int, to_f), so no handler can free
- * an object between taking its kit pointer and using it. */
+ * an object between taking its kit pointer and using it. What can run Ruby (rb_String's
+ * to_s, FilePathValue's to_path, a menu action's respond_to?) comes before the kit
+ * pointers are taken, or they are taken again after it. */
 /* A String or Symbol as a C string; raises for anything else or an embedded NUL. */
 const char *bui_cstr(VALUE v);
 /* An Integer or Float as an int / a double; TypeError for anything else. */

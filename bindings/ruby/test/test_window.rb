@@ -91,4 +91,17 @@ class TestWindow < Minitest::Test
     owner.free
     assert owner.freed? && owner.context.freed?
   end
+
+  def test_the_root_is_freed_when_freeing_the_context_raises
+    win = BUI::Window.new("Test", width: 200, height: 100, show: false)
+    root = win.root
+    context = win.context
+    context.define_singleton_method(:free) { raise BUI::Error, "refused" }
+    assert_raises(BUI::Error) { win.free }
+    assert win.freed?
+    assert root.freed?, "the root is freed even when the context's free raises"
+  ensure
+    context&.singleton_class&.send(:remove_method, :free)
+    context&.free
+  end
 end

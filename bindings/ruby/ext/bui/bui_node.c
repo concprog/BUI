@@ -810,8 +810,7 @@ static VALUE tree_item_set(VALUE self, VALUE key, VALUE value)
 }
 
 typedef struct ItemValues {
-  BKTreeItem *item;
-  VALUE values;
+  VALUE item, values;
 } ItemValues;
 
 static VALUE item_values_body(BuiArena *a, void *p)
@@ -825,7 +824,8 @@ static VALUE item_values_body(BuiArena *a, void *p)
   for (long i = 0; i < n; i++) {
     list[i] = bui_arena_str(a, rb_String(rb_ary_entry(iv->values, i)));
   }
-  BK_tree_item_set_values(iv->item, list, (int)n);
+  /* after the values: their to_s is Ruby, which may free the item */
+  BK_tree_item_set_values(bui_tree_item_ptr(iv->item), list, (int)n);
   return Qnil;
 }
 
@@ -833,7 +833,7 @@ static VALUE item_values_body(BuiArena *a, void *p)
 static VALUE tree_item_set_values(VALUE self, VALUE values)
 {
   Check_Type(values, T_ARRAY);
-  ItemValues iv = {bui_tree_item_ptr(self), values};
+  ItemValues iv = {self, values};
   bui_with_arena(item_values_body, &iv);
   return values;
 }
@@ -991,17 +991,18 @@ void bui_with_menu(VALUE items, void (*fn)(const BKMenuSpec *items, int n, void 
 
 static void set_menu(const BKMenuSpec *items, int n, void *data)
 {
-  BK_menubutton_set_items((BKNode *)data, items, n);
+  /* looked at again: building the items may run Ruby (an action's respond_to?), which may free it */
+  BK_menubutton_set_items(bui_node_ptr(*(const VALUE *)data), items, n);
 }
 
 /* menu = [items]: the items of a "menubutton" (a "menubar" holds menubuttons). */
 static VALUE node_set_menu(VALUE self, VALUE items)
 {
-  BKNode *n = bui_node_ptr(self);
+  const BKNode *n = bui_node_ptr(self);
   if (strcmp(BK_node_type(n), "menubutton") != 0) {
     rb_raise(rb_eArgError, "a %s node has no menu (a menubutton has)", BK_node_type(n));
   }
-  bui_with_menu(items, set_menu, n);
+  bui_with_menu(items, set_menu, &self);
   return items;
 }
 

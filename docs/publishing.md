@@ -145,7 +145,8 @@ One-time setup:
   `luarocks install blenderui` (it needs CMake and a C compiler). The first upload creates the package.
 - **PyPI:** no secret, see above.
 - **RubyGems:** not in `release.yml` yet: the gem is published by hand. `cd bindings/ruby && rake gem`
-  copies the kit's C sources into `ext/bui/csrc/` (`vendor_c.py --dest`) and builds
+  copies the kit's C sources into `ext/bui/csrc/` (`vendor_c.py --dest`, which empties only a folder it
+  made, marked `.vendored`, or an empty one, and refuses any other) and builds
   `blenderui-<version>.gem`, which builds the kit wherever it is installed (it needs CMake and a C and
   C++20 compiler); `gem push blenderui-<version>.gem`, logged in as the gem's owner. The version is
   `bindings/ruby/lib/bui/version.rb`, which `tools/bump_version.py` moves with the others.

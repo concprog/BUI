@@ -109,13 +109,19 @@ module BUI
     private
 
     # The native window first (it shows the context), then what this window made, even
-    # when the first raises (an error a queued block left).
+    # when the first raises (an error a queued block left), and the root even when the
+    # context's free raises.
     def free_made
       free_native
     ensure
-      @made_context&.free
-      @made_root&.free
+      context = @made_context
+      root = @made_root
       @made_context = @made_root = nil
+      begin
+        context&.free
+      ensure
+        root&.free
+      end
     end
 
     # The extension calls these from the window's callbacks.

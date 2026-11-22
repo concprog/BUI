@@ -483,22 +483,24 @@ static VALUE context_set_clipboard(VALUE self, VALUE text)
 /** \name Menus opened in place
  * \{ */
 
+/* The context and the owner are wrappers, not kit pointers: building the items may run Ruby
+ * (an action's respond_to?), which may free either, so they are looked at after it. */
 typedef struct OpenMenu {
-  BKContext *ctx;
-  BKNode *owner;
-  VALUE title;
+  VALUE ctx, owner, title;
   int x, y, pie;
 } OpenMenu;
 
 static void open_menu(const BKMenuSpec *items, int n, void *data)
 {
   const OpenMenu *m = (const OpenMenu *)data;
+  BKContext *ctx = bui_context_ptr(m->ctx);
+  BKNode *owner = bui_node_ptr_opt(m->owner);
   const char *title = bui_cstr_opt(m->title);
   if (m->pie) {
-    BK_open_pie(m->ctx, items, n, title, m->x, m->y);
+    BK_open_pie(ctx, items, n, title, m->x, m->y);
   }
   else {
-    BK_open_menu(m->ctx, m->owner, items, n, title, m->x, m->y);
+    BK_open_menu(ctx, owner, items, n, title, m->x, m->y);
   }
 }
 
@@ -506,11 +508,12 @@ static void open_menu_call(int argc, VALUE *argv, VALUE self, int pie)
 {
   VALUE items, opts;
   rb_scan_args(argc, argv, "1:", &items, &opts);
-  OpenMenu m = {bui_context_ptr(self), NULL, Qnil, -100000, -100000, pie};
+  OpenMenu m = {self, bui_opt(opts, "owner"), bui_opt(opts, "title"), -100000, -100000, pie};
   VALUE v;
-  m.owner = bui_node_ptr_opt(bui_opt(opts, "owner"));
-  m.title = bui_opt(opts, "title");
-  bui_cstr_opt(m.title); /* checked before the menu is built */
+  /* checked before the menu is built (looked at again after it) */
+  bui_context_ptr(self);
+  bui_node_ptr_opt(m.owner);
+  bui_cstr_opt(m.title);
   if (!NIL_P(v = bui_opt(opts, "x"))) {
     m.x = bui_int(v);
   }

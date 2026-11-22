@@ -74,4 +74,31 @@ class TestBoundaries < Minitest::Test
     ctx&.free
     root&.free
   end
+
+  # Building menu items asks each action whether it responds to call, which is Ruby:
+  # what it frees is looked at after it, not used freed.
+  def test_a_menu_action_that_frees_the_menubutton
+    mb = BUI::Node.new("menubutton")
+    action = Object.new
+    action.define_singleton_method(:respond_to?) { |*| mb.free || true }
+    assert_raises(BUI::FreedError) { mb.menu = [{ text: "x", action: action }] }
+    assert mb.freed?
+  end
+
+  def test_a_menu_action_that_frees_the_context_or_the_owner
+    root = BUI::Node.new("column")
+    owner = BUI::Node.new("button")
+    root << owner
+    ctx = BUI::Context.new(root)
+    frees_owner = Object.new
+    frees_owner.define_singleton_method(:respond_to?) { |*| owner.free || true }
+    assert_raises(BUI::FreedError) { ctx.open_menu([{ text: "x", action: frees_owner }], x: 1, y: 1, owner: owner) }
+    frees_ctx = Object.new
+    frees_ctx.define_singleton_method(:respond_to?) { |*| ctx.free || true }
+    assert_raises(BUI::FreedError) { ctx.open_menu([{ text: "x", action: frees_ctx }], x: 1, y: 1) }
+    assert ctx.freed?
+  ensure
+    ctx&.free
+    root&.free
+  end
 end
