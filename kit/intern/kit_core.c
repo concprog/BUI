@@ -1067,6 +1067,7 @@ static int set_num(BKNode *n, const char *key, double v)
     if (n->cls == &bk_cls_tabs || n->cls == &bk_cls_sidetabs || n->cls == &bk_cls_sidebar) {
       n->current = (int)v;
       bk_relayout(n);
+      bk_invalidate(n);
     }
     else {
       if (!(n->flags & NF_DEFAULT_SET)) { /* the value a widget is made with is its default */
@@ -1144,6 +1145,7 @@ static int set_num(BKNode *n, const char *key, double v)
   if (strcmp(key, "tile") == 0) {
     n->tile = (float)v;
     bk_relayout(n);
+    bk_invalidate(n);
     return 1;
   }
   if (strcmp(key, "height") == 0) {
@@ -1159,11 +1161,13 @@ static int set_num(BKNode *n, const char *key, double v)
   if (strcmp(key, "scroll") == 0) {
     n->scroll = (int)v;
     bk_relayout(n);
+    bk_invalidate(n);
     return 1;
   }
   if (strcmp(key, "scroll_x") == 0) {
     n->scroll_x = (int)v;
     bk_relayout(n);
+    bk_invalidate(n);
     return 1;
   }
   if (strcmp(key, "selmode") == 0) {
@@ -1192,6 +1196,7 @@ static int set_num(BKNode *n, const char *key, double v)
   if (strcmp(key, "font_scale") == 0) {
     n->font_scale = (float)v;
     bk_relayout(n);
+    bk_invalidate(n);
     return 1;
   }
   if (strcmp(key, "cursor") == 0) { /* < 0: back to the class cursor */
@@ -1201,30 +1206,33 @@ static int set_num(BKNode *n, const char *key, double v)
   if (strcmp(key, "current") == 0) {
     n->current = (int)v;
     bk_relayout(n);
+    bk_invalidate(n);
     return 1;
   }
   if (strcmp(key, "icon") == 0) {
     n->icon = (int)v;
     bk_relayout(n);
+    bk_invalidate(n);
     return 1;
   }
   return 0;
 }
 
-/* The notifying setter marks the node stale before its callback runs, which may free the node. */
+/* "set_value" marks the node stale itself, only when the value changes. */
 static bool notifies(const char *key)
 {
   return strcmp(key, "set_value") == 0;
 }
 
-/* Any property can change a measured size, so a write marks the node (and its ancestors) stale. */
+/* Any property can change a measured size, so a write marks the node (and its ancestors) stale.
+ * It does so before the setter runs: a setter can emit a change event (a ramp's "add"), and its
+ * handler may free the node. */
 int BK_set_num(BKNode *n, const char *key, double v)
 {
-  const int done = set_num(n, key, v);
-  if (done && !notifies(key)) {
+  if (!notifies(key)) {
     bk_stale(n);
   }
-  return done;
+  return set_num(n, key, v);
 }
 
 double BK_get_num(BKNode *n, const char *key)
@@ -1400,14 +1408,13 @@ static int set_str(BKNode *n, const char *key, const char *v)
   return 0;
 }
 
-/* Any property can change a measured size, so a write marks the node (and its ancestors) stale. */
+/* As BK_set_num. */
 int BK_set_str(BKNode *n, const char *key, const char *v)
 {
-  const int done = set_str(n, key, v);
-  if (done && !notifies(key)) {
+  if (!notifies(key)) {
     bk_stale(n);
   }
-  return done;
+  return set_str(n, key, v);
 }
 
 const char *BK_get_str(BKNode *n, const char *key)
@@ -1533,14 +1540,11 @@ static int set_strs(BKNode *n, const char *key, const char *const *v, int count)
   return 0;
 }
 
-/* Any property can change a measured size, so a write marks the node (and its ancestors) stale. */
+/* As BK_set_num. */
 int BK_set_strs(BKNode *n, const char *key, const char *const *v, int count)
 {
-  const int done = set_strs(n, key, v, count);
-  if (done) {
-    bk_stale(n);
-  }
-  return done;
+  bk_stale(n);
+  return set_strs(n, key, v, count);
 }
 
 int BK_strs_count(BKNode *n, const char *key)

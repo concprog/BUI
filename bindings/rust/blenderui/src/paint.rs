@@ -985,7 +985,7 @@ fn decoration_reach(c: &Computed) -> f32 {
         return 0.0;
     }
     let offset = if c.underline { c.underline_offset.map_or(0.0, f32::abs) } else { 0.0 };
-    offset + c.decoration_thickness.unwrap_or(0.0)
+    offset + decoration_extent(c.decoration_style, decoration_thickness(c))
 }
 
 /// How far box `i` can paint past its bounds, (across, down); `None` when that is not known.
@@ -999,8 +999,9 @@ fn spill(n: &BoxNode, c: &Computed) -> Option<(f32, f32)> {
         }
         Content::Word { .. } if c.text_shadow.is_none() => Some((c.font_size, c.font_size + decoration_reach(c))),
         Content::Text(t) if (n.taffy.is_some() || n.folded) && c.text_shadow.is_none() => {
+            // each char advances by its width and the letter spacing (paint_text_line)
             let bytes = t.len() as f32 + 1.0;
-            Some((bytes * c.font_size, bytes * c.line_px().max(c.font_size) + decoration_reach(c)))
+            Some((bytes * (c.font_size + c.letter_spacing.max(0.0)), bytes * c.line_px().max(c.font_size) + decoration_reach(c)))
         }
         _ => None,
     }
@@ -1501,7 +1502,7 @@ fn paint_text_line(p: &mut Painter, tc: &mut TextCache, c: &Computed, s: &str, x
     }
     if c.underline || c.line_through || c.overline {
         let w = width.unwrap_or_else(|| tc.width(s.trim_end(), size_draw, flags));
-        let thick = c.decoration_thickness.unwrap_or(size / 14.0).max(1.0);
+        let thick = decoration_thickness(c);
         let dc = c.decoration_color.unwrap_or(c.color);
         if c.underline {
             // `text-underline-offset` is measured from the baseline
@@ -1514,6 +1515,21 @@ fn paint_text_line(p: &mut Painter, tc: &mut TextCache, c: &Computed, s: &str, x
         if c.overline {
             decoration(p, c.decoration_style, x, text::ascent_top(base, size), w, thick, dc);
         }
+    }
+}
+
+/// The thickness a decoration line draws at: `text-decoration-thickness`, else 1/14 em.
+fn decoration_thickness(c: &Computed) -> f32 {
+    c.decoration_thickness.unwrap_or(c.font_size / 14.0).max(1.0)
+}
+
+/// How far from its `y` a `decoration` line of thickness `t` paints, either way: a double line's
+/// second strip ends at 3t, a wave swings 1.5t each way with a t/2 half stroke.
+const fn decoration_extent(style: DecoStyle, t: f32) -> f32 {
+    match style {
+        DecoStyle::Double => 3.0 * t,
+        DecoStyle::Wavy => 2.0 * t,
+        DecoStyle::Solid | DecoStyle::Dotted | DecoStyle::Dashed => t,
     }
 }
 

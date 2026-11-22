@@ -1,6 +1,7 @@
 /* Damage: after a layout change (text that grows, a child added or removed, a node hidden,
- * a panel collapsed, a tab switched) the partial frame equals the same frame drawn in full,
- * and only the changed part is redrawn.
+ * a panel collapsed, a tab switched) or a property that keeps a node's size (an icon, a font
+ * scale) the partial frame equals the same frame drawn in full, and only the changed part is
+ * redrawn. A change handler may free its node from inside a setter.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
@@ -48,6 +49,18 @@ static BKNode *add(BKNode *parent, const char *type, const char *text)
   return n;
 }
 
+/* A change handler that frees its node, as a host's handler may. */
+static BKNode *g_free_on_change;
+
+static void emit(void *data, BKNode *node, int kind, void *ref, double a, double b)
+{
+  (void)data, (void)ref, (void)a, (void)b;
+  if (kind == BK_EV_CHANGE && node == g_free_on_change) {
+    g_free_on_change = NULL;
+    BK_node_free(node);
+  }
+}
+
 #define STEP(what) \
   do { \
     int regions; \
@@ -65,6 +78,7 @@ int main(void)
   BKNode *col = BK_node_new("column");
   BKNode *label = add(col, "label", "Short");
   BKNode *button = add(col, "button", "Button");
+  BKNode *ramp = add(col, "ramp", NULL); /* stop markers at both ends, under the band */
   add(col, "number", "Number");
   BKNode *panel = add(col, "panel", "Panel");
   add(panel, "checkbox", "Inside");
@@ -74,6 +88,7 @@ int main(void)
   add(add(tabs, "column", "Two"), "text", "Second tab");
   add(col, "button", "Last");
   BKContext *ctx = BK_context_new(col);
+  BK_context_set_host(ctx, &(BKHost){.emit = emit});
   BuiRaster *r = BUI_raster_create(W, H);
   BK_render(ctx, r, W, H, 1);
   CHECK(BK_render(ctx, r, W, H, 0) == 0); /* nothing to redraw */
@@ -94,6 +109,14 @@ int main(void)
   STEP("panel opened");
   BK_set_num(tabs, "current", 1);
   STEP("tab switched");
+  BK_set_num(button, "icon", BK_icon_id("ADD"));
+  STEP("icon");
+  BK_set_num(button, "font_scale", 1.5);
+  STEP("font scale");
+  g_free_on_change = ramp;
+  BK_set_num(ramp, "add", 0.5); /* the handler frees the ramp before the setter returns */
+  CHECK(g_free_on_change == NULL);
+  STEP("freed by its change handler");
 
   BUI_raster_free(r);
   BK_context_free(ctx);

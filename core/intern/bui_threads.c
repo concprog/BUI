@@ -1,5 +1,6 @@
 /* Minimal thread-primitive implementation backing BLI_threads.h.
  * SPDX-License-Identifier: GPL-2.0-or-later */
+#include <stdint.h>
 #include <stdlib.h>
 
 #include "BLI_threads.h"
@@ -316,14 +317,14 @@ void BLI_task_parallel_range(const int start,
                              const TaskParallelSettings *settings)
 {
   const TaskParallelTLS tls = {NULL};
-  const int count = stop - start;
+  const int64_t count = (int64_t)stop - start; /* INT_MAX - INT_MIN does not fit an int */
   if (count <= 0) {
     return;
   }
   const int per = settings->min_iter_per_thread > 0 ? settings->min_iter_per_thread : 1;
   int threads = settings->use_threading ? BLI_task_scheduler_num_threads() : 1;
   if (count / per < threads) {
-    threads = count / per > 0 ? count / per : 1;
+    threads = count / per > 0 ? (int)(count / per) : 1;
   }
   if (threads > 1) {
     BLI_mutex_lock(&g_range_mutex);

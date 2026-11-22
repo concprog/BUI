@@ -480,9 +480,10 @@ fn boxes_outside_the_view_leave_the_view_unchanged() {
         let small = open(cx, 200.0, 100.0, Spill { off: 0 });
         let big = open(cx, 700.0, 600.0, Spill { off: 250 });
         let (s, b) = (cx.draw(small.id), cx.draw(big.id));
+        let o = 250 * s.0 / 200; // the offset in device pixels
         for y in 0..s.1 {
             for x in 0..s.0 {
-                assert_eq!(pixel(&s, x, y), pixel(&b, x + 250, y + 250), "pixel ({x}, {y})");
+                assert_eq!(pixel(&s, x, y), pixel(&b, x + o, y + o), "pixel ({x}, {y})");
             }
         }
     });

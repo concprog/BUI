@@ -662,11 +662,12 @@ static int ramp_add(BKNode *n, float pos)
   }
   float c[4];
   BK_ramp_evaluate(n, pos, c);
-  d->pos[d->n] = pos;
-  memcpy(d->col[d->n], c, sizeof(c));
-  d->active = d->n++;
-  ramp_changed(n);
-  return d->active;
+  const int i = d->n++;
+  d->pos[i] = pos;
+  memcpy(d->col[i], c, sizeof(c));
+  d->active = i;
+  ramp_changed(n); /* last: its handler may free the node */
+  return i;
 }
 
 static void ramp_remove(BKNode *n)
@@ -849,7 +850,10 @@ static int ramp_color_set(BKNode *n, const float c[4])
 
 const BKClass bk_cls_ramp = {.name = "ramp",
                              .flags = CLS_INTERACTIVE,
-                             .overhang = 0.28f, /* half the width of a stop marker: it goes out at the ends */
+                             /* half the width of a stop marker: it goes out at the ends. Below the
+                              * band (1.1u + 1) a marker is 1.6 times that tall, so it ends at
+                              * 1.548u + 1, within a pixel of the node's 1.6u: the margin covers it. */
+                             .overhang = 0.28f,
                              .init = ramp_init,
                              .free_ext = ramp_free,
                              .measure = ramp_measure,

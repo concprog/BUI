@@ -89,8 +89,11 @@ All notable changes to **blenderui** (BUI). The format follows
   place on screen is compared with where the last frame drew it, and only widgets that moved, resized, appeared or
   disappeared are damaged, at both places (only a window resize still redraws everything). One label that grows in
   a 1280×1440 column: 0.14 ms instead of 4.5 ms. `BUI_CHECK_DAMAGE=1` draws each partial frame again in full and
-  reports missed pixels; `tests/damage_test.c` checks added, removed, hidden, collapsed and tab-switched widgets.
-- **Kit: a changed node measures again, not the whole tree.** The natural-size cache no longer restarts on every layout. A property write, a value change, an animation step or a child change marks the node and its ancestors stale; theme, scale and font changes still reset every node. A frame where one label changes does about 20% less work (3000 rows, measured by instruction count); a frame where every label changes is unchanged, because each label is measured once either way. No extra memory: `nat_gen` is the mark.
+  reports missed pixels; `tests/damage_test.c` checks added, removed, hidden, collapsed and tab-switched widgets
+  (with the check off, whatever the environment). A property that changes what a widget draws but can keep its
+  place (`icon`, `font_scale`, a tab, `scroll`, a grid view's `tile`, a text area's padding, a file browser's
+  folder or filters) redraws the widget as well.
+- **Kit: a changed node measures again, not the whole tree.** The natural-size cache no longer restarts on every layout. A property write, a value change, an animation step or a child change marks the node and its ancestors stale (a write before its setter runs, since a change handler may free the node); theme, scale and font changes still reset every node. A frame where one label changes does about 20% less work (3000 rows, measured by instruction count); a frame where every label changes is unchanged, because each label is measured once either way. No extra memory: `nat_gen` is the mark.
 - **Rust: layout styles by index, declarations in one allocation.** The layout tree held its shared taffy styles
   behind reference counts; they are entries of a table the tree owns, and a node holds an index (the table drops
   the styles no node uses once it holds 4,096, then twice what it kept, so a page of more live styles does not
@@ -104,7 +107,7 @@ All notable changes to **blenderui** (BUI). The format follows
   changes every frame runs 2.1% fewer instructions and uses 8% less CPU per frame. Nothing changes in the API or
   in what is drawn. A pointer shortcut for equal CSS strings saved 0.35% of the instructions and was not kept.
 - **Rust: boxes outside the view are not painted.** A box whose bounds, with its shadows, outline and (for text) a
-  margin of one em per byte and its underline's offset and thickness, lie outside the window and its clip makes no paint items. Frames with effect layers,
+  margin of one em and its letter spacing per byte and its decorations' offset, thickness and style, lie outside the window and its clip makes no paint items. Frames with effect layers,
   an active text selection, list markers and widgets are painted as before. A page of 3,000 cells in a clipped
   container uses 6% less CPU per frame; a page that fits the window is unchanged. The paint order is kept between
   frames, not allocated again. `boxes_outside_the_view_leave_the_view_unchanged` compares the view with the same

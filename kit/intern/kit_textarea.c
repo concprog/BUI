@@ -737,6 +737,7 @@ static int ta_set_num(BKNode *n, const char *key, double v)
     n->nat_gen = 0;
     ta_reindex(n);
     bk_relayout(n);
+    bk_invalidate(n);
     return 1;
   }
   if (strcmp(key, "max_h") == 0) { /* CSS px */
