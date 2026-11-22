@@ -1219,30 +1219,34 @@ static void drain_wake(void)
   }
 }
 
-/* One turn: events, timers, renders; blocks up to `block_ms` (-1: forever). */
+/* One turn: events, timers, renders; blocks up to `block_ms` (-1: forever, 0: not at all). A wake
+ * is taken on every turn, as Wayland's poll does: a pump, or a turn with events waiting, does not
+ * wait for an idle one. */
 static void turn(double block_ms)
 {
   const int fd = ConnectionNumber(g_dpy);
+  fd_set set;
+  FD_ZERO(&set);
+  FD_SET(fd, &set);
+  int maxfd = fd;
+  if (g_wake_pipe[0] >= 0) {
+    FD_SET(g_wake_pipe[0], &set);
+    maxfd = BK_MAX(maxfd, g_wake_pipe[0]);
+  }
+  struct timeval tv = {0, 0}, *ptv = &tv;
   if (!XPending(g_dpy) && block_ms != 0.0) {
-    fd_set set;
-    FD_ZERO(&set);
-    FD_SET(fd, &set);
-    int maxfd = fd;
-    if (g_wake_pipe[0] >= 0) {
-      FD_SET(g_wake_pipe[0], &set);
-      maxfd = BK_MAX(maxfd, g_wake_pipe[0]);
-    }
-    struct timeval tv, *ptv = NULL;
     if (block_ms > 0.0) {
       tv.tv_sec = (long)(block_ms / 1000.0);
       tv.tv_usec = (long)(fmod(block_ms, 1000.0) * 1000.0);
-      ptv = &tv;
     }
-    if (select(maxfd + 1, &set, NULL, NULL, ptv) > 0 && g_wake_pipe[0] >= 0 &&
-        FD_ISSET(g_wake_pipe[0], &set))
-    {
-      drain_wake();
+    else {
+      ptv = NULL;
     }
+  }
+  if (select(maxfd + 1, &set, NULL, NULL, ptv) > 0 && g_wake_pipe[0] >= 0 &&
+      FD_ISSET(g_wake_pipe[0], &set))
+  {
+    drain_wake();
   }
   while (XPending(g_dpy)) {
     XEvent ev;
