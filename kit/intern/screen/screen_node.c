@@ -551,7 +551,7 @@ int bk_region_set_num(BKNode *n, const char *key, double v)
     return 0;
   }
   if (strcmp(key, "size") == 0) {
-    if (v < 0 || v > 10000 || r->alignment == RGN_ALIGN_FLOAT) {
+    if (!(v >= 0 && v <= 10000) || r->alignment == RGN_ALIGN_FLOAT) { /* NaN fails too */
       return -1;
     }
     if (region_axis_x(r)) {
