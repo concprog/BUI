@@ -378,6 +378,8 @@ void area_update_region_sizes(BKNode *area_node, BKNode *screen_node, const rcti
 int area_max_regionsize(const BKArea *area, BKNode *scale_region, AZEdge edge);
 void region_toggle_hidden(BKNode *area_node, BKNode *region_node);
 void region_flip(BKNode *area_node, BKNode *region_node);
+/* a region was resized, hidden or flipped: relayout, BK_EV_RESIZE on it, BK_EV_CHANGE */
+void region_changed(BKNode *area_node, BKNode *region_node);
 AZone *area_actionzone_find_xy(BKArea *area, int x, int y);
 bool region_is_hidden(const BKRegion *region);
 /* Area coordinates <-> node (window) coordinates. `space` is the screen, or the lone area. */

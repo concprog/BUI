@@ -772,7 +772,7 @@ int area_max_regionsize(const BKArea *area, BKNode *scale_node, const AZEdge edg
   return dist;
 }
 
-static void region_changed(BKNode *area_node, BKNode *region_node)
+void region_changed(BKNode *area_node, BKNode *region_node)
 {
   const BKRegion *region = region_node->rgn;
   bk_relayout(area_node);

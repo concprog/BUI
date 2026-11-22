@@ -1254,15 +1254,7 @@ int area_op_release(BKNode *area_node, BKEvent *e)
       region_scale_validate_size(area);
     }
   }
-  BKNode *region_node = area->rmd.region;
-  const int size = edge_is_x(area->rmd.edge) ? region->sizex : region->sizey;
-  bk_relayout(area_node);
-  bk_invalidate(area_node);
-  BKNode *screen_node = AREA_SCREEN(area_node); /* first: a resize handler may close the area */
-  bk_emit(region_node, BK_EV_RESIZE, NULL, size, region_is_hidden(region));
-  if (screen_node) {
-    bk_emit(screen_node, BK_EV_CHANGE, NULL, 0, 0);
-  }
+  region_changed(area_node, area->rmd.region);
   return 1;
 }
 
