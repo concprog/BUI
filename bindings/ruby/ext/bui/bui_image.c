@@ -51,8 +51,8 @@ static VALUE image_wrap(VALUE klass, BKImBuf *ib)
 
 static void max_size(VALUE max_w, VALUE max_h, int *r_w, int *r_h)
 {
-  *r_w = NIL_P(max_w) ? 0 : NUM2INT(max_w);
-  *r_h = NIL_P(max_h) ? 0 : NUM2INT(max_h);
+  *r_w = NIL_P(max_w) ? 0 : bui_int(max_w);
+  *r_h = NIL_P(max_h) ? 0 : bui_int(max_h);
   if (*r_w < 0 || *r_h < 0) {
     rb_raise(rb_eArgError, "a size limit of %d x %d (0: none)", *r_w, *r_h);
   }
@@ -90,11 +90,11 @@ static VALUE image_s_from_rgba(int argc, VALUE *argv, VALUE klass)
   VALUE data, width, height, stride;
   rb_scan_args(argc, argv, "31", &data, &width, &height, &stride);
   StringValue(data);
-  const long w = NUM2INT(width), h = NUM2INT(height);
+  const long w = bui_int(width), h = bui_int(height);
   if (w <= 0 || h <= 0 || w > INT_MAX / 4) {
     rb_raise(rb_eArgError, "an image of %ld x %ld", w, h);
   }
-  const long s = NIL_P(stride) ? w * 4 : NUM2INT(stride);
+  const long s = NIL_P(stride) ? w * 4 : bui_int(stride);
   const long len = RSTRING_LEN(data);
   /* every row holds its pixels and the last ends inside the data (divided: no overflow) */
   if (s < w * 4 || len < w * 4 || (len - w * 4) / s < h - 1) {
@@ -137,7 +137,7 @@ static VALUE image_delay(VALUE self, VALUE frame)
 {
   const BKImBuf *ib = bui_image_ptr(self);
   int w, h;
-  const int f = NUM2INT(frame), n = BK_imbuf_size(ib, &w, &h);
+  const int f = bui_int(frame), n = BK_imbuf_size(ib, &w, &h);
   if (f < 0 || f >= n) {
     rb_raise(rb_eIndexError, "no frame %d of %d", f, n);
   }
@@ -151,7 +151,7 @@ static VALUE image_rgba(int argc, VALUE *argv, VALUE self)
   rb_scan_args(argc, argv, "01", &frame);
   const BKImBuf *ib = bui_image_ptr(self);
   int w, h;
-  const int n = BK_imbuf_size(ib, &w, &h), f = NIL_P(frame) ? 0 : NUM2INT(frame);
+  const int n = BK_imbuf_size(ib, &w, &h), f = NIL_P(frame) ? 0 : bui_int(frame);
   if (f < 0 || f >= n) {
     rb_raise(rb_eIndexError, "no frame %d of %d", f, n);
   }

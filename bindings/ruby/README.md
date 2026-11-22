@@ -74,5 +74,12 @@ and an exception comes out of the call that led to it, never through the kit's
 C frames. The window loop gives up the GVL while it waits: other threads run,
 and an interrupt stops the loop.
 
+The kit belongs to the thread that loaded the gem: calls from another raise
+`BUI::Error` (use `BUI.on_main` or `Window#update`; decoding a `BUI::Image` works
+anywhere). Arguments are converted without running Ruby code (`to_str`, `to_int`
+are not called), so a handler cannot free an object halfway through a call. A
+context keeps the raster it last rendered into as its frame for the eyedropper,
+and `Raster#free` refuses while it does.
+
 Not there yet: video, custom-drawn nodes, the animation engine, Dear ImGui.
 The gem is not Ractor-safe (the kit has one thread).

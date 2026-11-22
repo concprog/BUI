@@ -51,4 +51,31 @@ class TestWindow < Minitest::Test
     BUI.run
     assert win.freed?
   end
+
+  def test_a_failing_builder_leaves_nothing
+    before = BUI.references
+    assert_raises(ArgumentError) do
+      BUI::Window.new("Test", width: 200, height: 100) { button "x", no_such_key: 1 }
+    end
+    assert_equal before, BUI.references
+  end
+
+  def test_a_root_you_pass_stays_yours
+    root = BUI::Node.new("column")
+    win = BUI::Window.new("Test", width: 200, height: 100, root: root, show: false)
+    win.free
+    refute root.freed?
+  ensure
+    root&.free
+  end
+
+  def test_a_shared_context_outlives_the_borrower
+    owner = BUI::Window.new("Owner", width: 200, height: 100, show: false)
+    borrower = BUI::Window.new("Borrower", width: 200, height: 100, context: owner.context, show: false)
+    assert_raises(BUI::Error) { owner.free } # nothing freed: it can be tried again
+    refute owner.freed?
+    borrower.free
+    owner.free
+    assert owner.freed? && owner.context.freed?
+  end
 end

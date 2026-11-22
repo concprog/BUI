@@ -58,6 +58,11 @@ void bui_ref_remove_unused(uintptr_t id);
 void bui_ref_retain(void *id);
 void bui_ref_release(void *id);
 
+/* -- the kit's thread ------------------------------------------------------------
+ * Raises BUI::Error on any other thread. Every entry point that reaches the kit calls it,
+ * through the handle helpers below or directly. */
+void bui_kit_thread(void);
+
 /* -- running Ruby from the kit's callbacks (bui_ext.c) ------------------------- */
 
 /* Runs fn(data) with the GVL and every exception caught; the first is kept for
@@ -91,8 +96,13 @@ VALUE bui_with_arena(VALUE (*fn)(BuiArena *a, void *data), void *data);
 
 /* -- conversions --------------------------------------------------------------- */
 
+/* Conversions run no Ruby code (no to_str, to_int, to_f), so no handler can free
+ * an object between taking its kit pointer and using it. */
 /* A String or Symbol as a C string; raises for anything else or an embedded NUL. */
 const char *bui_cstr(VALUE v);
+/* An Integer or Float as an int / a double; TypeError for anything else. */
+int bui_int(VALUE v);
+double bui_num(VALUE v);
 /* The same, NULL for nil. */
 const char *bui_cstr_opt(VALUE v);
 /* A UTF-8 String, nil for NULL. */
@@ -106,8 +116,8 @@ VALUE bui_rect_new(const int r[4]);
 
 /* -- the wrapped handles ------------------------------------------------------- */
 
-/* The kit handle of a wrapper; raises BUI::FreedError once it was freed and
- * TypeError for another class. */
+/* The kit handle of a wrapper; raises BUI::FreedError once it was freed, TypeError
+ * for another class, and BUI::Error off the kit's thread. */
 BKNode *bui_node_ptr(VALUE v);
 BKNode *bui_node_ptr_opt(VALUE v); /* NULL for nil */
 BKContext *bui_context_ptr(VALUE v);

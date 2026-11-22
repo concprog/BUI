@@ -61,6 +61,7 @@ BKNode *bui_node_ptr(VALUE v)
   if (!n) {
     rb_raise(bui_eFreed, "the node was freed");
   }
+  bui_kit_thread();
   return n;
 }
 
@@ -78,6 +79,7 @@ BKNode *bui_node_ptr_opt(VALUE v)
 /* BUI::Node.new("button"): a node of a type the kit knows (BUI_kit.h lists them). */
 static VALUE node_initialize(VALUE self, VALUE type)
 {
+  bui_kit_thread();
   if (RTYPEDDATA_DATA(self)) {
     rb_raise(rb_eRuntimeError, "the node is made already");
   }
@@ -100,6 +102,7 @@ static VALUE node_free(VALUE self)
 {
   BKNode *n = (BKNode *)RTYPEDDATA_DATA(self);
   if (n) {
+    bui_kit_thread();
     BK_node_free(n);
   }
   return Qnil;
@@ -117,7 +120,7 @@ static VALUE node_add(int argc, VALUE *argv, VALUE self)
   VALUE child, index;
   rb_scan_args(argc, argv, "11", &child, &index);
   BKNode *p = bui_node_ptr(self), *c = bui_node_ptr(child);
-  if (!BK_node_add(p, c, NIL_P(index) ? -1 : NUM2INT(index))) {
+  if (!BK_node_add(p, c, NIL_P(index) ? -1 : bui_int(index))) {
     rb_raise(rb_eArgError, "a node cannot go under itself");
   }
   return self;
@@ -146,7 +149,7 @@ static VALUE node_child_count(VALUE self)
 
 static VALUE node_child(VALUE self, VALUE i)
 {
-  return bui_node_wrap(BK_node_child(bui_node_ptr(self), NUM2INT(i)));
+  return bui_node_wrap(BK_node_child(bui_node_ptr(self), bui_int(i)));
 }
 
 static VALUE node_children(VALUE self)
@@ -203,26 +206,33 @@ static VALUE node_relayout(VALUE self)
  * false for a key the node does not know.
  * \{ */
 
+/* A setter's answer, after the handlers a notifying key ("set_value") ran: their
+ * error comes out of the setter, and what they left for later runs. */
+static VALUE set_result(int known)
+{
+  bui_settle();
+  return known ? Qtrue : Qfalse;
+}
+
 static VALUE node_set_num(VALUE self, VALUE key, VALUE value)
 {
-  BKNode *n = bui_node_ptr(self);
-  const double v = NUM2DBL(value);
-  return BK_set_num(n, bui_cstr(key), v) ? Qtrue : Qfalse;
+  const double v = bui_num(value);
+  const char *k = bui_cstr(key);
+  return set_result(BK_set_num(bui_node_ptr(self), k, v));
 }
 
 static VALUE node_set_str(VALUE self, VALUE key, VALUE value)
 {
-  BKNode *n = bui_node_ptr(self);
-  const char *k = bui_cstr(key);
-  return BK_set_str(n, k, bui_cstr(value)) ? Qtrue : Qfalse;
+  const char *k = bui_cstr(key), *v = bui_cstr(value);
+  return set_result(BK_set_str(bui_node_ptr(self), k, v));
 }
 
 static VALUE node_set_color(VALUE self, VALUE key, VALUE value)
 {
-  BKNode *n = bui_node_ptr(self);
   float c[4];
   bui_rgba(value, c);
-  return BK_set_color(n, bui_cstr(key), c) ? Qtrue : Qfalse;
+  const char *k = bui_cstr(key);
+  return set_result(BK_set_color(bui_node_ptr(self), k, c));
 }
 
 typedef struct SetStrs {
@@ -297,14 +307,14 @@ static VALUE node_strs(VALUE self, VALUE key)
 static VALUE node_geometry(VALUE self, VALUE manager, VALUE key, VALUE value)
 {
   BKNode *n = bui_node_ptr(self);
-  const int m = NUM2INT(manager);
+  const int m = bui_int(manager);
   if (m < BK_GEOM_PACK || m > BK_GEOM_PLACE) {
     rb_raise(rb_eArgError, "no layout manager %d", m);
   }
   if (BK_geom_manager(n) != m) {
     BK_geom_set_manager(n, m);
   }
-  const double v = NUM2DBL(value);
+  const double v = bui_num(value);
   BK_geom_set(n, bui_cstr(key), v);
   return self;
 }
@@ -337,9 +347,9 @@ static VALUE node_grid_weight(int argc, VALUE *argv, VALUE self)
   }
   BK_frame_grid_weight(bui_node_ptr(self),
                        column,
-                       NUM2INT(index),
-                       NUM2DBL(weight),
-                       NIL_P(minsize) ? 0 : NUM2INT(minsize));
+                       bui_int(index),
+                       bui_num(weight),
+                       NIL_P(minsize) ? 0 : bui_int(minsize));
   return self;
 }
 
@@ -371,27 +381,29 @@ static VALUE node_set_image_source(int argc, VALUE *argv, VALUE self)
 {
   VALUE src, fit;
   rb_scan_args(argc, argv, "11", &src, &fit);
-  BKNode *n = bui_node_ptr(self);
+  FilePathValue(src); /* may run to_path: before the node is looked at */
   const int f = fit_of(fit);
-  FilePathValue(src);
-  BK_node_set_image_source(n, bui_cstr(src), f);
+  rb_check_frozen(self);
   rb_ivar_set(self, id_image, Qnil);
+  BK_node_set_image_source(bui_node_ptr(self), bui_cstr(src), f);
   return self;
 }
 
 /* image = BUI::Image or nil: shown until replaced; the node keeps the image alive. */
 static VALUE node_set_image(VALUE self, VALUE image)
 {
+  const BKImBuf *ib = NIL_P(image) ? NULL : bui_image_ptr(image);
   BKNode *n = bui_node_ptr(self);
-  BK_node_set_imbuf(n, NIL_P(image) ? NULL : bui_image_ptr(image));
+  /* the node keeps the image before the kit borrows its pixels */
   rb_ivar_set(self, id_image, image);
+  BK_node_set_imbuf(n, ib);
   return image;
 }
 
 /* image_frame = n: an animated image plays (0) or shows frame n - 1. */
 static VALUE node_set_image_frame(VALUE self, VALUE frame)
 {
-  BK_node_set_image_frame(bui_node_ptr(self), NUM2INT(frame));
+  BK_node_set_image_frame(bui_node_ptr(self), bui_int(frame));
   return frame;
 }
 
@@ -449,7 +461,7 @@ static void item_fill(BuiArena *a, VALUE h, BKCanvasItem *it)
 {
   Check_Type(h, T_HASH);
   VALUE v;
-  it->id = NIL_P(v = item_opt(h, id_k_id)) ? 0 : NUM2INT(v);
+  it->id = NIL_P(v = item_opt(h, id_k_id)) ? 0 : bui_int(v);
   it->type = item_type_of(item_opt(h, id_k_type));
   if (!NIL_P(v = item_opt(h, id_k_coords))) {
     Check_Type(v, T_ARRAY);
@@ -459,7 +471,7 @@ static void item_fill(BuiArena *a, VALUE h, BKCanvasItem *it)
     }
     float *coords = (float *)bui_arena_alloc(a, sizeof(float) * (size_t)n);
     for (long i = 0; i < n; i++) {
-      coords[i] = (float)NUM2DBL(rb_ary_entry(v, i));
+      coords[i] = (float)bui_num(rb_ary_entry(v, i));
     }
     it->coords = coords;
     it->ncoords = (int)n;
@@ -470,14 +482,14 @@ static void item_fill(BuiArena *a, VALUE h, BKCanvasItem *it)
   if (!NIL_P(v = item_opt(h, id_k_outline))) {
     bui_rgba(v, it->outline);
   }
-  it->width = NIL_P(v = item_opt(h, id_k_width)) ? 1.0f : (float)NUM2DBL(v);
-  it->radius = NIL_P(v = item_opt(h, id_k_radius)) ? 0.0f : (float)NUM2DBL(v);
-  it->size = NIL_P(v = item_opt(h, id_k_size)) ? 0.0f : (float)NUM2DBL(v);
-  it->start = NIL_P(v = item_opt(h, id_k_start)) ? 0.0f : (float)NUM2DBL(v);
-  it->extent = NIL_P(v = item_opt(h, id_k_extent)) ? 0.0f : (float)NUM2DBL(v);
-  it->anchor = NIL_P(v = item_opt(h, id_k_anchor)) ? 0 : NUM2INT(v);
+  it->width = NIL_P(v = item_opt(h, id_k_width)) ? 1.0f : (float)bui_num(v);
+  it->radius = NIL_P(v = item_opt(h, id_k_radius)) ? 0.0f : (float)bui_num(v);
+  it->size = NIL_P(v = item_opt(h, id_k_size)) ? 0.0f : (float)bui_num(v);
+  it->start = NIL_P(v = item_opt(h, id_k_start)) ? 0.0f : (float)bui_num(v);
+  it->extent = NIL_P(v = item_opt(h, id_k_extent)) ? 0.0f : (float)bui_num(v);
+  it->anchor = NIL_P(v = item_opt(h, id_k_anchor)) ? 0 : bui_int(v);
   it->fit = fit_of(item_opt(h, id_k_fit));
-  it->frame = NIL_P(v = item_opt(h, id_k_frame)) ? 0 : NUM2INT(v);
+  it->frame = NIL_P(v = item_opt(h, id_k_frame)) ? 0 : bui_int(v);
   it->hidden = RTEST(item_opt(h, id_k_hidden));
   it->no_hit = RTEST(item_opt(h, id_k_no_hit));
   it->text_flags = (RTEST(item_opt(h, id_k_bold)) ? BUI_FONT_BOLD : 0) |
@@ -494,7 +506,7 @@ static void item_fill(BuiArena *a, VALUE h, BKCanvasItem *it)
     StringValue(v);
     VALUE size = item_opt(h, id_k_image_size);
     Check_Type(size, T_ARRAY);
-    const int w = NUM2INT(rb_ary_entry(size, 0)), hgt = NUM2INT(rb_ary_entry(size, 1));
+    const int w = bui_int(rb_ary_entry(size, 0)), hgt = bui_int(rb_ary_entry(size, 1));
     if (w <= 0 || hgt <= 0 || (long)w > RSTRING_LEN(v) / 4 / hgt) {
       rb_raise(rb_eArgError, "rgba holds fewer than %d x %d pixels", w, hgt);
     }
@@ -507,7 +519,7 @@ static void item_fill(BuiArena *a, VALUE h, BKCanvasItem *it)
 }
 
 typedef struct CanvasCall {
-  BKNode *node;
+  VALUE node;
   VALUE item;
   int how, index; /* 0 set, 1 add, 2 put at index */
 } CanvasCall;
@@ -518,15 +530,16 @@ static VALUE canvas_body(BuiArena *a, void *p)
   BKCanvasItem it;
   memset(&it, 0, sizeof(it));
   item_fill(a, c->item, &it);
+  BKNode *n = bui_node_ptr(c->node);
   switch (c->how) {
     case 0:
-      BK_canvas_set_item(c->node, &it);
+      BK_canvas_set_item(n, &it);
       break;
     case 1:
-      BK_canvas_add_item(c->node, &it);
+      BK_canvas_add_item(n, &it);
       break;
     default:
-      BK_canvas_put_item(c->node, c->index, &it);
+      BK_canvas_put_item(n, c->index, &it);
       break;
   }
   return Qnil;
@@ -534,7 +547,7 @@ static VALUE canvas_body(BuiArena *a, void *p)
 
 static void canvas_call(VALUE self, VALUE item, int how, int index)
 {
-  CanvasCall c = {bui_node_ptr(self), item, how, index};
+  CanvasCall c = {self, item, how, index};
   bui_with_arena(canvas_body, &c);
 }
 
@@ -557,7 +570,7 @@ static VALUE node_canvas_add(VALUE self, VALUE item)
 static VALUE node_canvas_put(VALUE self, VALUE index, VALUE item)
 {
   BKNode *n = bui_node_ptr(self);
-  const int i = NUM2INT(index);
+  const int i = bui_int(index);
   if (i < 0 || i > BK_canvas_count(n)) {
     rb_raise(rb_eIndexError, "index %d outside 0..%d", i, BK_canvas_count(n));
   }
@@ -567,14 +580,14 @@ static VALUE node_canvas_put(VALUE self, VALUE index, VALUE item)
 
 static VALUE node_canvas_truncate(VALUE self, VALUE count)
 {
-  BK_canvas_truncate(bui_node_ptr(self), NUM2INT(count));
+  BK_canvas_truncate(bui_node_ptr(self), bui_int(count));
   return self;
 }
 
 /* canvas_delete(id), or canvas_delete(:all). */
 static VALUE node_canvas_delete(VALUE self, VALUE id)
 {
-  BK_canvas_delete(bui_node_ptr(self), id == ID2SYM(rb_intern("all")) ? -1 : NUM2INT(id));
+  BK_canvas_delete(bui_node_ptr(self), id == ID2SYM(rb_intern("all")) ? -1 : bui_int(id));
   return self;
 }
 
@@ -582,7 +595,7 @@ static VALUE node_canvas_raise(int argc, VALUE *argv, VALUE self)
 {
   VALUE id, to_top;
   rb_scan_args(argc, argv, "11", &id, &to_top);
-  BK_canvas_raise(bui_node_ptr(self), NUM2INT(id), NIL_P(to_top) || RTEST(to_top));
+  BK_canvas_raise(bui_node_ptr(self), bui_int(id), NIL_P(to_top) || RTEST(to_top));
   return self;
 }
 
@@ -599,7 +612,7 @@ static VALUE node_canvas_count(VALUE self)
 
 static int text_offset(BKNode *n, VALUE offset)
 {
-  const int o = NUM2INT(offset);
+  const int o = bui_int(offset);
   const char *text = BK_get_str(n, "value");
   const long len = text ? (long)strlen(text) : 0;
   if (o < 0 || o > len) {
@@ -716,6 +729,7 @@ BKTreeItem *bui_tree_item_ptr(VALUE v)
   if (!t->item) {
     rb_raise(bui_eError, "the tree item is not initialized");
   }
+  bui_kit_thread();
   return t->item;
 }
 
@@ -733,11 +747,12 @@ static VALUE tree_item_initialize(int argc, VALUE *argv, VALUE self)
 {
   VALUE label, icon;
   rb_scan_args(argc, argv, "11", &label, &icon);
+  bui_kit_thread();
   TreeItem *t = (TreeItem *)rb_check_typeddata(self, &tree_item_type);
   if (t->item) {
     rb_raise(rb_eRuntimeError, "the tree item is made already");
   }
-  const int ic = NIL_P(icon) ? 0 : NUM2INT(icon);
+  const int ic = NIL_P(icon) ? 0 : bui_int(icon);
   t->item = BK_tree_item_new(bui_cstr(label), ic);
   t->id = bui_ref_new(self, BUI_REF_KEEP);
   BK_tree_item_set_ref(t->item, (void *)t->id);
@@ -788,7 +803,7 @@ static VALUE tree_item_get(VALUE self, VALUE key)
 static VALUE tree_item_set(VALUE self, VALUE key, VALUE value)
 {
   BKTreeItem *it = bui_tree_item_ptr(self);
-  const double v = value == Qtrue ? 1.0 : value == Qfalse ? 0.0 : NUM2DBL(value);
+  const double v = value == Qtrue ? 1.0 : value == Qfalse ? 0.0 : bui_num(value);
   BK_tree_item_set(it, bui_cstr(key), v);
   return value;
 }
@@ -916,7 +931,7 @@ static BKMenuSpec *menu_specs(BuiArena *a, MenuBuild *mb, VALUE items, int depth
     Check_Type(h, T_HASH);
     VALUE v;
     s->text = bui_arena_str(a, rb_hash_lookup(h, ID2SYM(id_m_text)));
-    s->icon = NIL_P(v = rb_hash_lookup(h, ID2SYM(id_m_icon))) ? 0 : NUM2INT(v);
+    s->icon = NIL_P(v = rb_hash_lookup(h, ID2SYM(id_m_icon))) ? 0 : bui_int(v);
     s->shortcut = bui_arena_str(a, rb_hash_lookup(h, ID2SYM(id_m_shortcut)));
     if (!NIL_P(v = rb_hash_lookup(h, ID2SYM(id_m_checked)))) {
       s->checked = RTEST(v) ? 1 : 0;
@@ -1004,7 +1019,7 @@ static VALUE node_menu_rows(VALUE self)
 static VALUE node_menu_row_rect(VALUE self, VALUE i)
 {
   BKNode *n = bui_node_ptr(self);
-  const int row = NUM2INT(i);
+  const int row = bui_int(i);
   if (row < 0 || row >= BK_menu_row_count(n)) {
     rb_raise(rb_eIndexError, "no row %d", row);
   }

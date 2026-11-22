@@ -53,7 +53,9 @@ if(RUBY_EXT_OUT)
   get_filename_component(_ext_name "${RUBY_EXT_OUT}" NAME)
   get_filename_component(_ext_suffix "${RUBY_EXT_OUT}" LAST_EXT)
   set_target_properties(bui_ext PROPERTIES SUFFIX "${_ext_suffix}")
-  add_custom_command(TARGET bui_ext POST_BUILD
-                     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:bui_ext> "${RUBY_EXT_OUT}"
-                     COMMENT "bui_ruby: ${_ext_name}")
+  # copied on every build, not only when the module relinks: a `make clean` removes the copy
+  add_custom_target(bui_ext_export ALL
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:bui_ext> "${RUBY_EXT_OUT}"
+                    DEPENDS bui_ext
+                    COMMENT "bui_ruby: ${_ext_name}")
 endif()

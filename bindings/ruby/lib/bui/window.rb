@@ -9,7 +9,8 @@ module BUI
   #   BUI.run
   #
   # With no root: or context: it makes a "column" root and a context, and frees
-  # them with the window. The block builds into the root (BUI::Builder).
+  # them with the window; with root: it makes and frees only the context (the root
+  # stays yours). The block builds into the root (BUI::Builder).
   class Window
     attr_reader :context
 
@@ -18,22 +19,20 @@ module BUI
       raise ArgumentError, "a window shows a root or a context, not both" if root && context
 
       @timers = {}
-      made_root = root || context ? nil : Node.new("column")
-      @owns = context.nil?
-      context ||= Context.new(root || made_root)
+      # what this window made is freed with it, and only that
+      @made_root = root || context ? nil : Node.new("column")
       begin
-        open_native(context, title.to_s, width, height)
-      rescue StandardError
-        if @owns
-          context.free
-          made_root&.free
-        end
+        @made_context = context ? nil : Context.new(root || @made_root)
+        open_native(context || @made_context, title.to_s, width, height)
+        use_gpu if gpu
+        wm("minsize", *min_size) if min_size
+        Builder.new(@context.root).build(&build) if build
+        show if show
+      rescue Exception # rubocop:disable Lint/RescueException
+        free_native # the native window first: it shows the context
+        release_made
         raise
       end
-      use_gpu if gpu
-      wm("minsize", *min_size) if min_size
-      Builder.new(context.root).build(&build) if build
-      show if show
     end
 
     def root = @context.root
@@ -83,8 +82,12 @@ module BUI
 
     # Frees the window, and the context and tree it made. From inside a callback
     # it closes now and is freed once the callback returns. A second free does nothing.
+    # A window whose context another window shows too is freed after that one.
     def free
       return if freed? || @freeing
+      if @made_context && @made_context.send(:windows_showing) > 1
+        raise Error, "another window shows this window's context: free that window first"
+      end
 
       if BUI.in_callback?
         @freeing = true
@@ -95,12 +98,8 @@ module BUI
         end
         return
       end
-      root = @context.root
       free_native
-      return unless @owns
-
-      @context.free
-      root&.free
+      release_made
     end
 
     def inspect
@@ -108,6 +107,12 @@ module BUI
     end
 
     private
+
+    def release_made
+      @made_context&.free
+      @made_root&.free
+      @made_context = @made_root = nil
+    end
 
     # The extension calls these from the window's callbacks.
 

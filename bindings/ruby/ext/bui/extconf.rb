@@ -76,7 +76,7 @@ File.write("Makefile", <<~MAKE)
   DESTDIR =
 
   all:
-  \t$(CMAKE) --build build --config Release --target bui_ext --parallel
+  \t$(CMAKE) --build build --config Release --target bui_ext_export --parallel
 
   install: all
   \t$(CMAKE) -E make_directory "$(DESTDIR)$(sitearchdir)$(target_prefix)"

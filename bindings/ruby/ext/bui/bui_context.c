@@ -58,8 +58,12 @@ BKContext *bui_context_ptr(VALUE v)
   if (!c->ctx) {
     rb_raise(bui_eFreed, "the context was freed");
   }
+  bui_kit_thread();
   return c->ctx;
 }
+
+/* bui_raster_hold: a context starts (+1) or stops (-1) keeping a raster as its last frame. */
+static void raster_hold(VALUE raster, int delta);
 
 void bui_context_windows(VALUE v, int delta)
 {
@@ -127,7 +131,7 @@ static VALUE context_initialize(VALUE self, VALUE root)
   if (c->ctx) {
     rb_raise(rb_eRuntimeError, "the context is made already");
   }
-  BKNode *r = bui_node_ptr(root);
+  BKNode *r = bui_node_ptr(root); /* the kit's thread, too */
   c->ctx = BK_context_new(r);
   c->id = bui_ref_new(self, BUI_REF_PLAIN);
   bui_ref_retain((void *)c->id);
@@ -148,11 +152,23 @@ static VALUE context_free(VALUE self)
     rb_raise(bui_eError, "a window shows the context: free the window first");
   }
   if (c->ctx) {
+    bui_kit_thread();
     BK_context_free(c->ctx);
     c->ctx = NULL;
     bui_ref_release((void *)c->id);
+    const VALUE last = rb_ivar_get(self, id_raster);
+    if (!NIL_P(last)) {
+      raster_hold(last, -1); /* no longer anyone's last frame */
+      rb_ivar_set(self, id_raster, Qnil);
+    }
   }
   return Qnil;
+}
+
+/* windows_showing: how many windows show the context (lib/ frees an owned one last). */
+static VALUE context_windows_showing(VALUE self)
+{
+  return INT2NUM(((const Context *)rb_check_typeddata(self, &context_type))->windows);
 }
 
 static VALUE context_freed_p(VALUE self)
@@ -182,14 +198,22 @@ static VALUE context_render(int argc, VALUE *argv, VALUE self)
   rb_scan_args(argc, argv, "12:", &raster, &width, &height, &opts);
   BKContext *ctx = bui_context_ptr(self);
   BuiRaster *r = bui_raster_ptr(raster);
-  const int w = NIL_P(width) ? BUI_raster_width(r) : NUM2INT(width);
-  const int h = NIL_P(height) ? BUI_raster_height(r) : NUM2INT(height);
+  const int w = NIL_P(width) ? BUI_raster_width(r) : bui_int(width);
+  const int h = NIL_P(height) ? BUI_raster_height(r) : bui_int(height);
   if (w <= 0 || h <= 0 || w > 16384 || h > 16384) {
     rb_raise(rb_eArgError, "a frame of %d x %d (1 to 16384 each)", w, h);
   }
   const int n = BK_render(ctx, r, w, h, RTEST(bui_opt(opts, "full")));
-  /* the context keeps the raster as its last frame (the eyedropper reads it): so does this */
-  rb_ivar_set(self, id_raster, raster);
+  /* the context keeps the raster as its last frame (the eyedropper reads it): so does this
+   * wrapper, and the raster refuses to be freed meanwhile */
+  const VALUE last = rb_ivar_get(self, id_raster);
+  if (last != raster) {
+    raster_hold(raster, 1);
+    if (!NIL_P(last)) {
+      raster_hold(last, -1);
+    }
+    rb_ivar_set(self, id_raster, raster);
+  }
   bui_settle();
   return INT2NUM(n);
 }
@@ -197,7 +221,7 @@ static VALUE context_render(int argc, VALUE *argv, VALUE self)
 /* configure(width, height): lays out for a window of that size without drawing. */
 static VALUE context_configure(VALUE self, VALUE width, VALUE height)
 {
-  const int changed = BK_configure(bui_context_ptr(self), NUM2INT(width), NUM2INT(height));
+  const int changed = BK_configure(bui_context_ptr(self), bui_int(width), bui_int(height));
   bui_raise_pending();
   return changed ? Qtrue : Qfalse;
 }
@@ -220,7 +244,7 @@ static VALUE context_animating_p(VALUE self)
 
 static int mods_of(VALUE mods)
 {
-  return NIL_P(mods) ? 0 : NUM2INT(mods);
+  return NIL_P(mods) ? 0 : bui_int(mods);
 }
 
 static VALUE changed(int c)
@@ -235,7 +259,7 @@ static VALUE changed(int c)
     VALUE x, y, mods; \
     rb_scan_args(argc, argv, "21", &x, &y, &mods); \
     BKContext *ctx = bui_context_ptr(self); \
-    return changed(call(ctx, NUM2INT(x), NUM2INT(y), mods_of(mods))); \
+    return changed(call(ctx, bui_int(x), bui_int(y), mods_of(mods))); \
   }
 
 /* press(x, y, mods = 0), release, motion, context_menu: the left button, the pointer */
@@ -250,7 +274,7 @@ static VALUE context_click(int argc, VALUE *argv, VALUE self)
   VALUE x, y, mods;
   rb_scan_args(argc, argv, "21", &x, &y, &mods);
   BKContext *ctx = bui_context_ptr(self);
-  const int px = NUM2INT(x), py = NUM2INT(y), m = mods_of(mods);
+  const int px = bui_int(x), py = bui_int(y), m = mods_of(mods);
   int c = BK_motion(ctx, px, py, m);
   c |= BK_press(ctx, px, py, m);
   c |= BK_release(ctx, px, py, m);
@@ -263,7 +287,7 @@ static VALUE context_wheel(int argc, VALUE *argv, VALUE self)
   VALUE x, y, delta, mods;
   rb_scan_args(argc, argv, "31", &x, &y, &delta, &mods);
   BKContext *ctx = bui_context_ptr(self);
-  return changed(BK_wheel(ctx, NUM2INT(x), NUM2INT(y), NUM2INT(delta), mods_of(mods)));
+  return changed(BK_wheel(ctx, bui_int(x), bui_int(y), bui_int(delta), mods_of(mods)));
 }
 
 /* scroll(x, y, dx, dy, mods = 0): precise, in notches; dx > 0 right, dy > 0 up. */
@@ -273,7 +297,7 @@ static VALUE context_scroll(int argc, VALUE *argv, VALUE self)
   rb_scan_args(argc, argv, "41", &x, &y, &dx, &dy, &mods);
   BKContext *ctx = bui_context_ptr(self);
   return changed(BK_scroll(
-      ctx, NUM2INT(x), NUM2INT(y), (float)NUM2DBL(dx), (float)NUM2DBL(dy), mods_of(mods)));
+      ctx, bui_int(x), bui_int(y), (float)bui_num(dx), (float)bui_num(dy), mods_of(mods)));
 }
 
 /* key(text, keysym = nil, mods = 0): a key typing text ("" for none), with
@@ -304,17 +328,17 @@ static VALUE context_button(int argc, VALUE *argv, VALUE self)
   VALUE x, y, button, release, mods;
   rb_scan_args(argc, argv, "41", &x, &y, &button, &release, &mods);
   BKContext *ctx = bui_context_ptr(self);
-  const int b = NUM2INT(button);
+  const int b = bui_int(button);
   if (b < 1 || b > 3) {
     rb_raise(rb_eArgError, "button 1, 2 or 3, not %d", b);
   }
-  return changed(BK_button(ctx, NUM2INT(x), NUM2INT(y), b, RTEST(release), mods_of(mods)));
+  return changed(BK_button(ctx, bui_int(x), bui_int(y), b, RTEST(release), mods_of(mods)));
 }
 
 /* timer(id): fires a timer the context scheduled (hosts without a window). */
 static VALUE context_timer(VALUE self, VALUE id)
 {
-  BK_timer(bui_context_ptr(self), NUM2INT(id));
+  BK_timer(bui_context_ptr(self), bui_int(id));
   bui_raise_pending();
   return self;
 }
@@ -342,7 +366,7 @@ static VALUE context_close_popups(VALUE self)
 /* set_pointer(x, y): moves the pointer without an event. */
 static VALUE context_set_pointer(VALUE self, VALUE x, VALUE y)
 {
-  BK_set_pointer(bui_context_ptr(self), NUM2INT(x), NUM2INT(y));
+  BK_set_pointer(bui_context_ptr(self), bui_int(x), bui_int(y));
   return self;
 }
 
@@ -365,7 +389,7 @@ static VALUE context_redo(VALUE self)
 /* hit_at(x, y): the interactive node there, nil over nothing. */
 static VALUE context_hit_at(VALUE self, VALUE x, VALUE y)
 {
-  return bui_node_wrap(BK_hit_at(bui_context_ptr(self), NUM2INT(x), NUM2INT(y)));
+  return bui_node_wrap(BK_hit_at(bui_context_ptr(self), bui_int(x), bui_int(y)));
 }
 
 static VALUE context_hover(VALUE self)
@@ -467,10 +491,10 @@ static void open_menu_call(int argc, VALUE *argv, VALUE self, int pie)
   m.title = bui_opt(opts, "title");
   bui_cstr_opt(m.title); /* checked before the menu is built */
   if (!NIL_P(v = bui_opt(opts, "x"))) {
-    m.x = NUM2INT(v);
+    m.x = bui_int(v);
   }
   if (!NIL_P(v = bui_opt(opts, "y"))) {
-    m.y = NUM2INT(v);
+    m.y = bui_int(v);
   }
   if (!pie && (m.x == -100000 || m.y == -100000)) {
     rb_raise(rb_eArgError, "a menu opens at x: and y:");
@@ -500,17 +524,26 @@ static VALUE context_open_pie(int argc, VALUE *argv, VALUE self)
 /** \name Rasters
  * \{ */
 
+/* A raster and the contexts that keep it as their last frame. */
+typedef struct Raster {
+  BuiRaster *r;
+  int held;
+} Raster;
+
 static void raster_free(void *p)
 {
-  if (p) {
-    BUI_raster_free((BuiRaster *)p);
+  Raster *r = (Raster *)p;
+  if (r->r) {
+    BUI_raster_free(r->r);
   }
+  xfree(r);
 }
 
 static size_t raster_size(const void *p)
 {
-  const BuiRaster *r = (const BuiRaster *)p;
-  return r ? (size_t)BUI_raster_width(r) * (size_t)BUI_raster_height(r) * 4 : 0;
+  const Raster *r = (const Raster *)p;
+  return sizeof(Raster) +
+         (r->r ? (size_t)BUI_raster_width(r->r) * (size_t)BUI_raster_height(r->r) * 4 : 0);
 }
 
 static const rb_data_type_t raster_type = {
@@ -521,38 +554,54 @@ static const rb_data_type_t raster_type = {
 
 static VALUE raster_alloc(VALUE klass)
 {
-  return TypedData_Wrap_Struct(klass, &raster_type, NULL);
+  Raster *r;
+  return TypedData_Make_Struct(klass, Raster, &raster_type, r);
 }
 
 BuiRaster *bui_raster_ptr(VALUE v)
 {
-  BuiRaster *r = (BuiRaster *)rb_check_typeddata(v, &raster_type);
-  if (!r) {
+  const Raster *r = (const Raster *)rb_check_typeddata(v, &raster_type);
+  if (!r->r) {
     rb_raise(bui_eFreed, "the raster was freed");
   }
-  return r;
+  bui_kit_thread();
+  return r->r;
+}
+
+static void raster_hold(VALUE raster, int delta)
+{
+  ((Raster *)rb_check_typeddata(raster, &raster_type))->held += delta;
 }
 
 /* BUI::Raster.new(width, height): a frame to render into. The GC frees it; free frees it now. */
 static VALUE raster_initialize(VALUE self, VALUE width, VALUE height)
 {
-  if (RTYPEDDATA_DATA(self)) {
+  Raster *r = (Raster *)rb_check_typeddata(self, &raster_type);
+  if (r->r) {
     rb_raise(rb_eRuntimeError, "the raster is made already");
   }
-  const int w = NUM2INT(width), h = NUM2INT(height);
+  const int w = bui_int(width), h = bui_int(height);
   if (w <= 0 || h <= 0 || w > 16384 || h > 16384) {
     rb_raise(rb_eArgError, "a raster of %d x %d (1 to 16384 each)", w, h);
   }
-  RTYPEDDATA_DATA(self) = BUI_raster_create(w, h);
+  r->r = BUI_raster_create(w, h);
   return self;
 }
 
+/* free: frees the frame now; not while a context keeps it as its last frame (the
+ * eyedropper reads it): render that context into another raster, or free it, first. */
 static VALUE raster_free_now(VALUE self)
 {
-  BuiRaster *r = (BuiRaster *)rb_check_typeddata(self, &raster_type);
-  if (r) {
-    RTYPEDDATA_DATA(self) = NULL;
-    BUI_raster_free(r);
+  Raster *r = (Raster *)rb_check_typeddata(self, &raster_type);
+  if (r->held > 0) {
+    rb_raise(bui_eError, "a context keeps this raster as its last frame: render it into another "
+                         "raster, or free the context, first");
+  }
+  if (r->r) {
+    bui_kit_thread();
+    BuiRaster *raster = r->r;
+    r->r = NULL;
+    BUI_raster_free(raster);
   }
   return Qnil;
 }
@@ -589,7 +638,7 @@ static VALUE raster_rgba(VALUE self)
 static VALUE raster_pixel(VALUE self, VALUE x, VALUE y)
 {
   const BuiRaster *r = bui_raster_ptr(self);
-  const int px = NUM2INT(x), py = NUM2INT(y);
+  const int px = bui_int(x), py = bui_int(y);
   const int w = BUI_raster_width(r), h = BUI_raster_height(r);
   if (px < 0 || py < 0 || px >= w || py >= h) {
     rb_raise(rb_eIndexError, "(%d, %d) outside the %d x %d frame", px, py, w, h);
@@ -621,6 +670,7 @@ void bui_init_context(void)
   rb_define_alloc_func(bui_cContext, context_alloc);
   rb_define_method(bui_cContext, "initialize", context_initialize, 1);
   rb_define_private_method(bui_cContext, "free_native", context_free, 0);
+  rb_define_private_method(bui_cContext, "windows_showing", context_windows_showing, 0);
   rb_define_method(bui_cContext, "freed?", context_freed_p, 0);
   rb_define_method(bui_cContext, "root", context_root, 0);
   rb_define_method(bui_cContext, "header=", context_set_header, 1);

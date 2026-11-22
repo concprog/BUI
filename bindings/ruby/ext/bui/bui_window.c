@@ -41,6 +41,7 @@ static BKWindow *window_ptr(VALUE self)
   if (!w->win) {
     rb_raise(bui_eFreed, "the window was freed");
   }
+  bui_kit_thread();
   return w->win;
 }
 
@@ -112,7 +113,7 @@ static VALUE window_open_native(VALUE self, VALUE context, VALUE title, VALUE wi
     rb_raise(rb_eRuntimeError, "the window is made already");
   }
   BKContext *ctx = bui_context_ptr(context);
-  const int ww = NUM2INT(width), wh = NUM2INT(height);
+  const int ww = bui_int(width), wh = bui_int(height);
   if (ww <= 0 || wh <= 0 || ww > 16384 || wh > 16384) {
     rb_raise(rb_eArgError, "a window of %d x %d (1 to 16384 each)", ww, wh);
   }
@@ -148,6 +149,7 @@ static VALUE window_free_native(VALUE self)
   if (!w->win) {
     return Qnil;
   }
+  bui_kit_thread();
   BK_window_free(w->win);
   w->win = NULL;
   bui_context_windows(rb_ivar_get(self, id_context), -1);
@@ -179,7 +181,7 @@ static VALUE window_close(VALUE self)
 static VALUE window_open_p(VALUE self)
 {
   const Window *w = (const Window *)rb_check_typeddata(self, &window_type);
-  return w->win && BK_window_is_open(w->win) ? Qtrue : Qfalse;
+  return w->win && (bui_kit_thread(), BK_window_is_open(w->win)) ? Qtrue : Qfalse;
 }
 
 static VALUE window_set_title(VALUE self, VALUE title)
@@ -193,7 +195,7 @@ static VALUE window_set_title(VALUE self, VALUE title)
 static VALUE window_resize(VALUE self, VALUE width, VALUE height)
 {
   BKWindow *win = window_ptr(self);
-  const int w = NUM2INT(width), h = NUM2INT(height);
+  const int w = bui_int(width), h = bui_int(height);
   if (w <= 0 || h <= 0) {
     rb_raise(rb_eArgError, "a size of %d x %d", w, h);
   }
@@ -253,7 +255,7 @@ static VALUE window_wm(int argc, VALUE *argv, VALUE self)
   VALUE key, a, b;
   rb_scan_args(argc, argv, "12", &key, &a, &b);
   BKWindow *win = window_ptr(self);
-  const double va = NIL_P(a) ? 0.0 : NUM2DBL(a), vb = NIL_P(b) ? 0.0 : NUM2DBL(b);
+  const double va = NIL_P(a) ? 0.0 : bui_num(a), vb = NIL_P(b) ? 0.0 : bui_num(b);
   BK_window_wm(win, bui_cstr(key), va, vb);
   bui_raise_pending();
   return self;
@@ -273,7 +275,7 @@ static VALUE window_wm_get(VALUE self, VALUE key)
 /* start_timer(ms): a one-shot timer's id (fire_timer gets it), nil when the window holds no more. */
 static VALUE window_start_timer(VALUE self, VALUE ms)
 {
-  const int m = NUM2INT(ms);
+  const int m = bui_int(ms);
   if (m < 0) {
     rb_raise(rb_eArgError, "a timer of %d ms", m);
   }
@@ -283,7 +285,7 @@ static VALUE window_start_timer(VALUE self, VALUE ms)
 
 static VALUE window_cancel_timer(VALUE self, VALUE id)
 {
-  BK_window_cancel_timer(window_ptr(self), NUM2INT(id));
+  BK_window_cancel_timer(window_ptr(self), bui_int(id));
   return self;
 }
 
@@ -331,9 +333,9 @@ static void *run_loop(void *p)
 /* BUI.run: handles input and draws until every window is closed or BUI.quit. */
 static VALUE m_run(VALUE self)
 {
+  bui_kit_thread();
   loop_start();
-  bui_blocking(run_loop, NULL);
-  rb_funcall(bui_mBUI, id_drain_main, 0); /* what callbacks left for later (frees) */
+  bui_blocking(run_loop, NULL); /* then what callbacks left for later (frees), then their error */
   return Qnil;
 }
 
@@ -346,15 +348,16 @@ static void *pump_loop(void *p)
 /* BUI.pump: handles what is pending without waiting; returns the open windows. */
 static VALUE m_pump(VALUE self)
 {
+  bui_kit_thread();
   int open = 0;
   loop_start();
   bui_blocking(pump_loop, &open);
-  rb_funcall(bui_mBUI, id_drain_main, 0);
   return INT2NUM(open);
 }
 
 static VALUE m_quit(VALUE self)
 {
+  bui_kit_thread();
   BK_window_quit();
   return Qnil;
 }
@@ -368,12 +371,14 @@ static VALUE m_wake(VALUE self)
 
 static VALUE m_window_supported_p(VALUE self)
 {
+  bui_kit_thread();
   return BK_window_supported() ? Qtrue : Qfalse;
 }
 
 /* BUI.keep_alive = true: BUI.run keeps running with no window open, until BUI.quit. */
 static VALUE m_set_keep_alive(VALUE self, VALUE on)
 {
+  bui_kit_thread();
   BK_window_set_keep_alive(RTEST(on));
   return on;
 }

@@ -75,12 +75,12 @@ module BUI
       context&.emit(event)
     end
 
-    # Called by the extension when the loop wakes, before and after it runs: the
-    # frees callbacks left for later, then the blocks other threads queued.
+    # Called by the extension when the loop wakes, before and after it runs, and
+    # after headless kit calls: the frees callbacks left for later (not while a
+    # callback runs: a loop nested in one must not free what the kit still uses),
+    # then the blocks other threads queued.
     def drain_main
-      later = @later
-      @later = []
-      later.each(&:call)
+      run_later unless in_callback?
       loop do
         block = begin
           @main_queue.pop(true)
@@ -90,6 +90,21 @@ module BUI
         block.call
       end
     end
+
+    # Every block left for later runs, even when one raises; the first error is
+    # raised after the others ran (a failed free is not tried again).
+    def run_later
+      later = @later
+      @later = []
+      error = nil
+      later.each do |block|
+        block.call
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        error ||= e
+      end
+      raise error if error
+    end
+    private :run_later
 
     # Runs the block once no kit callback is running: at once, or between the
     # loop's messages. Frees of windows and contexts go through here.

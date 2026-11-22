@@ -40,6 +40,7 @@ class TestMemory < Minitest::Test
   end
 
   def test_tree_items_belong_to_the_gc
+    3.times { GC.start(full_mark: true, immediate_sweep: true) } # what earlier tests left goes first
     before = BUI.references
     tree = BUI::Node.new("tree")
     roots = Array.new(3) do |i|

@@ -83,6 +83,10 @@ def main() -> None:
     dest = parser.parse_args().dest
     if dest:
         DEST = dest.resolve()  # another package (the Ruby gem): the crates' licenses are not its business
+        # it is emptied before the copy: it must hold none of what is copied
+        sources = [ROOT / d for d in DIRS]
+        if ROOT.is_relative_to(DEST) or any(DEST.is_relative_to(s) for s in sources):
+            sys.exit(f"--dest {DEST} overlaps the sources it would copy (pick a folder of its own)")
     else:
         shipped = ship_licenses()
         print(f"license files copied into {len(shipped)} crates: {', '.join(shipped)}")

@@ -101,9 +101,22 @@ void bui_ref_remove_unused(uintptr_t id)
   }
 }
 
-/* Whether this thread gave up the GVL in bui_blocking (and holds no callback):
- * the kit's thread is the only one that sets or reads it. */
-static int g_nogvl = 0;
+/* Whether this thread gave up the GVL in bui_blocking (and holds no callback).
+ * Per thread: the GC may free a tree item, and so release references, on any
+ * thread that holds the GVL while the kit's thread waits in the loop without it. */
+static _Thread_local int g_nogvl = 0;
+
+/* The thread the kit belongs to: the one that loaded the extension. */
+static VALUE g_kit_thread = Qnil;
+
+void bui_kit_thread(void)
+{
+  if (rb_thread_current() != g_kit_thread) {
+    rb_raise(bui_eError,
+             "BUI is used from the thread that loaded it; from others, use BUI.on_main or "
+             "Window#update");
+  }
+}
 
 static void *with_gvl(void *(*fn)(void *), void *arg)
 {
@@ -193,6 +206,23 @@ typedef struct Callback {
   int counts;
 } Callback;
 
+/* Keeps the error of a protected call that failed (state != 0) when none is kept yet. */
+static void keep_error(int state)
+{
+  if (!state) {
+    return;
+  }
+  VALUE err = rb_errinfo();
+  rb_set_errinfo(Qnil);
+  if (NIL_P(g_pending)) {
+    /* break, next or throw out of a callback is no exception: name it */
+    g_pending = is_exception(err) ?
+                    err :
+                    rb_exc_new_cstr(rb_eLocalJumpError,
+                                    "break or throw out of a BUI callback (use return or next)");
+  }
+}
+
 static void *callback_run(void *p)
 {
   const Callback *cb = (const Callback *)p;
@@ -200,19 +230,9 @@ static void *callback_run(void *p)
   g_depth += cb->counts;
   rb_protect(cb->fn, (VALUE)cb->data, &state);
   g_depth -= cb->counts;
-  if (state) {
-    VALUE err = rb_errinfo();
-    rb_set_errinfo(Qnil);
-    if (NIL_P(g_pending)) {
-      /* break, next or throw out of a callback is no exception: name it */
-      g_pending = is_exception(err) ?
-                      err :
-                      rb_exc_new_cstr(rb_eLocalJumpError,
-                                      "break or throw out of a BUI callback (use return or next)");
-    }
-    if (g_loops > 0) {
-      BK_window_quit();
-    }
+  keep_error(state);
+  if (state && g_loops > 0) {
+    BK_window_quit();
   }
   return NULL;
 }
@@ -251,12 +271,21 @@ void bui_raise_pending(void)
   }
 }
 
+static VALUE drain_main(VALUE unused)
+{
+  return rb_funcall(bui_mBUI, rb_intern("drain_main"), 0);
+}
+
 void bui_settle(void)
 {
-  bui_raise_pending();
+  /* what callbacks left for later (frees) runs before their error is raised, outside
+   * callbacks only: inside one, the kit still has frames on the stack */
   if (g_depth == 0) {
-    rb_funcall(bui_mBUI, rb_intern("drain_main"), 0);
+    int state = 0;
+    rb_protect(drain_main, Qnil, &state);
+    keep_error(state);
   }
+  bui_raise_pending();
 }
 
 /* An interrupt for this thread (Ctrl+C, Thread#raise, Thread#kill) while the
@@ -296,7 +325,7 @@ void bui_blocking(void *(*fn)(void *), void *arg)
   rb_thread_call_without_gvl2(blocking_run, &b, loop_unblock, NULL);
   g_nogvl = nogvl;
   g_loops--;
-  bui_raise_pending();
+  bui_settle();
   rb_thread_check_ints(); /* Ctrl+C: Interrupt, now */
 }
 
@@ -369,7 +398,26 @@ const char *bui_cstr(VALUE v)
   if (RB_SYMBOL_P(v)) {
     v = rb_sym2str(v);
   }
+  if (!RB_TYPE_P(v, T_STRING)) {
+    rb_raise(rb_eTypeError, "a String or Symbol, not %" PRIsVALUE, rb_obj_class(v));
+  }
   return StringValueCStr(v);
+}
+
+int bui_int(VALUE v)
+{
+  if (!RB_INTEGER_TYPE_P(v) && !RB_FLOAT_TYPE_P(v)) {
+    rb_raise(rb_eTypeError, "an Integer, not %" PRIsVALUE, rb_obj_class(v));
+  }
+  return NUM2INT(v);
+}
+
+double bui_num(VALUE v)
+{
+  if (!RB_INTEGER_TYPE_P(v) && !RB_FLOAT_TYPE_P(v)) {
+    rb_raise(rb_eTypeError, "a number, not %" PRIsVALUE, rb_obj_class(v));
+  }
+  return NUM2DBL(v);
 }
 
 const char *bui_cstr_opt(VALUE v)
@@ -394,7 +442,7 @@ void bui_rgba(VALUE v, float r_rgba[4])
 {
   if (RTEST(rb_obj_is_kind_of(v, cColor))) {
     for (int i = 0; i < 4; i++) {
-      r_rgba[i] = (float)NUM2DBL(rb_struct_aref(v, INT2FIX(i)));
+      r_rgba[i] = (float)bui_num(rb_struct_aref(v, INT2FIX(i)));
     }
     return;
   }
@@ -404,7 +452,7 @@ void bui_rgba(VALUE v, float r_rgba[4])
     rb_raise(rb_eArgError, "a color is 3 or 4 numbers (0..1), not %ld", n);
   }
   for (int i = 0; i < 4; i++) {
-    r_rgba[i] = i < n ? (float)NUM2DBL(rb_ary_entry(v, i)) : 1.0f;
+    r_rgba[i] = i < n ? (float)bui_num(rb_ary_entry(v, i)) : 1.0f;
   }
 }
 
@@ -432,12 +480,14 @@ static VALUE m_kit_version(VALUE self)
 
 static VALUE m_scale(VALUE self)
 {
+  bui_kit_thread();
   return DBL2NUM(BK_scale());
 }
 
 static VALUE m_set_scale(VALUE self, VALUE scale)
 {
-  const double s = NUM2DBL(scale);
+  bui_kit_thread();
+  const double s = bui_num(scale);
   if (!(s > 0.0)) {
     rb_raise(rb_eArgError, "the scale is above 0, not %g", s);
   }
@@ -447,23 +497,27 @@ static VALUE m_set_scale(VALUE self, VALUE scale)
 
 static VALUE m_unit(VALUE self)
 {
+  bui_kit_thread();
   return INT2NUM(BK_unit());
 }
 
 static VALUE m_set_font(VALUE self, VALUE family)
 {
+  bui_kit_thread();
   BK_set_font(bui_cstr(family));
   return family;
 }
 
 static VALUE m_font_size(VALUE self)
 {
+  bui_kit_thread();
   return DBL2NUM(BK_font_size_points());
 }
 
 static VALUE m_set_font_size(VALUE self, VALUE points)
 {
-  const double p = NUM2DBL(points);
+  bui_kit_thread();
+  const double p = bui_num(points);
   if (!(p > 0.0)) {
     rb_raise(rb_eArgError, "the font size is above 0, not %g", p);
   }
@@ -473,23 +527,27 @@ static VALUE m_set_font_size(VALUE self, VALUE points)
 
 static VALUE m_text_shadow(VALUE self)
 {
+  bui_kit_thread();
   return BK_text_shadow() ? Qtrue : Qfalse;
 }
 
 static VALUE m_set_text_shadow(VALUE self, VALUE on)
 {
+  bui_kit_thread();
   BK_set_text_shadow(RTEST(on));
   return on;
 }
 
 static VALUE m_set_animations(VALUE self, VALUE on)
 {
+  bui_kit_thread();
   BK_set_animations(RTEST(on));
   return on;
 }
 
 static VALUE m_text_width(VALUE self, VALUE text)
 {
+  bui_kit_thread();
   StringValue(text);
   if (RSTRING_LEN(text) > INT_MAX) {
     rb_raise(rb_eArgError, "the text is too long");
@@ -499,17 +557,20 @@ static VALUE m_text_width(VALUE self, VALUE text)
 
 static VALUE m_eval_number(VALUE self, VALUE expr)
 {
+  bui_kit_thread();
   double v;
   return BK_eval_number(bui_cstr(expr), &v) ? DBL2NUM(v) : Qnil;
 }
 
 static VALUE m_icon(VALUE self, VALUE name)
 {
+  bui_kit_thread();
   return INT2NUM(BK_icon_id(bui_cstr(name)));
 }
 
 static VALUE m_icon_names(VALUE self)
 {
+  bui_kit_thread();
   const int n = BK_icon_list_count();
   VALUE out = rb_ary_new_capa(n);
   for (int i = 0; i < n; i++) {
@@ -520,6 +581,7 @@ static VALUE m_icon_names(VALUE self)
 
 static VALUE m_link_fields(int argc, VALUE *argv, VALUE self)
 {
+  bui_kit_thread();
   if (argc == 0) {
     return Qnil;
   }
@@ -541,11 +603,13 @@ static VALUE m_link_fields(int argc, VALUE *argv, VALUE self)
 
 static VALUE m_theme(VALUE self)
 {
+  bui_kit_thread();
   return bui_str(BK_theme_name());
 }
 
 static VALUE m_set_theme(VALUE self, VALUE name)
 {
+  bui_kit_thread();
   if (!BK_set_theme(bui_cstr(name))) {
     rb_raise(rb_eArgError, "no theme named %" PRIsVALUE " (BUI.themes lists them)", name);
   }
@@ -554,16 +618,19 @@ static VALUE m_set_theme(VALUE self, VALUE name)
 
 static VALUE m_theme_mode(VALUE self)
 {
+  bui_kit_thread();
   return bui_str(BK_theme_mode());
 }
 
 static VALUE m_theme_generation(VALUE self)
 {
+  bui_kit_thread();
   return INT2NUM(BK_theme_generation());
 }
 
 static VALUE m_themes(VALUE self)
 {
+  bui_kit_thread();
   const int n = BK_theme_count();
   VALUE out = rb_ary_new_capa(n);
   for (int i = 0; i < n; i++) {
@@ -574,12 +641,14 @@ static VALUE m_themes(VALUE self)
 
 static VALUE m_theme_color(VALUE self, VALUE key)
 {
+  bui_kit_thread();
   float c[4];
   return BK_theme_color(bui_cstr(key), c) ? bui_color_new(c) : Qnil;
 }
 
 static VALUE m_set_theme_color(VALUE self, VALUE key, VALUE color)
 {
+  bui_kit_thread();
   float c[4];
   bui_rgba(color, c);
   return BK_theme_set_color(bui_cstr(key), c) ? Qtrue : Qfalse;
@@ -587,13 +656,15 @@ static VALUE m_set_theme_color(VALUE self, VALUE key, VALUE color)
 
 static VALUE m_theme_num(VALUE self, VALUE key)
 {
+  bui_kit_thread();
   double v;
   return BK_theme_num(bui_cstr(key), &v) ? DBL2NUM(v) : Qnil;
 }
 
 static VALUE m_set_theme_num(VALUE self, VALUE key, VALUE value)
 {
-  return BK_theme_set_num(bui_cstr(key), NUM2DBL(value)) ? Qtrue : Qfalse;
+  bui_kit_thread();
+  return BK_theme_set_num(bui_cstr(key), bui_num(value)) ? Qtrue : Qfalse;
 }
 
 static VALUE theme_loaded(int n)
@@ -606,11 +677,13 @@ static VALUE theme_loaded(int n)
 
 static VALUE m_load_theme_json(VALUE self, VALUE json)
 {
+  bui_kit_thread();
   return theme_loaded(BK_theme_load_json(bui_cstr(json)));
 }
 
 static VALUE m_load_theme_file(VALUE self, VALUE path)
 {
+  bui_kit_thread();
   FilePathValue(path);
   return theme_loaded(BK_theme_load_file(bui_cstr(path)));
 }
@@ -670,6 +743,7 @@ static char *copy_opt(VALUE v)
  * paths, [] when cancelled. */
 static VALUE m_file_dialog(int argc, VALUE *argv, VALUE self)
 {
+  bui_kit_thread();
   VALUE opts;
   rb_scan_args(argc, argv, ":", &opts);
   FileDialog d = {0};
@@ -729,6 +803,8 @@ RUBY_FUNC_EXPORTED void Init_bui_ext(void)
 {
   /* not Ractor-safe (the default): the kit has one thread and global state */
   bui_mBUI = rb_define_module("BUI");
+  g_kit_thread = rb_thread_current();
+  rb_gc_register_address(&g_kit_thread);
   bui_eError = rb_define_class_under(bui_mBUI, "Error", rb_eStandardError);
   bui_eFreed = rb_define_class_under(bui_mBUI, "FreedError", bui_eError);
   cColor = rb_struct_define_under(bui_mBUI, "Color", "r", "g", "b", "a", NULL);
