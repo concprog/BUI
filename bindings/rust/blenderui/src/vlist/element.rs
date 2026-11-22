@@ -192,6 +192,8 @@ impl<S: ItemSource, P: Measurer + ItemPainter> IntoElement for VariableList<S, P
                     if e.keystroke.modifiers.control && e.keystroke.key.eq_ignore_ascii_case("c") {
                         if let Some(text) = on_copy.as_ref().and_then(|f| f(key.read(cx))) {
                             w.write_clipboard(&text);
+                            // the list's text is the copy: an ancestor's Ctrl+C must not overwrite it
+                            cx.stop_propagation();
                         }
                         return;
                     }
