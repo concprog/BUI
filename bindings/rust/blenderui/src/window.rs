@@ -1785,22 +1785,6 @@ impl Window {
                                crate::widgets::WidgetAsk::Height(w) => (0.0, widgets.height_for(key, w, scale)),
                            });
         crate::vlist::run_after_layout(&frame, self, app);
-        // CSS animations / transitions still moving: render again next frame;
-        // Motion's values alone: redraw (nothing running: no frames, so an
-        // idle window costs no CPU)
-        let (css, motion) = self.caches.anim.end();
-        // `@container`: sizes changed under a query, or an element came into
-        // view (`whileInView`): render once more
-        let (mut in_view, flipped) = self.caches.anim.after_layout(&frame, &self.caches.styles, vp);
-        // useScroll: the values follow the scroll; what they move draws again
-        let scrolled = crate::motion::update_scroll(&frame);
-        if flipped {
-            // a layout animation starts where the element was seen: this frame too
-            in_view |= self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp) == Some(true);
-        }
-        let container_changed = self.caches.after_layout(&frame) | in_view;
-        // screens: their kit nodes go where their elements are (the kit reports what moves)
-        self.screens.after_layout(&frame, self.scale);
         // `data-stick="bottom"`: a scroll container that grew goes to its end
         // (`"bottom"`: only if it was at the end; `"always"`: whatever it showed)
         let mut stuck = false;
@@ -1818,10 +1802,27 @@ impl Window {
             }
         }
         // an element asked into view this render: its container scrolls, in
-        // this very frame for a jump
+        // this very frame for a jump (placed before what follows placement:
+        // in-view states, scroll-linked values, screens)
         if self.reveal(&frame) {
             crate::layout::replace(&mut frame, vp, &self.state, &mut self.caches);
         }
+        // CSS animations / transitions still moving: render again next frame;
+        // Motion's values alone: redraw (nothing running: no frames, so an
+        // idle window costs no CPU)
+        let (css, motion) = self.caches.anim.end();
+        // `@container`: sizes changed under a query, or an element came into
+        // view (`whileInView`): render once more
+        let (mut in_view, flipped) = self.caches.anim.after_layout(&frame, &self.caches.styles, vp);
+        // useScroll: the values follow the scroll; what they move draws again
+        let scrolled = crate::motion::update_scroll(&frame);
+        if flipped {
+            // a layout animation starts where the element was seen: this frame too
+            in_view |= self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp) == Some(true);
+        }
+        let container_changed = self.caches.after_layout(&frame) | in_view;
+        // screens: their kit nodes go where their elements are (the kit reports what moves)
+        self.screens.after_layout(&frame, self.scale);
         // a scroll is a placement alone unless the view reads placements or a
         // container sticks to its end (animations follow it: see scroll_frame)
         self.scroll_free = !sticks && !self.scroll_read.get();
