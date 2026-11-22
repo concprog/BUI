@@ -527,14 +527,15 @@ static void pointer_up(BKWindow *win, float x, float y)
   BK_motion(win->ctx, -1, -1, 0); /* no hover once the finger is gone */
 }
 
-/* A press that turned into a scroll ends outside the screen: no click, no drag. */
+/* A press that turned into a scroll, or a touch the system cancelled, ends with nothing applied
+ * (BK_cancel: no motion, no click, a drag's value back), and no hover once the finger is gone. */
 static void cancel_press(BKWindow *win)
 {
   if (win->pointer_down) {
-    BK_motion(win->ctx, -100, -100, 0);
-    BK_release(win->ctx, -100, -100, 0);
+    BK_cancel(win->ctx, 0);
     win->pointer_down = 0;
   }
+  BK_motion(win->ctx, -1, -1, 0);
 }
 
 /* Scrolls the content under (x, y) by (dx, dy) pixels. */
@@ -693,7 +694,7 @@ static int32_t on_touch(BKWindow *win, AInputEvent *e)
       break;
     case AMOTION_EVENT_ACTION_CANCEL:
       win->scrolling = win->pending_tap = win->fling = 0;
-      pointer_up(win, -100.0f, -100.0f);
+      cancel_press(win);
       break;
     default:
       return 0;
