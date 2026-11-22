@@ -18,7 +18,7 @@ The layout lives on Blender's graph of shared vertices and edges, not on nested 
 | … with Shift | Every edge aligned with it moves too | the same, extending |
 | … with Ctrl | It snaps to 24ths of the screen and to other areas' edges | the same, `SNAP_FRACTION_AND_ADJACENT` |
 | Escape or right-click while dragging | The edge goes back | the same, cancel |
-| Drag an area's corner inward | The area splits (Ctrl snaps to 12ths and other edges) | `SCREEN_OT_area_join` (split) |
+| Drag an area's corner inward | The area splits; hold Ctrl during the drag (not at the press, which swaps) to snap to 12ths and other edges | `SCREEN_OT_area_join` (split) |
 | Drag a corner into a neighbor | The two areas join | the same (join) |
 | Drag a corner into any other area | The area docks beside it (left, right, top, bottom) or replaces it (center), with a preview; Ctrl and Alt adjust the size | the same (dock) |
 | Drag a corner out of the window | The host is asked to open the area in a window of its own | the same (new window) |
@@ -276,6 +276,7 @@ Qt's `QSplitter` and tkinter's `PanedWindow` are screens that only let the user 
 
 ```c title="screens.c"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "BUI_kit.h"
@@ -299,6 +300,24 @@ static void fill(BKNode *area)
   BK_node_add(area, tools, -1);
 
   BK_node_add(area, BK_node_new("column"), -1); /* the one child that isn't a region */
+}
+
+/* the whole file, or NULL */
+static char *read_file(const char *path)
+{
+  FILE *f = fopen(path, "rb");
+  if (!f) {
+    return NULL;
+  }
+  fseek(f, 0, SEEK_END);
+  const long n = ftell(f);
+  rewind(f);
+  char *text = n >= 0 ? malloc((size_t)n + 1) : NULL;
+  if (text) {
+    text[fread(text, 1, (size_t)n, f)] = '\0';
+  }
+  fclose(f);
+  return text;
 }
 
 static void on_event(void *data, BKNode *node, int kind, void *ref, double a, double b)
@@ -335,6 +354,11 @@ int main(void)
   BKHost host = {0};
   host.emit = on_event;
   BK_context_set_host(ctx, &host);
+  char *saved = read_file("layout.json"); /* the last run's layout: the areas it makes are filled */
+  if (saved) {
+    BK_set_str(screen, "layout", saved); /* 0 for a malformed one: the starting layout stays */
+    free(saved);
+  }
 
   BKWindow *win = BK_window_new(ctx, "Screens", 900, 600);
   BK_window_show(win);
@@ -385,6 +409,11 @@ screen:on(bui.EV_CHANGE, function(self)    -- the layout, kept between runs
 end)
 
 local ctx = bui.Context(screen)
+local saved = io.open("layout.json")     -- the last run's layout: the areas it makes are filled
+if saved then
+  screen:set("layout", saved:read("a"))  -- false for a malformed one: the starting layout stays
+  saved:close()
+end
 local win = bui.Window(ctx, "Screens", 900, 600)
 win:show()
 bui.run()
@@ -396,7 +425,7 @@ A closed area's wrapper becomes stale (`node:type()` is `"(freed)"`), never dang
 
 ```d title="screens.d"
 import bui;
-import std.file : write;
+import std.file : exists, readText, write;
 
 void fill(Node area) {
     auto header = new Node("areaheader");
@@ -424,6 +453,9 @@ void main() {
     screen.onChange((NodeEvent e) { write("layout.json", e.node.str("layout")); }); // kept between runs
 
     auto context = new Context(screen);
+    if (exists("layout.json")) { // the last run's layout: the areas it makes are filled
+        screen.set("layout", readText("layout.json")); // a malformed one is refused: the starting layout stays
+    }
     auto window = new Window(context, "Screens", 900, 600);
     window.show();
     run();
@@ -433,7 +465,7 @@ void main() {
 }
 ```
 
-A D-owned node inside an area keeps its handlers when the area is closed.
+A D-owned node inside an area keeps its handlers however the area leaves the screen: closed, joined, docked away, restored over or by the user's drag. A close handler may `free()` such a node.
 </Tab>
 </LangTabs>
 
