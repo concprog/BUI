@@ -53,7 +53,8 @@ module BUI
     end
 
     # Builds windows with the builder (BUI::Builder) and runs until the last one
-    # closes; the windows made here are freed after.
+    # closes; the windows made here are freed after, the last made first (one
+    # showing another's context goes before it).
     #
     #   BUI.app { window("Notes") { label "Hi" } }
     def app(&block)
@@ -63,7 +64,7 @@ module BUI
       app.instance_exec(&block)
       run
     ensure
-      app&.windows&.each(&:free)
+      app&.windows&.reverse_each(&:free)
     end
 
     # Called by the extension for every event: runs the action of a menu item or
