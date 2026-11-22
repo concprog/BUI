@@ -255,6 +255,9 @@ static void node_detach(BKNode *child)
     }
   }
   child->parent = NULL;
+  if (p->cls->detached) {
+    p->cls->detached(p, child);
+  }
 }
 
 void BK_node_free(BKNode *n)

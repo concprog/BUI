@@ -29,6 +29,13 @@ static int g_new, g_close, g_window, g_changes, g_moves, g_move_from, g_move_to;
 /* What a BK_AREA_NEW handler does to the screen, once: close the new area, or set a layout. */
 static bool g_close_new;
 static const char *g_layout_on_new;
+/* The layout a BK_EV_CHANGE handler of this screen saves: its area ids, and whether an area in it
+ * names a vertex the screen no longer has. */
+static BKNode *g_save_on_change;
+static unsigned g_saved_ids[8];
+static int g_saved_n;
+static bool g_saved_dangling;
+static int layout_ids(BKNode *s, unsigned *ids, int max);
 
 static void request(void *data)
 {
@@ -54,6 +61,10 @@ static void emit(void *data, BKNode *node, int kind, void *ref, double a, double
   }
   else if (kind == BK_EV_CHANGE && strcmp(BK_node_type(node), "screen") == 0) {
     g_changes++;
+    if (node == g_save_on_change) {
+      g_saved_n = layout_ids(node, g_saved_ids, 8);
+      g_saved_dangling = strstr(BK_get_str(node, "layout"), "-1") != NULL;
+    }
   }
   else if (kind == BK_EV_MOVE) {
     g_moves++;
@@ -744,6 +755,22 @@ int main(void)
     int rr[4];
     rect_of(a, rr);
     CHECK(rr[2] == W);
+    free_screen(s);
+  }
+
+  /* -- the host removes an area: a CHANGE handler saving the layout no longer finds it -- */
+  {
+    BKNode *a;
+    BKNode *s = test_screen(&a);
+    BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);
+    unsigned ids[8];
+    CHECK(b != NULL && layout_ids(s, ids, 8) == 2);
+    g_save_on_change = s;
+    g_saved_n = 0;
+    BK_node_remove(s, b);
+    g_save_on_change = NULL;
+    CHECK(g_saved_n == 1 && g_saved_ids[0] == ids[0] && !g_saved_dangling);
+    BK_node_free(b);
     free_screen(s);
   }
 

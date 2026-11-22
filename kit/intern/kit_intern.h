@@ -364,6 +364,8 @@ typedef struct BKClass {
   bool (*accept)(BKNode *n, BKNode *child);
   /* `child` is leaving (removed or freed), still a child */
   void (*detach)(BKNode *n, BKNode *child);
+  /* `child` has left: no longer among the kids, its parent cleared (the notices go here) */
+  void (*detached)(BKNode *n, BKNode *child);
 } BKClass;
 
 enum {

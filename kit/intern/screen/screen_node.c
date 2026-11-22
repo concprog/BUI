@@ -237,10 +237,24 @@ static void screen_detach(BKNode *n, BKNode *child)
     screen_remove_unused_scrverts(screen);
   }
   screen->detaching = NULL;
-  AREA(child)->v1 = AREA(child)->v2 = AREA(child)->v3 = AREA(child)->v4 = NULL;
-  AREA(child)->full = 0;
-  AREA(child)->new_pending = false;
-  screen_changed(n);
+}
+
+static void screen_detached(BKNode *n, BKNode *child)
+{
+  if (!IS_AREA(child)) {
+    return;
+  }
+  BKArea *area = AREA(child);
+  /* The host removed it (screen_detach closed it): told now that it is unlinked, as Blender's
+   * area_close_exec adds its notifier after screen_delarea. A close of the screen's own tells
+   * the host itself once the edit is done. */
+  const bool by_host = area->v1 != NULL && SCREEN(n)->detaching != child;
+  area->v1 = area->v2 = area->v3 = area->v4 = NULL; /* nothing of this screen: it may join another */
+  area->full = 0;
+  area->new_pending = false;
+  if (by_host) {
+    screen_changed(n);
+  }
 }
 
 static int screen_set_num(BKNode *n, const char *key, double v)
@@ -311,7 +325,8 @@ const BKClass bk_cls_screen = {.name = "screen",
                                .get_str = screen_get_str,
                                .anim_target = screen_anim_target,
                                .accept = screen_accept,
-                               .detach = screen_detach};
+                               .detach = screen_detach,
+                               .detached = screen_detached};
 
 /** \} */
 
