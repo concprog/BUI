@@ -220,8 +220,15 @@ static void screen_detach(BKNode *n, BKNode *child)
   if (!IS_AREA(child) || screen->detaching || AREA(child)->v1 == NULL) {
     return;
   }
-  /* The host removes an area: a neighbor takes its place (screen_area_close). */
+  /* The host removes an area: a neighbor takes its place (screen_area_close). Back to the normal
+   * state first, as Blender's operators do (ED_screen_state_toggle), or the others stay hidden. */
   screen->detaching = child;
+  SCREEN_AREAS_ITER (n, other) {
+    if (other->full) {
+      screen_state_apply(n, other->node, other->full);
+      break;
+    }
+  }
   if (n->nkids == 1) {
     screen_geom_free(screen); /* the last one: the screen starts over */
   }
@@ -232,7 +239,8 @@ static void screen_detach(BKNode *n, BKNode *child)
   screen->detaching = NULL;
   AREA(child)->v1 = AREA(child)->v2 = AREA(child)->v3 = AREA(child)->v4 = NULL;
   AREA(child)->full = 0;
-  bk_emit(n, BK_EV_CHANGE, NULL, 0, 0);
+  AREA(child)->new_pending = false;
+  screen_changed(n);
 }
 
 static int screen_set_num(BKNode *n, const char *key, double v)
@@ -551,7 +559,7 @@ int bk_region_set_num(BKNode *n, const char *key, double v)
     return 0;
   }
   if (strcmp(key, "size") == 0) {
-    if (v < 0 || v > 10000 || r->alignment == RGN_ALIGN_FLOAT) {
+    if (!(v >= 0 && v <= 10000) || r->alignment == RGN_ALIGN_FLOAT) { /* NaN fails too */
       return -1;
     }
     if (region_axis_x(r)) {
@@ -741,10 +749,17 @@ BKNode *BK_area_split(BKNode *area, BKScreenAxis axis, float factor)
     return NULL;
   }
   BKNode *newa = area_split(screen_node, area, (eScreenAxis)axis, factor);
-  if (newa) {
-    api_done(screen_node);
+  if (!newa) {
+    return NULL;
   }
-  return newa;
+  api_done(screen_node);
+  /* its BK_AREA_NEW handler may have closed it (and freed it): compared, never read */
+  for (int i = 0; i < screen_node->nkids; i++) {
+    if (screen_node->kids[i] == newa) {
+      return newa;
+    }
+  }
+  return NULL;
 }
 
 int BK_area_join(BKNode *keep, BKNode *gone)

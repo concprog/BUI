@@ -41,6 +41,17 @@ void screen_changed(BKNode *screen_node)
 {
   bk_relayout(screen_node);
   bk_invalidate(screen_node);
+  /* The edit holds no area or vertex any more: a handler may edit the screen again (close the
+   * new area, split it, set a layout). Each notice is taken before it is sent, and the areas are
+   * looked at again after each one. */
+  for (int i = 0; i < screen_node->nkids; i++) {
+    BKArea *area = AREA(screen_node->kids[i]);
+    if (area->new_pending) {
+      area->new_pending = false;
+      bk_emit(screen_node, BK_EV_AREA, NULL, i, BK_AREA_NEW);
+      i = -1;
+    }
+  }
   bk_emit(screen_node, BK_EV_CHANGE, NULL, 0, 0);
 }
 
@@ -97,28 +108,24 @@ void screen_area_free(BKNode *screen_node, BKNode *area_node)
   void *ref = area_node->ref;
   bk_retain(ref); /* the close handler may drop the host's last hold: the area outlives it */
   const bool attached = area_node->parent == screen_node;
+  BKNode *const outer = screen->detaching; /* a close from a close handler nests: keep the outer */
   if (attached) {
     screen->detaching = area_node; /* guard first: the geometry is done, no closing again */
   }
-  if (index >= 0) {
+  if (index >= 0 && !AREA(area_node)->new_pending) { /* the host never heard of one made now */
     bk_emit(area_node, BK_EV_AREA, NULL, index, BK_AREA_CLOSE); /* on the area: its host object */
   }
+  AREA(area_node)->new_pending = false;
   if (attached) {
     if (area_node->parent == screen_node) {
       BK_node_remove(screen_node, area_node);
     }
-    screen->detaching = NULL;
+    screen->detaching = outer;
     if (!ref) {
       BK_node_free(area_node); /* made here (a split): nobody else holds it */
     }
   }
   bk_release(ref);
-}
-
-static void area_new_notify(BKNode *screen_node, BKNode *newa, BKNode *src)
-{
-  bk_emit(screen_node, BK_EV_AREA, NULL, area_index(screen_node, newa), BK_AREA_NEW);
-  (void)src;
 }
 
 BKNode *area_split(BKNode *screen_node, BKNode *area_node, const eScreenAxis dir_axis,
@@ -189,7 +196,7 @@ BKNode *area_split(BKNode *screen_node, BKNode *area_node, const eScreenAxis dir
 
   screen_remove_double_scredges(screen);
   screen_remove_unused_scredges(screen_node);
-  area_new_notify(screen_node, newa, area_node);
+  AREA(newa)->new_pending = true; /* the host hears of it once the edit is done */
   return newa;
 }
 
@@ -523,7 +530,7 @@ bool region_hidden_in_focus(int type)
          type == RGN_TYPE_EXECUTE || type == RGN_TYPE_ASSET_SHELF;
 }
 
-void screen_state_toggle(BKNode *screen_node, BKNode *area_node, const short state)
+void screen_state_apply(BKNode *screen_node, BKNode *area_node, const short state)
 {
   BKScreen *screen = SCREEN(screen_node);
   BKArea *area = AREA(area_node);
@@ -543,7 +550,7 @@ void screen_state_toggle(BKNode *screen_node, BKNode *area_node, const short sta
   else {
     SCREEN_AREAS_ITER (screen_node, other) {
       if (other->full) {
-        screen_state_toggle(screen_node, other->node, other->full); /* one at a time */
+        screen_state_apply(screen_node, other->node, other->full); /* one at a time */
       }
     }
     if (state == SCREENFULL) {
@@ -566,5 +573,10 @@ void screen_state_toggle(BKNode *screen_node, BKNode *area_node, const short sta
     const bool shown = screen->state == SCREENNORMAL || AREA(n)->full;
     n->flags = shown ? (n->flags | NF_VISIBLE) : (n->flags & ~NF_VISIBLE);
   }
+}
+
+void screen_state_toggle(BKNode *screen_node, BKNode *area_node, const short state)
+{
+  screen_state_apply(screen_node, area_node, state);
   screen_changed(screen_node);
 }

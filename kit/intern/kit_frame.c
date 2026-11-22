@@ -150,6 +150,15 @@ static int anchor_off(int anchor, int extra, int lo_bit, int hi_bit)
   return extra / 2;
 }
 
+/* A text item's baseline origin from its anchor; `tw` is its measured width (cap height ~0.72 em). */
+static void text_item_origin(const BKCanvasItem *it, const float *p, float ox, float oy, float size,
+                             float tw, float *r_x, float *r_y)
+{
+  const float asc = size * 0.72f;
+  *r_x = ox + p[0] - (float)anchor_off(it->anchor, (int)tw, BK_ANCHOR_W, BK_ANCHOR_E);
+  *r_y = oy + p[1] + asc - (float)anchor_off(it->anchor, (int)asc, BK_ANCHOR_N, BK_ANCHOR_S);
+}
+
 /** \} */
 
 /* -------------------------------------------------------------------- */
@@ -946,8 +955,8 @@ static bool citem_bbox_ex(const CItem *ci, float b[4], bool tight)
     const float size = it->size > 0 ? it->size : bk_font_size();
     float tw = 0;
     BUI_text_measure(it->family ? it->family : "", it->text_flags, size, ci->text, (int)strlen(ci->text), &tw);
-    const float x = p[0] - anchor_off(it->anchor, (int)tw, BK_ANCHOR_W, BK_ANCHOR_E);
-    const float base = p[1] + size * 0.72f - anchor_off(it->anchor, (int)(size * 0.72f), BK_ANCHOR_N, BK_ANCHOR_S);
+    float x, base;
+    text_item_origin(it, p, 0.0f, 0.0f, size, tw, &x, &base);
     x0 = x;
     x1 = x + tw;
     y0 = base - size * 0.85f;
@@ -961,9 +970,8 @@ static bool citem_bbox_ex(const CItem *ci, float b[4], bool tight)
     const float size = it->size > 0 ? it->size : bk_font_size();
     float tw = 0;
     BUI_text_measure(it->family ? it->family : "", it->text_flags, size, ci->text, (int)strlen(ci->text), &tw);
-    const float x = p[0] - anchor_off(it->anchor, (int)tw, BK_ANCHOR_W, BK_ANCHOR_E);
-    const float asc = size * 0.72f;
-    const float base = p[1] + asc - anchor_off(it->anchor, (int)asc, BK_ANCHOR_N, BK_ANCHOR_S);
+    float x, base;
+    text_item_origin(it, p, 0.0f, 0.0f, size, tw, &x, &base);
     x0 = x - size;
     x1 = x + tw + size;
     y0 = base - size * 1.5f;
@@ -1375,22 +1383,19 @@ static void canvas_item_draw(BuiRaster *r, const CItem *ci, float ox, float oy, 
       if (!ci->text || it->ncoords < 2) {
         return;
       }
-      const float size = it->size > 0 ? it->size : bk_font_size();
-      const int len = (int)strlen(ci->text);
-      float tw = 0;
-      if (!(it->anchor & BK_ANCHOR_W)) { /* the width only moves centred / right text */
-        BUI_text_measure(it->family ? it->family : "", it->text_flags, size, ci->text, len, &tw);
-      }
-      float x = ox + p[0], y = oy + p[1];
-      x -= anchor_off(it->anchor, (int)tw, BK_ANCHOR_W, BK_ANCHOR_E);
-      /* y: baseline from the anchor (cap height ~0.72 em) */
-      const float asc = size * 0.72f;
-      y += asc - anchor_off(it->anchor, (int)asc, BK_ANCHOR_N, BK_ANCHOR_S);
       const float *c = it->fill[3] > 0 ? it->fill : it->outline;
-      if (prep) {
+      if (prep) { /* placed on the calling thread: a band worker never touches the glyph cache */
         BUI_raster_text_run(r, prep->tx, prep->ty, prep->run, c);
       }
       else {
+        const float size = it->size > 0 ? it->size : bk_font_size();
+        const int len = (int)strlen(ci->text);
+        float tw = 0;
+        if (!(it->anchor & BK_ANCHOR_W)) { /* the width only moves centred / right text */
+          BUI_text_measure(it->family ? it->family : "", it->text_flags, size, ci->text, len, &tw);
+        }
+        float x, y;
+        text_item_origin(it, p, ox, oy, size, tw, &x, &y);
         BUI_raster_set_font(r, it->family ? it->family : "", it->text_flags);
         BUI_raster_text(r, floorf(x + 0.5f), floorf(y + 0.5f), ci->text, len, size, c);
       }
@@ -1504,10 +1509,8 @@ static bool item_prepare(const CItem *ci, float ox, float oy, ItemPrep *pp)
     const float size = it->size > 0 ? it->size : bk_font_size();
     float tw = 0;
     pp->run = BUI_text_prepare(it->family ? it->family : "", it->text_flags, size, ci->text, (int)strlen(ci->text), &tw);
-    float x = ox + p[0], y = oy + p[1];
-    x -= anchor_off(it->anchor, (int)tw, BK_ANCHOR_W, BK_ANCHOR_E);
-    const float asc = size * 0.72f;
-    y += asc - anchor_off(it->anchor, (int)asc, BK_ANCHOR_N, BK_ANCHOR_S);
+    float x, y;
+    text_item_origin(it, p, ox, oy, size, tw, &x, &y);
     pp->tx = floorf(x + 0.5f);
     pp->ty = floorf(y + 0.5f);
     pp->y0 = y - size * 1.5f - 2.0f;

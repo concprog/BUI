@@ -1258,9 +1258,10 @@ int area_op_release(BKNode *area_node, BKEvent *e)
   const int size = edge_is_x(area->rmd.edge) ? region->sizex : region->sizey;
   bk_relayout(area_node);
   bk_invalidate(area_node);
+  BKNode *screen_node = AREA_SCREEN(area_node); /* first: a resize handler may close the area */
   bk_emit(region_node, BK_EV_RESIZE, NULL, size, region_is_hidden(region));
-  if (AREA_SCREEN(area_node)) {
-    bk_emit(AREA_SCREEN(area_node), BK_EV_CHANGE, NULL, 0, 0);
+  if (screen_node) {
+    bk_emit(screen_node, BK_EV_CHANGE, NULL, 0, 0);
   }
   return 1;
 }

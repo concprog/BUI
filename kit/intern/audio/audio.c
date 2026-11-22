@@ -379,9 +379,10 @@ static bool next_frame(BKAudio *a, float *out, double *r_t, bool loop, bool *r_j
       continue;
     }
     a->n = a->pos = 0;
-    if (got < 0 || !loop || !a->codec->audio_seek(a->reader, 0.0)) {
+    if (got < 0 || a->ended || !loop || !a->codec->audio_seek(a->reader, 0.0)) {
+      /* sticky until a seek: a later fill reads nothing (got 0) and must not clear it */
+      a->read_error = a->read_error || got < 0;
       a->ended = true;
-      a->read_error = got < 0;
       return false;
     }
     a->block_t = 0.0; /* looped: from the top */

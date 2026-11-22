@@ -32,13 +32,24 @@
 typedef struct Buf {
   char *s;
   size_t len, cap;
+  bool oom; /* a grow failed: nothing more is written, the text is dropped */
 } Buf;
 
 static void buf_add(Buf *b, const char *s, size_t n)
 {
+  if (b->oom) {
+    return;
+  }
   if (b->len + n + 1 > b->cap) {
-    b->cap = BK_MAX(b->cap * 2, b->len + n + 256);
-    b->s = (char *)realloc(b->s, b->cap);
+    const size_t cap = BK_MAX(b->cap * 2, b->len + n + 256);
+    char *grown = (char *)realloc(b->s, cap);
+    if (!grown) {
+      free(b->s);
+      *b = (Buf){.oom = true};
+      return;
+    }
+    b->s = grown;
+    b->cap = cap;
   }
   memcpy(b->s + b->len, s, n);
   b->len += n;
@@ -88,6 +99,28 @@ static const char *side_name(int alignment)
   }
 }
 
+static const BKRegionRecord *region_record_find(const BKArea *area, int type)
+{
+  const BKRegionRecord *rec = area->pending_regions;
+  while (rec && rec->type != type) {
+    rec = rec->next;
+  }
+  return rec;
+}
+
+/* One entry of an area's "regions"; a record without a side keeps the region's own. */
+static void region_write(Buf *b, int nth, const BKRegionRecord *rec)
+{
+  const char *open = nth ? ", {\"region\": " : "{\"region\": ";
+  buf_add(b, open, strlen(open));
+  buf_str(b, region_type_info(rec->type)->name);
+  if (rec->side[0]) {
+    buf_add(b, ", \"side\": ", 10);
+    buf_str(b, rec->side);
+  }
+  buf_printf(b, ", \"size\": %d, \"hidden\": %d}", rec->size, rec->hidden != 0);
+}
+
 const char *screen_layout_get(BKNode *screen_node)
 {
   BKScreen *screen = SCREEN(screen_node);
@@ -121,21 +154,33 @@ const char *screen_layout_get(BKNode *screen_node)
       if (!r) {
         continue;
       }
-      const char *open = nr++ ? ", {\"region\": " : "{\"region\": ";
-      buf_add(&b, open, strlen(open));
-      buf_str(&b, region_type_info(r->type)->name);
-      buf_add(&b, ", \"side\": ", 10);
-      buf_str(&b, side_name(r->alignment));
-      const int size = (r->alignment == RGN_ALIGN_TOP || r->alignment == RGN_ALIGN_BOTTOM) ?
-                           r->sizey :
-                           r->sizex;
+      const BKRegionRecord *rec = region_record_find(area, r->type);
+      if (rec) { /* restored but not applied yet (the next layout does): the record is its state */
+        region_write(&b, nr++, rec);
+        continue;
+      }
       /* Focus mode hides panels temporarily: save the state to come back to. */
       const short flag = area->full == SCREENFULL ? r->flagfullscreen : r->flag;
-      buf_printf(&b, ", \"size\": %d, \"hidden\": %d}", size, (flag & RGN_FLAG_HIDDEN) != 0);
+      BKRegionRecord cur = {
+          .type = r->type,
+          .size = (r->alignment == RGN_ALIGN_TOP || r->alignment == RGN_ALIGN_BOTTOM) ? r->sizey :
+                                                                                       r->sizex,
+          .hidden = (flag & RGN_FLAG_HIDDEN) != 0};
+      snprintf(cur.side, sizeof(cur.side), "%s", side_name(r->alignment));
+      region_write(&b, nr++, &cur);
+    }
+    /* Records for regions the host hasn't made yet: a host saving on BK_EV_CHANGE keeps them. */
+    for (const BKRegionRecord *rec = area->pending_regions; rec; rec = rec->next) {
+      if (!area_region_find(area->node, rec->type)) {
+        region_write(&b, nr++, rec);
+      }
     }
     buf_add(&b, "]}", 2);
   }
   buf_add(&b, "]}", 2);
+  if (b.oom) {
+    return NULL;
+  }
   free(screen->layout);
   screen->layout = b.s;
   return b.s;
@@ -327,12 +372,19 @@ int screen_layout_set(BKNode *screen_node, const char *text)
   }
   BKScreen *screen = SCREEN(screen_node);
   const int nareas = json_len(areas);
+  const int nverts = json_len(verts);
+  /* before anything changes: out of memory leaves the screen as it was */
+  ScrVert **vs = (ScrVert **)calloc((size_t)nverts, sizeof(ScrVert *));
+  if (!vs) {
+    bk_json_free(root);
+    return 0;
+  }
 
   /* Leave maximized / focus mode first: that gives the hidden areas and regions back (the
    * restored layout then enters its own state, if any). */
   SCREEN_AREAS_ITER (screen_node, other) {
     if (other->full) {
-      screen_state_toggle(screen_node, other->node, other->full);
+      screen_state_apply(screen_node, other->node, other->full);
       break;
     }
   }
@@ -342,8 +394,6 @@ int screen_layout_set(BKNode *screen_node, const char *text)
     screen_area_free(screen_node, screen_node->kids[i]);
   }
   screen_geom_free(screen);
-  const int nverts = json_len(verts);
-  ScrVert **vs = (ScrVert **)calloc((size_t)nverts, sizeof(ScrVert *));
   for (int i = 0; i < nverts; i++) {
     const BKJson *v = json_at(verts, i);
     vs[i] = screen_geom_vertex_add(screen, (short)json_int(json_at(v, 0), 0),
@@ -377,9 +427,7 @@ int screen_layout_set(BKNode *screen_node, const char *text)
     for (int k = 0; k < 4; k++) {
       screen_geom_edge_add(screen, loop[k], loop[k + 1]);
     }
-    if (made) {
-      bk_emit(screen_node, BK_EV_AREA, NULL, i, BK_AREA_NEW); /* the host fills it */
-    }
+    area->new_pending = made; /* the host fills it, told once the layout is done */
     const BKJson *regions = bk_json_get(a, "regions");
     for (int k = 0; k < json_len(regions); k++) {
       region_from_json(node, json_at(regions, k));
@@ -391,7 +439,7 @@ int screen_layout_set(BKNode *screen_node, const char *text)
   for (int i = 0; i < nareas; i++) {
     const int full = json_int(bk_json_get(json_at(areas, i), "full"), 0);
     if (full == SCREENMAXIMIZED || full == SCREENFULL) {
-      screen_state_toggle(screen_node, screen_node->kids[i], (short)full);
+      screen_state_apply(screen_node, screen_node->kids[i], (short)full);
       break;
     }
   }

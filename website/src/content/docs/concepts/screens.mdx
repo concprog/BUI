@@ -55,7 +55,7 @@ An area works on its own too, outside a screen: a panel with a header and sideba
 
 ## Areas the user makes
 
-Splitting, docking and restoring a layout make areas. Each area has an editor name; a new area shows the editor of the one it came from, and the screen asks the host to fill it (`BK_AREA_NEW`). The bindings do this for you from a table of editors: one factory per editor name, which also lists the header's editor-type menu.
+Splitting, docking and restoring a layout make areas. Each area has an editor name; a new area shows the editor of the one it came from, and the screen asks the host to fill it (`BK_AREA_NEW`) once the operation is done, as Blender queues its notifiers, so the handler may change the screen again. The bindings do this for you from a table of editors: one factory per editor name, which also lists the header's editor-type menu.
 
 ## Saving and restoring
 

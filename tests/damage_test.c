@@ -1,7 +1,8 @@
 /* Damage: after a layout change (text that grows, a child added or removed, a node hidden,
  * a panel collapsed, a tab switched) or a property that keeps a node's size (an icon, a font
  * scale) the partial frame equals the same frame drawn in full, and only the changed part is
- * redrawn. A change handler may free its node from inside a setter.
+ * redrawn, as is a z-order change that moves no rect. A change handler may free its node from
+ * inside a setter.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
@@ -88,6 +89,18 @@ int main(void)
   add(add(tabs, "column", "One"), "button", "First tab");
   add(add(tabs, "column", "Two"), "text", "Second tab");
   add(col, "button", "Last");
+  BKNode *num = add(add(col, "row", NULL), "number", NULL);
+  BK_set_num(num, "weight", 0); /* the row sizes it to its text */
+  /* two buttons stacked in one place: a z-order change moves no rect */
+  BKNode *stack = add(col, "frame", NULL);
+  BKNode *under = add(stack, "button", "Under");
+  BKNode *over = add(stack, "button", "Over the other");
+  BK_geom_set(stack, "reqheight", 30); /* placed children size no frame */
+  for (BKNode *b = under; b; b = b == under ? over : NULL) {
+    BK_geom_set_manager(b, BK_GEOM_PLACE);
+    BK_geom_set(b, "width", 140);
+    BK_geom_set(b, "height", 24);
+  }
   BKContext *ctx = BK_context_new(col);
   BK_context_set_host(ctx, &(BKHost){.emit = emit});
   BuiRaster *r = BUI_raster_create(W, H);
@@ -126,6 +139,18 @@ int main(void)
   CHECK(g_free_on_change == NULL);
   BK_release(ctx, rr[0] + rr[2] / 2, rr[1] + 2, 0);
   STEP("freed by the change of a Ctrl+click");
+  int nr[4], nr2[4];
+  BK_node_rect(num, nr);
+  BK_set_num(num, "value", 123456789.0); /* a programmatic write, no event */
+  STEP("number value grows");
+  BK_node_rect(num, nr2);
+  CHECK(nr2[2] > nr[2]);
+  int ur[4], vr[4];
+  BK_node_rect(under, ur);
+  BK_node_rect(over, vr);
+  CHECK(ur[2] > 0 && ur[3] > 0 && memcmp(ur, vr, sizeof(ur)) == 0);
+  CHECK(BK_node_move(stack, under, -1));
+  STEP("z-order swapped");
 
   BUI_raster_free(r);
   BK_context_free(ctx);

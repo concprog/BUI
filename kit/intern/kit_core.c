@@ -230,6 +230,7 @@ const char *BK_node_type(const BKNode *n)
 
 static bool node_in_popup(const BKNode *n);
 static int damage_moved(BKContext *ctx, BKNode *n, bool shown, bool in_popup);
+static void invalidate_reach(BKNode *n);
 
 static void node_detach(BKNode *child)
 {
@@ -408,6 +409,9 @@ int BK_node_move(BKNode *parent, BKNode *child, int index)
     memmove(parent->kids + index + 1, parent->kids + index, sizeof(BKNode *) * (size_t)(from - index));
   }
   parent->kids[index] = child;
+  /* the order is the stacking: where the child overlaps a sibling the pixels change even when no
+   * rect does, which the layout's moved-rect damage can't see */
+  invalidate_reach(child);
   bk_relayout(parent);
   return 1;
 }
@@ -496,6 +500,15 @@ void bk_invalidate(BKNode *n)
   BKContext *ctx = bk_ctx(n);
   if (ctx) {
     damage_grown(ctx, bk_node_rect(n), damage_margin(n, node_in_popup(n)));
+  }
+}
+
+/* Damage all a node and its kids draw (its reach), as Blender tags the whole region for redraw. */
+static void invalidate_reach(BKNode *n)
+{
+  BKContext *ctx = bk_ctx(n);
+  if (ctx) {
+    damage_grown(ctx, bk_node_rect(n), BK_MAX(damage_margin(n, node_in_popup(n)), n->reach));
   }
 }
 
@@ -742,7 +755,7 @@ void bk_set_value_silent(BKNode *n, double v)
   v = bk_clamp_value(n, v);
   if (v != n->value) {
     n->value = v;
-    bk_stale(n); /* a number's width follows its text */
+    bk_relayout(n); /* a number's width follows its text */
     bk_invalidate(n);
   }
 }
@@ -753,7 +766,7 @@ void bk_set_value(BKNode *n, double v)
   if (v != n->value) {
     bk_undo_record(n, 0);
     n->value = v;
-    bk_stale(n);
+    bk_relayout(n);
     bk_changed(n);
   }
 }
@@ -3285,8 +3298,10 @@ static BKNode *deepest(BKNode *n, int x, int y)
 }
 
 /* `px`: the exact distance in pixels (BK_scroll_px; same sign as `delta`), 0 for a plain wheel step.
- * Scroll containers and raw events use it, other widgets keep the step. */
-static int in_BK_wheel(BKContext *ctx, int x, int y, int delta, float px, int mods)
+ * Scroll containers and raw events use it, other widgets keep the step. `horizontal`: a sideways
+ * wheel or swipe, sent on as Shift + wheel to the widgets; the region only scrolls vertically, so
+ * it never moves it (Blender's View2D pans a region locked in x only in y). */
+static int in_BK_wheel(BKContext *ctx, int x, int y, int delta, float px, int mods, bool horizontal)
 {
   hide_tooltip(ctx);
   BKNode *target = hit_all(ctx, x, y);
@@ -3311,7 +3326,7 @@ static int in_BK_wheel(BKContext *ctx, int x, int y, int delta, float px, int mo
   }
   /* scroll the region */
   const int view_h = ctx->win_h - ctx->header_h;
-  if (ctx->content_h > view_h && !ctx->npopups) {
+  if (ctx->content_h > view_h && !ctx->npopups && !horizontal) {
     const int step = px != 0.0f ? bk_scroll_take(&ctx->scroll_rem, px) : delta * 2 * bk_unit();
     const int ns = BK_CLAMP(ctx->scroll - step, 0, ctx->content_h - view_h);
     const bool moved = ns != ctx->scroll;
@@ -3817,12 +3832,12 @@ int BK_cancel(BKContext *ctx, int mods)
 
 int BK_wheel(BKContext *ctx, int x, int y, int delta, int mods)
 {
-  INPUT_ENTRY(in_BK_wheel(ctx, x, y, delta, 0.0f, mods));
+  INPUT_ENTRY(in_BK_wheel(ctx, x, y, delta, 0.0f, mods, false));
 }
 
-static int wheel_px(BKContext *ctx, int x, int y, int delta, float px, int mods)
+static int wheel_axis(BKContext *ctx, int x, int y, int delta, float px, int mods, bool horizontal)
 {
-  INPUT_ENTRY(in_BK_wheel(ctx, x, y, delta, px, mods));
+  INPUT_ENTRY(in_BK_wheel(ctx, x, y, delta, px, mods, horizontal));
 }
 
 int BK_key(BKContext *ctx, const char *text, const char *keysym, int mods)
@@ -3852,7 +3867,7 @@ int BK_scroll(BKContext *ctx, int x, int y, float dx, float dy, int mods)
     r |= BK_wheel(ctx, x, y, dy > 0.0f ? 1 : -1, mods);
   }
   if (dx != 0.0f) { /* X11's buttons 6 / 7: Shift + wheel, left = up */
-    r |= BK_wheel(ctx, x, y, dx > 0.0f ? -1 : 1, mods | BK_SHIFT);
+    r |= wheel_axis(ctx, x, y, dx > 0.0f ? -1 : 1, 0.0f, mods | BK_SHIFT, true);
   }
   return r;
 }
@@ -3866,10 +3881,10 @@ int BK_scroll_px(BKContext *ctx, int x, int y, float dx, float dy, int mods)
   }
   int r = 0;
   if (dy != 0.0f) {
-    r |= wheel_px(ctx, x, y, dy > 0.0f ? 1 : -1, dy, mods);
+    r |= wheel_axis(ctx, x, y, dy > 0.0f ? 1 : -1, dy, mods, false);
   }
   if (dx != 0.0f) { /* Shift + wheel, left = up, as BK_scroll */
-    r |= wheel_px(ctx, x, y, dx > 0.0f ? -1 : 1, -dx, mods | BK_SHIFT);
+    r |= wheel_axis(ctx, x, y, dx > 0.0f ? -1 : 1, -dx, mods | BK_SHIFT, true);
   }
   return r;
 }

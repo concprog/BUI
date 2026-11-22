@@ -707,8 +707,8 @@ static int panel_press(BKNode *n, BKEvent *e)
 {
   /* Shift+click pins, a click on the pin unpins (ui_handle_panel_header) */
   if (panel_use_pin(n) && y_in_header(n, e->y) && (EV_SHIFT(e) || panel_on_pin(n, e->x, e->y))) {
+    n->dragmode = 0; /* first: the toggle's handler may free the panel */
     panel_toggle_pin(n);
-    n->dragmode = 0;
     return 1;
   }
   n->dragmode = panel_on_grip(n, e->x, e->y) ? 1 : 0;
@@ -773,13 +773,14 @@ static int panel_drag(BKNode *n, BKEvent *e)
 static int panel_release(BKNode *n, BKEvent *e)
 {
   (void)e;
-  if (n->dragmode == 1) {
+  const bool moved = n->dragmode == 1;
+  n->dragmode = 0; /* first: the move's handler may free the panel */
+  if (moved) {
     const int from = (int)n->drag_orig, to = panel_index(n);
     if (from >= 0 && to >= 0 && from != to) {
       bk_emit(n, BK_EV_MOVE, NULL, from, to); /* instanced panels reorder their data */
     }
   }
-  n->dragmode = 0;
   return 1;
 }
 

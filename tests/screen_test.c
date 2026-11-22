@@ -26,6 +26,9 @@ static int g_fail = 0;
 enum { W = 800, H = 600 };
 
 static int g_new, g_close, g_window, g_changes, g_moves, g_move_from, g_move_to;
+/* What a BK_AREA_NEW handler does to the screen, once: close the new area, or set a layout. */
+static bool g_close_new;
+static const char *g_layout_on_new;
 
 static void request(void *data)
 {
@@ -37,6 +40,15 @@ static void emit(void *data, BKNode *node, int kind, void *ref, double a, double
   (void)data, (void)ref;
   if (kind == BK_EV_AREA) {
     g_new += b == BK_AREA_NEW;
+    if (b == BK_AREA_NEW && g_close_new) {
+      g_close_new = false;
+      CHECK(BK_area_close(BK_node_child(node, (int)a)));
+    }
+    if (b == BK_AREA_NEW && g_layout_on_new) {
+      const char *l = g_layout_on_new;
+      g_layout_on_new = NULL;
+      CHECK(BK_set_str(node, "layout", l));
+    }
     g_close += b == BK_AREA_CLOSE;
     g_window += b == BK_AREA_WINDOW;
   }
@@ -522,6 +534,7 @@ int main(void)
     BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);
     CHECK(b != NULL && count_verts(s) == 6);
     BK_node_remove(s, b);
+    BK_node_free(b); /* a removed node is the caller's */
     CHECK(BK_node_child_count(s) == 1 && count_verts(s) == 4);
     free_screen(s);
   }
@@ -671,6 +684,8 @@ int main(void)
     BKNode *s2 = test_screen(&a2);
     CHECK(BK_set_str(s2, "layout", saved));
     CHECK(BK_node_child_count(s2) == 2);
+    /* the settings of a region the host hasn't made yet are saved too */
+    CHECK(strstr(BK_get_str(s2, "layout"), "\"size\": 250") != NULL);
     BKNode *b2 = BK_node_child(s2, 1);
     BKNode *side_b = BK_node_new("sidebar");
     CHECK(BK_node_add(a2, side_b, -1)); /* the first area: it was there before the restore */
@@ -681,6 +696,55 @@ int main(void)
     CHECK(BK_get_num(side_b2, "size") == 180);
     free_screen(s2);
     free(saved);
+  }
+
+  /* -- a BK_AREA_NEW handler may edit the screen: it hears of the area once the edit is done -- */
+  {
+    BKNode *a;
+    BKNode *s = test_screen(&a);
+    const int news = g_new, closes = g_close;
+    g_close_new = true; /* closes the area it is told of */
+    CHECK(BK_area_split(a, BK_AXIS_V, 0.5f) == NULL); /* closed: not handed back */
+    CHECK(!g_close_new && g_new == news + 1 && g_close == closes + 1);
+    CHECK(BK_node_child_count(s) == 1);
+    int rr[4];
+    rect_of(a, rr);
+    CHECK(rr[2] == W);
+    /* a layout set from the handler of a restore's new area */
+    BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);
+    CHECK(b != NULL && BK_area_split(b, BK_AXIS_H, 0.5f) != NULL);
+    const char *l = BK_get_str(s, "layout");
+    char *three = malloc(strlen(l) + 1);
+    strcpy(three, l);
+    CHECK(BK_area_close(b));
+    l = BK_get_str(s, "layout");
+    char *two = malloc(strlen(l) + 1);
+    strcpy(two, l);
+    CHECK(BK_area_close(BK_node_child(s, 1)));
+    g_layout_on_new = two;
+    CHECK(BK_set_str(s, "layout", three));
+    CHECK(g_layout_on_new == NULL && BK_node_child_count(s) == 2);
+    rect_of(a, rr);
+    free(three);
+    free(two);
+    free_screen(s);
+  }
+
+  /* -- removing a maximized area gives the others back -- */
+  {
+    BKNode *a;
+    BKNode *s = test_screen(&a);
+    BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);
+    CHECK(b && BK_set_str(b, "full", "maximized"));
+    CHECK(BK_get_num(a, "visible") == 0);
+    BK_node_remove(s, b);
+    BK_node_free(b);
+    CHECK(BK_get_num(a, "visible") == 1);
+    CHECK(strcmp(BK_get_str(a, "full"), "") == 0);
+    int rr[4];
+    rect_of(a, rr);
+    CHECK(rr[2] == W);
+    free_screen(s);
   }
 
   /* -- a plain scroll of a quarter pixel adds up -- */
@@ -707,6 +771,12 @@ int main(void)
     BK_render(sc, g_r, 200, 100, 0);
     BK_node_rect(rows[0], y1);
     CHECK(y1[1] == y0[1] - 1); /* the fourth completes it */
+    /* a sideways swipe or tilt: the root only scrolls vertically, so it doesn't move */
+    CHECK(!BK_scroll_px(sc, 10, 50, 12.0f, 0.0f, 0));
+    CHECK(!BK_scroll(sc, 10, 50, 1.0f, 0.0f, 0));
+    BK_render(sc, g_r, 200, 100, 0);
+    BK_node_rect(rows[0], y0);
+    CHECK(y0[1] == y1[1]);
     BK_context_free(sc);
     BK_node_free(col);
   }

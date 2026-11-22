@@ -409,8 +409,10 @@ enum {
   NF_BARE = 1 << 28,        /* "bare": an HTML text field with no frame (CSS `border-style: none`) */
   NF_SELECT = 1 << 29,      /* "select": held selected by the host (UI_SELECT: a checked push button) */
   NF_ARRANGE = 1 << 30,     /* arrange again: it or a node under it measured again since its arrange */
-  NF_PINNED = 1u << 31,     /* "pinned" panels show in every sidebar category (PNL_PIN) */
 };
+/* "pinned" panels show in every sidebar category (PNL_PIN). Bit 31 is above INT_MAX, which an
+ * enumerator can't strictly hold in C11: an unsigned constant instead. */
+#define NF_PINNED (1u << 31)
 
 #define BK_HTML(n) (((n)->flags & NF_HTML) != 0)
 
