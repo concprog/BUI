@@ -192,6 +192,7 @@ all get the same widgets and interactions:
 | **C** (`BUI_kit.h`)                                                                                                                                      | The kit itself: nodes, widgets, windows                                                                                                         | Working               |
 | **D** (the `bui` DUB package in `bindings/d`)                                                                                                            | Idiomatic D wrappers, the complete raw C API and an HTML/CSS/RSX authoring layer                                                                                                | Working               |
 | **Go**: the kit's nodes (`bindings/go/bui`), or [MyGo](https://github.com/egoist/mygo)-style views (`ui.Column(c).Children(...)`, `ui.Checkbox(c, &v, "Sync")`) | Blender's widgets from Go, with a headless `Tester` for `go test` | Working |
+| **Ruby** (the `blenderui` gem in `bindings/ruby`) | A C extension over the kit (no FFI): nodes, windows and menus, interfaces built from blocks, headless tests | Working |
 
 Not sure which to pick? If you already have code, use the row that matches it.
 If you're starting fresh in Python, the Blender components are the friendliest.
@@ -1624,6 +1625,7 @@ All 26 run headless (`bui-lua --headless app.lua`) for CI and documentation scre
 | [Lua](bindings/lua/README.md)                      | Standalone `bui-lua` or loadable module; every widget, tree view, file browser, node editor                                          |
 | [D](bindings/d/README.md)                          | DUB package: raw kit declarations, D wrappers, HTML/CSS/RSX, ownership, examples and the integration suite                                         |
 | [Go](bindings/go/README.md) | cgo module: the kit's nodes, windows and menus in `bui`, MyGo-style views and a headless `Tester` in `ui` |
+| [Ruby](bindings/ruby/README.md) | C extension gem: the kit's nodes, windows, menus, trees and images, `BUI::Builder` blocks, headless tests |
 | [Editor support](addons/bui-vscode/README.md)      | VS Code (`addons/bui-vscode`) and Zed (`addons/bui-zed`) extensions for `rsx!`: Tailwind-aware highlighting, snippets, class completion |
 | [Integration](INTEGRATION.md)                      | Embedding BUI drawing in C, C++, Qt or PySide hosts                                                                                  |
 | [Architecture](ARCHITECTURE.md)                    | Modules and what was taken from Blender                                                                                              |
@@ -2037,6 +2039,7 @@ python examples/components_demo.py
 (cd bindings/rust && cargo test)            # Rust: CSS, Tailwind, rsx!, hooks, effects, headless windows
 (cd bindings/d && dub run --config=test)    # D: raw kit, wrappers, HTML/CSS/RSX, menus, canvas, trees
 (cd bindings/go && go generate ./bui && go test ./...)   # Go: the kit, MyGo-style views, headless
+(cd bindings/ruby && bundle install && rake test)   # Ruby: the kit, blocks, events, the GC, headless
 ```
 
 | Option                      | Default                  | What it does                                                                                        |
@@ -2092,6 +2095,7 @@ How each was counted: [Coverage](https://bui.preetham.top/docs/reference/coverag
 | `bindings/node/`, `bindings/react/`, `bindings/svelte/`, `bindings/vue/` | `@blender-ui/native`, `@blender-ui/react`, `@blender-ui/svelte` and `@blender-ui/vue`                                                                                                                                                                                                                                                                                                                                                                              |
 | `bindings/d/`                                           | The `bui` DUB package: raw `extern(C)` declarations, D wrappers, HTML/CSS/RSX, examples and the integration suite                                                                                                                                                                                                                                                                                                                                             |
 | `bindings/go/` | The Go module: `bui` (the kit over cgo), `ui` (MyGo-style views and `Tester`), the kit builder `go generate` runs, examples |
+| `bindings/ruby/` | The `blenderui` gem: the C extension (`ext/bui`), the Ruby layer and builder (`lib`), examples and tests |
 | `bindings/imgui/`                                       | Dear ImGui (vendored), the BUI backend, Blender style, the C API and its generator, the Blender-widgets build                                                                                                                                                                                                                                                                                                                                   |
 | `backends/qt/`                                          | C++ Qt/QPainter render-sink backend                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `bench/`                                                | The start time and battery benchmark; `bench/images/` (decoders, thumbnail grid)                                                                                                                                                                                                                                                                                                                                                                |
@@ -2125,6 +2129,7 @@ How each was counted: [Coverage](https://bui.preetham.top/docs/reference/coverag
 | [`bindings/svelte/examples/Counter.svelte`](bindings/svelte/examples/Counter.svelte)                                                                          | Svelte 5 (`node --import ./bindings/svelte/register.js bindings/svelte/examples/counter.js`)                                                                                                                                                                    |
 | [`bindings/d/examples/hello.d`](bindings/d/examples/hello.d)                                                                                                  | D: a slider and a button in a native window                                                                                                                                                                                                                     |
 | [`bindings/d/examples/headless.d`](bindings/d/examples/headless.d)                                                                                            | D: render, click and inspect pixels without a window                                                                                                                                                                                                            |
+| [`bindings/ruby/examples/counter.rb`](bindings/ruby/examples/counter.rb), [`todos.rb`](bindings/ruby/examples/todos.rb), [`hello.rb`](bindings/ruby/examples/hello.rb), [`headless.rb`](bindings/ruby/examples/headless.rb) | Ruby: a counter built from blocks, a to-do list with rows added and removed and a clock from another thread, the kit's nodes in a window and without one |
 | [`bindings/d/examples/rsx_page.d`](bindings/d/examples/rsx_page.d) | D: an HTML/CSS page from `rsx!` in a native window |
 | [`bindings/go/examples/counter`](bindings/go/examples/counter/main.go), [`todos`](bindings/go/examples/todos/main.go) | Go: MyGo-style views: a counter with its test, a to-do list with keyed rows and a panel |
 | [`bindings/go/examples/hello`](bindings/go/examples/hello/main.go), [`headless`](bindings/go/examples/headless/main.go) | Go: the kit's nodes in a window, and without one |
@@ -2185,6 +2190,7 @@ ship. The tables below have the details.
 | Rust               | HTML (113/113 elements), Flexbox 12/12, Grid 23/23, CSS 2.1 90/90, math functions, `var()`, CSS Color 4/5, Selectors 4, `@layer` / `@media` / `@supports` / `@scope` / `@container` / `@font-face` / `@property`, `@keyframes` animations and transitions, filters / blend modes / masks / `clip-path` / 2D transforms / `border-image`, bidi text, background images, `object-fit`, Tailwind v4, `rsx!`, `#[component]` with optional props and `key`, hooks, Blender components, browser-look form controls, headless testing |
 | Dear ImGui         | The real Dear ImGui 1.93 on BUI (CPU, Direct3D 11, OpenGL), Blender theme and Inter; C++ / C (399/399 functions) / Python and Rust (366–385/399); the Blender-widgets build                                                                                                                                                                                                                                                                                                                                                     |
 | Go                 | `bindings/go`: the kit over cgo (nodes, contexts, windows, menus, canvas, trees, themes) and MyGo-style views (`ui.Column(c).Children(...)`, controls bound to pointers, `Clicked` / `Changed`, keys, rows and columns, a headless `Tester`) |
+| Ruby               | `bindings/ruby`: the `blenderui` gem, a C extension over the kit (nodes, properties, events, menus, trees, canvas, images, themes, native windows and the loop, with other threads running while it waits), `BUI::Builder` blocks, headless tests, checked with AddressSanitizer |
 | Rendering          | Software raster (parallel, damage-tracked), GPU renderer (Direct3D 11 on Windows, OpenGL 3.3 on Linux), textured meshes, portable text engine (FreeType, as in Blender)                                                                                                                                                                                                                                                                                                                                                         |
 | JavaScript / React | `@blender-ui/native`: a DOM-like API over napi-rs, with its own UI thread, only changes crossing the boundary, vsync-paced `requestAnimationFrame` and signals. `@blender-ui/react`: a React 19.3 renderer whose hooks (`useState`, `useMemo`, `useEffect` ...) hold signals that update nodes without re-renders. Both on Node.js and Bun, with headless testing. `bui build` makes standalone executables: about 7 MB with the embedded QuickJS runtime, or Bun's with `--bun` ([guide](docs/javascript.md))                  |
 | Packaging          | [`blenderui` on PyPI](https://pypi.org/project/blenderui/), with a CI workflow for wheels on all platforms (Linux wheels with the native X11 host); [`blenderui` on crates.io](https://crates.io/crates/blenderui); [`@blender-ui/react`](https://www.npmjs.com/package/@blender-ui/react) and [`@blender-ui/native`](https://www.npmjs.com/package/@blender-ui/native) on npm                                                                                                                                                  |
@@ -2215,7 +2221,7 @@ ship. The tables below have the details.
 | **Accessibility**                    | Screen-reader support through UI Automation (Windows), AT-SPI (Linux) and NSAccessibility (macOS)                                                           |
 | **Qt parity**                        | Measure against PySide6, run the same programs on Qt and BUI, fill in the missing classes, then `install()` so `import PySide6` programs run unchanged      |
 | **More JavaScript frameworks**       | Vue and Angular, as thin adapters over `@blender-ui/native` (the layer React and Svelte share)                                                              |
-| **More languages**                   | Lua (27 examples, every widget), Ruby, C#, Zig, Swift and Kotlin over the same C header; Godot, Unity and Bevy; Flutter |
+| **More languages**                   | Lua (27 examples, every widget), C#, Zig, Swift and Kotlin over the same C header; Godot, Unity and Bevy; Flutter |
 
 Our roadmap has no dates on it. Like a good render, it's done when the noise
 goes away.
@@ -2295,13 +2301,15 @@ headless there. Python can always fall back to the Tk window
 
 <details>
 <summary><b>Can I use BUI from Vue, Angular, Ruby, Go or Lua?</b></summary>
-Lua is now supported: <code>cmake -DBUI_BUILD_LUA_BINDINGS=ON</code> builds
+Ruby is supported: the <code>blenderui</code> gem in <code>bindings/ruby</code>
+is a C extension over the kit (<a href="bindings/ruby/README.md">its README</a>).
+Lua is too: <code>cmake -DBUI_BUILD_LUA_BINDINGS=ON</code> builds
 <code>bui-lua</code> (a standalone host) and <code>bui.so</code> / <code>bui.dll</code>
 (a loadable module) for Lua 5.4, LuaJIT or LuaRocks. There are 27 examples and
 every BUI widget type works. Vue and Angular would be thin adapters over
 <code>@blender-ui/native</code>, the layer React and Svelte already share
-(<a href="docs/javascript.md">how to add a framework</a>). Ruby and Go
-(through cgo) would call the C kit, <code>BUI_kit.h</code>. If you want one
+(<a href="docs/javascript.md">how to add a framework</a>). Go
+(through cgo) would call the C kit, <code>BUI_kit.h</code>, as Ruby does. If you want one
 sooner, open an issue or a pull request:
 <a href="CONTRIBUTING.md">CONTRIBUTING.md</a> says how.
 </details>

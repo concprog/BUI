@@ -3,7 +3,10 @@ so the published crate is self-contained. Run before `cargo package` / `cargo pu
 
     python bindings/rust/scripts/vendor_c.py
 
-`csrc/` is git-ignored; inside the repo, build.rs uses the repo itself.
+`csrc/` is git-ignored; inside the repo, build.rs uses the repo itself. The Ruby gem vendors
+the same sources into its own folder (`--dest bindings/ruby/ext/bui/csrc`, its `rake vendor`).
+The destination is emptied first, so it must be new, empty, or an earlier output of this script
+(which leaves a `.vendored` mark in it): any other folder is refused, not deleted.
 
 What build.rs configures (BUI_BUILD_TESTS / EXAMPLES / PYTHON_BINDINGS / UI / QT_BACKEND
 off) needs: the top CMakeLists.txt (+ the version in bindings/python/bui/_version.py),
@@ -15,13 +18,14 @@ and tests/bui_png.h, which the C API includes). Test directories, generators and
 are left out. The script checks that every source the CMake files name is present.
 """
 
+import argparse
 import re
 import shutil
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-DEST = ROOT / "bindings" / "rust" / "blenderui-sys" / "csrc"
+DEST = ROOT / "bindings" / "rust" / "blenderui-sys" / "csrc"  # --dest moves it
 DIRS = ["core", "types", "gpu", "compat", "kit", "api", "bindings/imgui", "platform/wasm"]
 FILES = ["CMakeLists.txt", "features.json", "features.cmake", "LICENSE", "bindings/python/bui/_version.py", "ui/CMakeLists.txt"]
 # relative directories (from ROOT) never needed by the crate's CMake configuration
@@ -29,6 +33,11 @@ SKIP_DIRS = {"core/tests", "gpu/tests", "bindings/imgui/gen"}
 SKIP_NAMES = shutil.ignore_patterns("__pycache__", "*.pyc", "*.py", "build*", "*.o", "*.obj")
 # header names in CMake files that are no paths: <bui_ftoption.h> includes, find_path
 NOT_FILES = {"bui_ftoption.h", "bui_ftmodule.h", "X11/Xlib.h"}
+# in a destination this script made (empty; the crate carries it, the gem's file list skips dotfiles):
+# only such a folder, or an empty one, is emptied for a new copy
+MARK = ".vendored"
+# the destinations this script wrote before it left the mark (git-ignored, nothing else goes there)
+UNMARKED = {DEST, ROOT / "bindings" / "ruby" / "ext" / "bui" / "csrc"}
 
 
 def ignore(src: str, names: list[str]) -> set[str]:
@@ -36,6 +45,13 @@ def ignore(src: str, names: list[str]) -> set[str]:
     skipped = set(SKIP_NAMES(src, names))
     skipped |= {n for n in names if f"{rel}/{n}" in SKIP_DIRS}
     return skipped
+
+
+def replaceable(dest: Path) -> bool:
+    """`dest` may be emptied for a new copy: it does not exist, or it is a folder that is empty or an earlier copy."""
+    if not dest.exists():
+        return True
+    return dest.is_dir() and ((dest / MARK).is_file() or dest in UNMARKED or not any(dest.iterdir()))
 
 
 def check_sources() -> list[str]:
@@ -75,10 +91,25 @@ def ship_licenses() -> list[str]:
 
 
 def main() -> None:
-    shipped = ship_licenses()
-    print(f"license files copied into {len(shipped)} crates: {', '.join(shipped)}")
+    global DEST
+    parser = argparse.ArgumentParser(description="Copy BUI's C sources into a package.")
+    parser.add_argument("--dest", type=Path, help="where to (default: the Rust crate's csrc/)")
+    dest = parser.parse_args().dest
+    if dest:
+        DEST = dest.resolve()  # another package (the Ruby gem): the crates' licenses are not its business
+        # it is emptied before the copy: it must hold none of what is copied
+        sources = [ROOT / d for d in DIRS + FILES]
+        if ROOT.is_relative_to(DEST) or any(DEST.is_relative_to(s) or s.is_relative_to(DEST) for s in sources):
+            sys.exit(f"--dest {DEST} overlaps the sources it would copy (pick a folder of its own)")
+    if not replaceable(DEST):
+        sys.exit(f"{DEST} exists and is not an earlier copy (it has no {MARK}): pick a new or empty folder")
+    if not dest:
+        shipped = ship_licenses()
+        print(f"license files copied into {len(shipped)} crates: {', '.join(shipped)}")
     if DEST.exists():
         shutil.rmtree(DEST)
+    DEST.mkdir(parents=True)
+    (DEST / MARK).touch()  # first: an interrupted copy is still this script's to empty
     for d in DIRS:
         shutil.copytree(ROOT / d, DEST / d, ignore=ignore)
     for f in FILES:
