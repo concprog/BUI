@@ -75,7 +75,7 @@ Each project also gets a `bui.toml` that records what you chose, so `bui` knows 
 | Command | What it does |
 | --- | --- |
 | `bui dev [-- ARGS]` | Runs the app, restarting on every save where the language can (`cargo run`, `bun --watch`, `uv run`, ...) |
-| `bui build [-- ARGS]` | A release build (`cargo build --release`; a JavaScript app becomes one small executable) |
+| `bui build [-- ARGS]` | A release build (`cargo build --release`; a JavaScript app becomes one small executable; a C app is built optimized in `build-release`, apart from `bui dev`'s Debug build in `build`) |
 | `bui doctor` | Looks at what this project needs, says what is wrong in one line each and offers the fixes |
 | `bui update` | Updates `bui` itself, then the BUI packages of the project you are in |
 | `bui docs` | Opens the documentation in your browser |
