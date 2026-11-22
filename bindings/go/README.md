@@ -97,6 +97,11 @@ go func() {
 }()
 ```
 
+`window.Free()` inside a callback (a timer, `OnFrame`, `OnClose`, a node's
+handler) does not free the window at once: the kit goes on using it after the
+callback returns. The loop frees it once no callback is running, and a loop
+nested in a callback (`bui.Pump()`) waits too.
+
 ## The `ui` package: MyGo's syntax
 
 A view is a method of your state that takes the window's `*ui.Context`. It

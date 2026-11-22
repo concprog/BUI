@@ -44,9 +44,8 @@ type Window struct {
 	onFrame func()
 	onClose func() bool
 	onFocus func(active bool)
-	// a callback of the window is running: Free waits for it to return
-	dispatching int
-	freeLater   bool
+	// a Free asked for inside a callback, waiting for the loop
+	freeLater bool
 }
 
 // ErrNoWindows is returned where the platform has no window host (or, on
@@ -120,14 +119,19 @@ func (w *Window) Close() { C.BK_window_close(w.h) }
 func (w *Window) IsOpen() bool { return w.h != nil && C.BK_window_is_open(w.h) != 0 }
 
 // Free frees a closed window, and its context and tree when NewWindow made
-// them. Called from one of the window's own callbacks, it frees the window
-// once that callback has returned.
+// them. Called inside a callback (a window's, a node's handler), it frees the
+// window from the loop once no callback is running: the kit still uses the
+// window after the callback returns.
 func (w *Window) Free() {
-	if w.h == nil {
+	if w.h == nil || w.freeLater {
 		return
 	}
-	if w.dispatching > 0 {
+	if callbacks > 0 {
 		w.freeLater = true
+		later = append(later, func() {
+			w.freeLater = false
+			w.Free()
+		})
 		return
 	}
 	delete(windows, w.id)
@@ -240,24 +244,13 @@ func (w *Window) Update(fn func()) {
 	})
 }
 
-// dispatch runs one of the window's callbacks; a Free asked for inside it
-// happens once it has returned, when the kit no longer uses the window.
-func (w *Window) dispatch(fn func()) {
-	w.dispatching++
-	fn()
-	w.dispatching--
-	if w.dispatching == 0 && w.freeLater {
-		w.freeLater = false
-		w.Free()
-	}
-}
-
 //export goWindowTimer
 func goWindowTimer(id C.uintptr_t, timer C.int) {
 	if w := windows[uintptr(id)]; w != nil {
 		if fn := w.timers[int(timer)]; fn != nil {
 			delete(w.timers, int(timer))
-			w.dispatch(fn)
+			defer enter()()
+			fn()
 		}
 	}
 }
@@ -266,7 +259,8 @@ func goWindowTimer(id C.uintptr_t, timer C.int) {
 func goWindowClose(id C.uintptr_t) C.int {
 	keep := false
 	if w := windows[uintptr(id)]; w != nil && w.onClose != nil {
-		w.dispatch(func() { keep = !w.onClose() })
+		defer enter()()
+		keep = !w.onClose()
 	}
 	return cbool(!keep)
 }
@@ -274,14 +268,16 @@ func goWindowClose(id C.uintptr_t) C.int {
 //export goWindowFrame
 func goWindowFrame(id C.uintptr_t) {
 	if w := windows[uintptr(id)]; w != nil && w.onFrame != nil {
-		w.dispatch(w.onFrame)
+		defer enter()()
+		w.onFrame()
 	}
 }
 
 //export goWindowFocus
 func goWindowFocus(id C.uintptr_t, active C.int) {
 	if w := windows[uintptr(id)]; w != nil && w.onFocus != nil {
-		w.dispatch(func() { w.onFocus(active != 0) })
+		defer enter()()
+		w.onFocus(active != 0)
 	}
 }
 
@@ -292,13 +288,16 @@ func Run() {
 	wakeInit()
 	drainMain()
 	C.BK_window_run()
+	drainMain()
 }
 
 // Pump handles pending messages without waiting; it returns the open windows.
 func Pump() int {
 	wakeInit()
 	drainMain()
-	return int(C.BK_window_pump())
+	open := int(C.BK_window_pump())
+	drainMain()
+	return open
 }
 
 // Quit ends Run.

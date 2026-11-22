@@ -3,8 +3,10 @@
 package bui
 
 import (
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestVersion(t *testing.T) {
@@ -196,4 +198,57 @@ func TestMoveKeepsTheChild(t *testing.T) {
 	if NewNode("label").Move(a, 0) {
 		t.Errorf("Move of another node's child")
 	}
+}
+
+func TestFreeInsideCallbacks(t *testing.T) {
+	if !WindowSupported() {
+		t.Skip("no native windows here")
+	}
+	runtime.LockOSThread() // the windows and their loop stay on one thread
+	defer runtime.UnlockOSThread()
+	pumpUntilFreed := func(w *Window) {
+		for deadline := time.Now().Add(5 * time.Second); w.h != nil && time.Now().Before(deadline); {
+			Pump()
+			time.Sleep(time.Millisecond)
+		}
+		if w.h != nil {
+			t.Fatalf("the window was never freed")
+		}
+		if _, ok := windows[w.id]; ok || len(later) != 0 {
+			t.Errorf("the free left the window table or the queue behind")
+		}
+	}
+
+	// from its own timer, with a loop nested in it
+	w := NewWindow(WindowOptions{Title: "free", Width: 120, Height: 80, Hidden: true})
+	if w == nil {
+		t.Skip("no window")
+	}
+	fired := false
+	w.Timer(1, func() {
+		fired = true
+		w.Free()
+		Pump() // a loop nested in the callback frees nothing either
+		if w.h == nil {
+			t.Errorf("freed inside its own timer, with the kit still using it")
+		}
+	})
+	pumpUntilFreed(w)
+	if !fired {
+		t.Errorf("the timer never fired")
+	}
+
+	// from a node's handler, inside the kit's dispatch on the window's context
+	b := NewNode("button").Set("text", "Close")
+	w = NewWindow(WindowOptions{Root: NewNode("column").Add(b), Width: 120, Height: 80, Hidden: true})
+	b.OnClick(func(Event) { w.Free() })
+	r := NewRaster(120, 80)
+	defer r.Free()
+	w.Context().Render(r, 120, 80, true)
+	x, y := b.Rect().Center()
+	w.Context().Click(x, y, 0)
+	if w.h == nil {
+		t.Errorf("freed inside a handler of its context's dispatch")
+	}
+	pumpUntilFreed(w)
 }

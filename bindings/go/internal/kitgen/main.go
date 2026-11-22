@@ -144,8 +144,9 @@ func configure(root, dir string) error {
 // launchers are the compiler launchers CC and CXX can start with.
 var launchers = map[string]bool{"ccache": true, "sccache": true, "kache": true, "distcc": true, "icecc": true}
 
-// splitQuoted splits a command as go env prints CC: on spaces, with single or
-// double quotes around words holding spaces.
+// splitQuoted splits a command as go env prints CC (cmd/internal/quoted): on
+// spaces, with single or double quotes around words holding spaces. A quote
+// counts only at the start of a word, and its word ends with it.
 func splitQuoted(s string) []string {
 	var words []string
 	var w strings.Builder
@@ -153,8 +154,10 @@ func splitQuoted(s string) []string {
 	for _, r := range s {
 		switch {
 		case quote != 0 && r == quote:
-			quote = 0
-		case quote == 0 && (r == '"' || r == '\''):
+			words = append(words, w.String())
+			w.Reset()
+			quote, in = 0, false
+		case quote == 0 && !in && (r == '"' || r == '\''):
 			quote, in = r, true
 		case quote == 0 && (r == ' ' || r == '\t'):
 			if in {

@@ -153,6 +153,7 @@ func goRefRelease(ref C.uintptr_t) {
 
 //export goHostEmit
 func goHostEmit(id C.uintptr_t, n *C.BKNode, kind C.int, ref C.uintptr_t, a, b C.double) {
+	defer enter()()
 	ctx := contexts[uintptr(id)]
 	k := EventKind(kind)
 	if k == EventCall && ref != 0 {
@@ -207,7 +208,27 @@ var (
 	mainMu    sync.Mutex
 	mainQueue []func()
 	woken     bool
+	// callbacks counts the kit callbacks running (a node's handler, a
+	// window's): the kit has frames on the stack that go on using the window
+	// after they return, so a window freed inside one waits in later until
+	// the loop drains it with none running. The loop's wake does not count:
+	// it runs between messages.
+	callbacks int
+	later     []func()
 )
+
+// enter marks a kit callback running until the leave it returns, deferred.
+func enter() func() {
+	callbacks++
+	return leave
+}
+
+func leave() {
+	// a loop nested in the callback could not run later: wake the outer one
+	if callbacks--; callbacks == 0 && len(later) > 0 {
+		C.BK_window_wake()
+	}
+}
 
 // RunOnMain runs fn on the main thread, soon, from any goroutine: the window
 // loop wakes for it. Before the loop runs, fn waits for it.
@@ -221,7 +242,16 @@ func RunOnMain(fn func()) {
 //export goWake
 func goWake() { drainMain() }
 
+// drainMain runs the frees left for later, when no callback is running, then
+// the functions other goroutines queued.
 func drainMain() {
+	for callbacks == 0 && len(later) > 0 {
+		q := later
+		later = nil
+		for _, fn := range q {
+			fn()
+		}
+	}
 	for {
 		mainMu.Lock()
 		q := mainQueue
