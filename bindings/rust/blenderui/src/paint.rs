@@ -1001,7 +1001,7 @@ fn spill(n: &BoxNode, c: &Computed) -> Option<(f32, f32)> {
         Content::Text(t) if (n.taffy.is_some() || n.folded) && c.text_shadow.is_none() => {
             // each char advances by its width and the letter spacing (paint_text_line)
             let bytes = t.len() as f32 + 1.0;
-            Some((bytes * (c.font_size + c.letter_spacing.max(0.0)), bytes * c.line_px().max(c.font_size) + decoration_reach(c)))
+            Some((bytes * (c.font_size + c.letter_spacing.abs()), bytes * c.line_px().max(c.font_size) + decoration_reach(c)))
         }
         _ => None,
     }

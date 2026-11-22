@@ -79,6 +79,7 @@ int main(void)
   BKNode *label = add(col, "label", "Short");
   BKNode *button = add(col, "button", "Button");
   BKNode *ramp = add(col, "ramp", NULL); /* stop markers at both ends, under the band */
+  BKNode *ramp2 = add(col, "ramp", NULL);
   add(col, "number", "Number");
   BKNode *panel = add(col, "panel", "Panel");
   add(panel, "checkbox", "Inside");
@@ -98,6 +99,7 @@ int main(void)
   BKNode *extra = add(col, "button", "Added");
   STEP("child added");
   BK_node_remove(col, extra);
+  BK_node_free(extra); /* a removed node is the caller's */
   STEP("child removed");
   BK_set_num(button, "visible", 0);
   STEP("hidden");
@@ -117,9 +119,17 @@ int main(void)
   BK_set_num(ramp, "add", 0.5); /* the handler frees the ramp before the setter returns */
   CHECK(g_free_on_change == NULL);
   STEP("freed by its change handler");
+  int rr[4];
+  BK_node_rect(ramp2, rr);
+  g_free_on_change = ramp2;
+  BK_press(ctx, rr[0] + rr[2] / 2, rr[1] + 2, BK_CTRL | BK_BUTTON1); /* Ctrl+click adds a stop */
+  CHECK(g_free_on_change == NULL);
+  BK_release(ctx, rr[0] + rr[2] / 2, rr[1] + 2, 0);
+  STEP("freed by the change of a Ctrl+click");
 
   BUI_raster_free(r);
   BK_context_free(ctx);
+  BK_node_free(col);
   if (!g_fail) {
     printf("damage_test: ok\n");
   }

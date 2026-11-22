@@ -654,20 +654,25 @@ static void ramp_changed(BKNode *n)
   bk_emit(n, BK_EV_CHANGE, NULL, RAMP(n)->active, 0);
 }
 
-static int ramp_add(BKNode *n, float pos)
+/* Adds a stop at `pos` (the active one when the ramp is full); `drag`: a Ctrl+click's, which the
+ * pointer then drags. Nothing reads the ramp after the change event: its handler may free it. */
+static void ramp_add(BKNode *n, float pos, bool drag)
 {
   RampData *d = RAMP(n);
-  if (d->n == RAMP_MAX) {
-    return d->active;
+  const bool full = d->n == RAMP_MAX;
+  if (!full) {
+    float c[4];
+    BK_ramp_evaluate(n, pos, c);
+    d->active = d->n++;
+    d->pos[d->active] = pos;
+    memcpy(d->col[d->active], c, sizeof(c));
   }
-  float c[4];
-  BK_ramp_evaluate(n, pos, c);
-  const int i = d->n++;
-  d->pos[i] = pos;
-  memcpy(d->col[i], c, sizeof(c));
-  d->active = i;
-  ramp_changed(n); /* last: its handler may free the node */
-  return i;
+  if (drag) {
+    d->drag = d->active;
+  }
+  if (!full) {
+    ramp_changed(n);
+  }
 }
 
 static void ramp_remove(BKNode *n)
@@ -701,7 +706,7 @@ static int ramp_press(BKNode *n, BKEvent *e)
   RampData *d = RAMP(n);
   const float pos = ramp_pos_at(n, e->x);
   if (EV_CTRL(e) || !d->n) { /* Ctrl+click: add a stop */
-    d->drag = ramp_add(n, pos);
+    ramp_add(n, pos, true);
     return 1;
   }
   int best = 0;
@@ -809,7 +814,7 @@ static int ramp_set_num(BKNode *n, const char *key, double v)
     return 1;
   }
   if (strcmp(key, "add") == 0) {
-    ramp_add(n, (float)v);
+    ramp_add(n, (float)v, false);
     return 1;
   }
   if (strcmp(key, "remove") == 0) {
