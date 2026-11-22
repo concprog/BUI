@@ -428,16 +428,13 @@ static void region_rect_calc(BKArea *area, BKNode **regions, int index, int coun
   if (region->winy <= U_BORDER_WIDTH && !is_hidden) {
     region->flag |= RGN_FLAG_TOO_SMALL; /* don't draw when just a couple pixels tall */
   }
-  /* If region opened normally, store this for hide/reveal usage. */
-  if (alignment != RGN_ALIGN_FLOAT && !(region->flag & RGN_FLAG_TOO_SMALL) && !is_hidden) {
-    if (region->winx > 1 && (alignment == RGN_ALIGN_LEFT || alignment == RGN_ALIGN_RIGHT)) {
-      region->sizex = (short)((region->winx + 0.5f) / UI_SCALE_FAC);
-    }
-    if (region->winy > 1 && !info->fixed_height &&
-        (alignment == RGN_ALIGN_TOP || alignment == RGN_ALIGN_BOTTOM))
-    {
-      region->sizey = (short)((region->winy + 0.5f) / UI_SCALE_FAC);
-    }
+  /* If region opened normally, store this for hide/reveal usage (a hidden or too small one kept
+   * the empty winrct: 1 x 1). Prevent rounding errors for UI_SCALE_FAC multiply and divide. */
+  if (region->winx > 1) {
+    region->sizex = (short)((region->winx + 0.5f) / UI_SCALE_FAC);
+  }
+  if (region->winy > 1) {
+    region->sizey = (short)((region->winy + 0.5f) / UI_SCALE_FAC);
   }
   /* exception for multiple overlapping regions on same spot */
   if (region->overlap && alignment != RGN_ALIGN_FLOAT) {
