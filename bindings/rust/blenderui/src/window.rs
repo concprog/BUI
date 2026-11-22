@@ -1885,6 +1885,10 @@ impl Window {
             Some((Vec::new(), false))
         }?;
         self.dirty |= self.caches.anim.redraw_motion(frame, &mut self.caches.styles, vp)?;
+        if self.caches.anim.take_reclip() {
+            // a clip moved under one that stays: placed again, the moved values are in the styles
+            crate::layout::replace(frame, vp, &self.state, &mut self.caches);
+        }
         Some(moved_css)
     }
 
