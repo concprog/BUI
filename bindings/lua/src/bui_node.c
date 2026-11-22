@@ -65,24 +65,29 @@ static void push_color(lua_State *L, const float rgba[4]) {
 /* Node methods                                                       */
 /* ------------------------------------------------------------------ */
 
+/* The child of add or remove, refused while its area's close handler runs: add reparents a child
+ * that has a parent (BK_node_add removes it first), and the screen detaches the area right after
+ * the handler, from the parent it had. */
+static BKNode *movable_child(lua_State *L, const luabui_Node *parent, const luabui_Node *child) {
+  if (!parent->node || !child->node)
+    luaL_error(L, "attempt to use freed node");
+  if (luabui_in_close_notice(child->node))
+    luaL_error(L, "cannot move a node while its area is closing (the screen removes it)");
+  return child->node;
+}
+
 static int l_node_add(lua_State *L) {
   luabui_Node *parent = CHECK_NODE(L, 1);
   luabui_Node *child  = CHECK_NODE(L, 2);
   int index = (int)luaL_optinteger(L, 3, -1);
-  if (!parent->node || !child->node)
-    return luaL_error(L, "attempt to use freed node");
-  BK_node_add(parent->node, child->node, index);
+  BK_node_add(parent->node, movable_child(L, parent, child), index);
   return 0;
 }
 
 static int l_node_remove(lua_State *L) {
   luabui_Node *parent = CHECK_NODE(L, 1);
   luabui_Node *child  = CHECK_NODE(L, 2);
-  if (!parent->node || !child->node)
-    return luaL_error(L, "attempt to use freed node");
-  if (luabui_in_close_notice(child->node))
-    return luaL_error(L, "cannot detach a node while its area is closing (the screen removes it)");
-  BK_node_remove(parent->node, child->node);
+  BK_node_remove(parent->node, movable_child(L, parent, child));
   /* Detach only: the C tree owns nodes, remove never frees (BK_node_remove
    * just unlinks; cf. buipy_kit.c kitnode_remove). The child wrapper stays
    * valid so detached subtrees (e.g. tab pages) can be re-added; reclaim

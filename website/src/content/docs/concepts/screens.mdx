@@ -390,7 +390,7 @@ win:show()
 bui.run()
 ```
 
-A closed area's wrapper becomes stale (`node:type()` is `"(freed)"`), never dangling. A close handler cannot `free()` the area it is told about: the screen frees it right after.
+A closed area's wrapper becomes stale (`node:type()` is `"(freed)"`), never dangling. A close handler cannot `free()` the area it is told about (or its screen), nor `remove()` it or `add()` it anywhere: the screen detaches and frees it right after.
 </Tab>
 <Tab label="D">
 
