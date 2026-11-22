@@ -362,7 +362,7 @@ enum Made {
     Own(Style),
 }
 
-/// The styles a layout tree holds before it drops those no node uses.
+/// The styles a layout tree holds before it first drops those no node uses.
 const STYLES_MAX: usize = 4096;
 
 /// The persistent taffy tree's nodes by box key (with the frame they were
@@ -400,6 +400,9 @@ pub(crate) struct LayoutCaches {
     text_box: KeyMap<Key, usize>,
     /// The table entry of each shape's taffy style.
     shapes: KeyMap<Shape, StyleIx>,
+    /// The style count that compacts the table next: twice what the last
+    /// compaction kept (at least `STYLES_MAX`), so live styles never compact every frame.
+    styles_limit: usize,
     /// Content widths of blocks with `overflow-wrap: anywhere` from the last
     /// layout: their long words are split to fit before layout.
     wrap_widths: KeyMap<Key, f32>,
@@ -504,6 +507,7 @@ impl Default for LayoutCaches {
             recon: Recon::default(),
             text_box: KeyMap::default(),
             shapes: KeyMap::default(),
+            styles_limit: STYLES_MAX,
             wrap_widths: KeyMap::default(),
             tw: TwJit::default(),
             containers: Containers::default(),
@@ -2402,9 +2406,10 @@ pub(crate) fn layout(root: AnyElement, viewport: (f32, f32), state: &UiState, ca
     }
     caches.recon.stamp = caches.recon.stamp.wrapping_add(1);
     caches.text_box.clear();
-    if caches.taffy.style_count() >= STYLES_MAX {
+    if caches.taffy.style_count() >= caches.styles_limit {
         caches.taffy.compact_styles();
         caches.shapes.clear();
+        caches.styles_limit = (caches.taffy.style_count() * 2).max(STYLES_MAX);
     }
     let Frame { mut nodes, mut els, .. } = recycle;
     nodes.clear();

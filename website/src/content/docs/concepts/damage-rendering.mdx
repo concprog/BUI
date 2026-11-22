@@ -43,7 +43,7 @@ On the full components demo (520×900, Ryzen 7 5800U laptop), that's the differe
 
    If the layout changed (a widget was added or removed, a label grew, a panel collapsed), BUI compares where each widget is now with where the last frame drew it, the way Blender tags a region for redraw. Only widgets that moved, resized, appeared or disappeared are damaged, at their old place and their new one. Only a window resize redraws everything.
 
-   Set `BUI_CHECK_DAMAGE=1` to check this: each partial frame is drawn again in full, and any pixels the damage missed are reported.
+   Set `BUI_CHECK_DAMAGE=1` to check this (software renderer only): each partial frame is drawn again in full, and any pixels the damage missed are reported.
 
 5. **The renderer finds what actually changed.**
 

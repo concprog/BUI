@@ -316,12 +316,12 @@ type Timed = (&'static str, usize, fn(u32) -> Div);
 
 fn timed_scenes() -> Vec<Timed> {
     vec![
-        ("expand_with_max_constraint", 3001, |t| {
+        ("expand_with_max_constraint", 2001, |t| {
             anon(format!("display: flex; width: {}px", 3000 + t % 2)).children((0..1000).flat_map(|_| {
                 [anon("flex: 1 1 0; height: 10px"), anon("flex: 1 1 0; max-width: 1px; height: 10px")]
             }))
         }),
-        ("nested_vertical_stack", 10_001, |t| {
+        ("nested_vertical_stack", 10_100, |t| {
             // 100 levels, 100 leaves in each
             fn level(d: u32, w: u32) -> Div {
                 let inner = if d == 0 { None } else { Some(level(d - 1, w)) };

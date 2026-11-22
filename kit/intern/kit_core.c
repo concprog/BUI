@@ -228,7 +228,7 @@ const char *BK_node_type(const BKNode *n)
 }
 
 static bool node_in_popup(const BKNode *n);
-static void damage_moved(BKContext *ctx, BKNode *n, bool shown, bool in_popup);
+static int damage_moved(BKContext *ctx, BKNode *n, bool shown, bool in_popup);
 
 static void node_detach(BKNode *child)
 {
@@ -452,11 +452,15 @@ void bk_invalidate(BKNode *n)
 }
 
 /* Blender tags a region for redraw; here a layout tags each node whose place on screen changed
- * (moved, resized, shown or hidden): its old and new places are damaged, nothing else is. */
-static void damage_moved(BKContext *ctx, BKNode *n, bool shown, bool in_popup)
+ * (moved, resized, shown or hidden): its old and new places are damaged, nothing else is.
+ * The same walk sets each node's reach (returned): how far past its rect it and its kids draw,
+ * its own margin (a popup's with its shadow) and its kids' beyond it, unless it clips them
+ * (a class with its own draw_tree: scroll, panel, frame). */
+static int damage_moved(BKContext *ctx, BKNode *n, bool shown, bool in_popup)
 {
   shown = shown && NODE_VISIBLE(n);
-  in_popup = in_popup || (n->cls->flags & CLS_POPUP);
+  const bool popup = n->cls->flags & CLS_POPUP;
+  in_popup = in_popup || popup;
   const BKRect now = shown ? bk_node_rect(n) : (BKRect){0, 0, 0, 0};
   if (memcmp(&now, &n->shown, sizeof(now)) != 0) {
     const int m = damage_margin(n, in_popup);
@@ -464,9 +468,17 @@ static void damage_moved(BKContext *ctx, BKNode *n, bool shown, bool in_popup)
     damage_grown(ctx, now, m);
     n->shown = now;
   }
+  int reach = damage_margin(n, popup);
   for (int i = 0; i < n->nkids; i++) {
-    damage_moved(ctx, n->kids[i], shown, in_popup);
+    const BKNode *k = n->kids[i];
+    const int r = damage_moved(ctx, n->kids[i], shown, in_popup);
+    if (shown && NODE_VISIBLE(k) && !n->cls->draw_tree) {
+      reach = BK_MAX(reach, BK_MAX(BK_MAX(n->x - (k->x - r), (k->x + k->w + r) - (n->x + n->w)),
+                                   BK_MAX(n->y - (k->y - r), (k->y + k->h + r) - (n->y + n->h))));
+    }
   }
+  n->reach = reach;
+  return reach;
 }
 
 void bk_relayout(BKNode *n)
@@ -557,9 +569,9 @@ static void draw_tree_in(BKNode *n)
     n->cls->draw_tree(n);
     return;
   }
-  /* Skip whole subtrees outside the redrawn region (children stay inside
-   * their parent's rect; emboss/outlines spill by a pixel or two). */
-  const int m = class_margin(n);
+  /* Skip whole subtrees outside the redrawn region: all the node and its kids draw lies
+   * within its reach (a node no layout saw yet: its class margin). */
+  const int m = BK_MAX(class_margin(n), n->reach);
   BKRect r = bk_rect(n->x - m, n->y - m, n->w + 2 * m, n->h + 2 * m);
   if (!bk_clip_visible(&r)) {
     return;

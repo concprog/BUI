@@ -422,6 +422,7 @@ struct BKNode {
 
   int x, y, w, h;
   BKRect shown; /* where the last layout put it on screen (empty when not shown): damage on change */
+  int reach;    /* how far it and its kids draw past its rect, from the last layout: the draw cull */
   int nat_w, nat_h, nat_gen;
   float weight;
   int fill; /* in a column: takes a share of the spare height (a region filling its area) */

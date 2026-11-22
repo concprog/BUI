@@ -978,8 +978,18 @@ fn paint_reach(c: &Computed) -> f32 {
     shadows.chain(image).fold(outline, f32::max)
 }
 
+/// How far a text's decorations reach past its line, down or up: an explicit
+/// `text-underline-offset` and `text-decoration-thickness` can put them anywhere.
+fn decoration_reach(c: &Computed) -> f32 {
+    if !(c.underline || c.line_through || c.overline) {
+        return 0.0;
+    }
+    let offset = if c.underline { c.underline_offset.map_or(0.0, f32::abs) } else { 0.0 };
+    offset + c.decoration_thickness.unwrap_or(0.0)
+}
+
 /// How far box `i` can paint past its bounds, (across, down); `None` when that is not known.
-/// Text can spill past its box: one em per byte across, one line per byte down.
+/// Text can spill past its box: one em per byte across, one line per byte down, plus its decorations.
 fn spill(n: &BoxNode, c: &Computed) -> Option<(f32, f32)> {
     match &n.content {
         // a placeholder draws its label as wide as the label is: no bound
@@ -987,10 +997,10 @@ fn spill(n: &BoxNode, c: &Computed) -> Option<(f32, f32)> {
         Content::Element | Content::Replaced(_) if n.taffy.is_some() && n.marker.is_none() => {
             Some((paint_reach(c), paint_reach(c)))
         }
-        Content::Word { .. } if c.text_shadow.is_none() => Some((c.font_size, c.font_size)),
+        Content::Word { .. } if c.text_shadow.is_none() => Some((c.font_size, c.font_size + decoration_reach(c))),
         Content::Text(t) if (n.taffy.is_some() || n.folded) && c.text_shadow.is_none() => {
             let bytes = t.len() as f32 + 1.0;
-            Some((bytes * c.font_size, bytes * c.line_px().max(c.font_size)))
+            Some((bytes * c.font_size, bytes * c.line_px().max(c.font_size) + decoration_reach(c)))
         }
         _ => None,
     }
