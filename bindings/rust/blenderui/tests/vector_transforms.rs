@@ -106,6 +106,24 @@ fn a_clip_scales_with_the_box_that_clips() {
     });
 }
 
+#[test]
+fn a_clip_path_under_a_scale_scales_with_it() {
+    Application::headless().run(|cx| {
+        let win = open(cx, 300.0, 100.0, Page {
+            css: "html, body { margin: 0; background: #000 }
+                  #p { position: absolute; left: 0; top: 0; width: 100px; height: 40px; scale: 2; transform-origin: left top }
+                  #c { margin-left: 50px; width: 20px; height: 20px; background: #0f0; clip-path: inset(0) }",
+            body: || body().child(div().id("p").child(div().id("c"))),
+        });
+        let (w, _, px) = cx.draw(win.id);
+        let at = |x: usize, y: usize| px[y * w + x] & 0xffffff;
+        // the child is drawn at 100..140 through its parent's scale: its clip path goes there too
+        assert_eq!(at(120, 20), 0x00ff00, "the clip path is where its box is drawn");
+        assert_eq!(at(60, 20), 0x000000, "not where the box would be unscaled");
+        assert_eq!(at(150, 20), 0x000000, "and it ends with the box");
+    });
+}
+
 struct Moving;
 
 impl Render for Moving {
