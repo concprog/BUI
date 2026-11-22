@@ -316,3 +316,48 @@ func TestPanelMoveEvent(t *testing.T) {
 	}()
 	p[0].On(EventKind(eventKindCount), func(Event) {})
 }
+
+func TestFreeContextInsideAHandler(t *testing.T) {
+	root := NewNode("column")
+	defer root.Free()
+	b := NewNode("button").Set("text", "Done")
+	root.Add(b)
+	ctx := NewContext(root)
+	defer ctx.Free()
+	inside := true
+	b.OnClick(func(Event) {
+		ctx.Free()
+		inside = ctx.h == nil
+	})
+	r := NewRaster(120, 80)
+	defer r.Free()
+	ctx.Render(r, 120, 80, true)
+	x, y := b.Rect().Center()
+	ctx.Click(x, y, 0) // the kit goes on using the context after the handler
+	if inside {
+		t.Errorf("freed inside a handler of its own dispatch")
+	}
+	if _, ok := contexts[ctx.id]; ctx.h != nil || ok || len(later) != 0 {
+		t.Errorf("the free was never run once the headless call returned")
+	}
+
+	if !WindowSupported() {
+		return
+	}
+	w := NewWindow(WindowOptions{Width: 120, Height: 80, Hidden: true})
+	if w == nil {
+		return
+	}
+	defer w.Free()
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Errorf("a context a window shows was freed")
+			}
+		}()
+		w.Context().Free()
+	}()
+	if w.Context().h == nil {
+		t.Errorf("the refused free freed the context")
+	}
+}
