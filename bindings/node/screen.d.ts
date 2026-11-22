@@ -3,10 +3,10 @@
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-import type { Element } from './index'
+import type { Element, HTMLElement } from './index'
 
 /** What `createScreen` and `editorElement` need of a document: a `Window` or a `Document`. */
-export interface ElementFactory { createElement (tag: string): Element }
+export interface ElementFactory { createElement (tag: string): HTMLElement }
 
 /** A screen's first arrangement: an editor's name, or two split by an edge. */
 export type AreaSplitLayout = string | { axis: 'h' | 'v', factor: number, first: AreaSplitLayout, second: AreaSplitLayout }
@@ -56,11 +56,14 @@ export function screenChange (value: unknown, previous?: readonly ScreenArea[]):
 /** `screenChange` of an event that `screen` itself sent (null for a nested screen's). */
 export function ownScreenChange (e: { target: unknown }, screen: { value: unknown } | null | undefined,
   previous?: readonly ScreenArea[]): { layout: string, areas: ScreenArea[] } | { window: string } | null
+/** `{ size, hidden }` of a region's `change` event when the listening region sent it (null for a
+ *  nested region's). */
+export function regionResize (e: { target: unknown, currentTarget: unknown }): RegionResizeEvent | null
 export function editorFor<E> (editors: Record<string, E>, name: string): E
 
 /** A `<bui-area>`: `main` and the regions, each an element or `{ element, ...RegionOptions }`. */
 export function editorElement (document: ElementFactory,
-  regions: { main?: Element } & Partial<Record<RegionSlot, Element | ({ element: Element } & RegionOptions)>>): Element
+  regions: { main?: Element } & Partial<Record<RegionSlot, Element | ({ element: Element } & RegionOptions)>>): HTMLElement
 
 /** A `<bui-screen>` for the DOM-like API: each editor's `render` returns an `editorElement`. */
 export function createScreen (document: ElementFactory, options: {
@@ -70,4 +73,4 @@ export function createScreen (document: ElementFactory, options: {
   ops?: 'all' | 'resize'
   onChange?: (e: ScreenChangeEvent) => void
   onWindow?: (e: AreaWindowEvent) => void
-}): Element
+}): HTMLElement

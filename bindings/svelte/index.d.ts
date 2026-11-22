@@ -51,7 +51,27 @@ export { memo as computed } from '@blender-ui/native'
 
 // Blender's screen: <Screen {editors} {layout} {saved} onchange onwindow> (editors' `render`: a
 // snippet showing an <Editor>), <Editor> (regions as snippets or `{ content, size, ... }`), <Region>.
+import type { AreaInfo, AreaSplitLayout, AreaWindowEvent, RegionOptions, RegionResizeEvent, RegionSlot,
+  ScreenChangeEvent } from '@blender-ui/native/screen'
 export { AreaSplit } from '@blender-ui/native/screen'
-export const Screen: Component<Record<string, unknown>>
-export const Editor: Component<Record<string, unknown>>
-export const Region: Component<Record<string, unknown>>
+/** Areas the user rearranges as in Blender; `editors[name].render` is a snippet showing an `<Editor>`. */
+export const Screen: Component<{
+  editors: Record<string, { icon?: string, render: Snippet<[AreaInfo]> }>
+  layout?: AreaSplitLayout
+  saved?: string
+  ops?: 'all' | 'resize'
+  onchange?: (e: ScreenChangeEvent) => void
+  onwindow?: (e: AreaWindowEvent) => void
+  class?: string
+  style?: string
+}>
+/** What an area shows: `children` (the main view) and its regions, each a snippet or
+ *  `{ content, ...RegionOptions }`. */
+export const Editor: Component<{ children?: Snippet } &
+  Partial<Record<RegionSlot, Snippet | ({ content?: Snippet } & RegionOptions)>>>
+/** A region (`region`: its kind, in Blender's names: `'sidebar'`, `'tool_header'` ...). */
+export const Region: Component<Omit<RegionOptions, 'onResize'> & {
+  region: string
+  children?: Snippet
+  onresize?: (e: RegionResizeEvent) => void
+}>
