@@ -1,15 +1,16 @@
 # A blenderui app in a web page (docs/wasm.md): the kit and blenderui build for wasm32-wasip1 and the
 # counter example renders under Node.js. Runs on changes to what the module is built from (the kit's C
-# sources, blenderui, the WebAssembly parts) and by hand.
+# sources, blenderui and the crates it depends on, the workspace manifest they inherit from, the
+# WebAssembly parts) and by hand.
 
 name: wasm
 
 on:
   push:
     branches: [main]
-    paths: ["platform/wasm/**", "bindings/rust/blenderui-web/**", "bindings/rust/blenderui/**", "bindings/rust/blenderui-sys/**", "examples/wasm/**", "kit/**", "gpu/**", "core/**", "types/**", "compat/**", "ui/**", "api/**", "CMakeLists.txt", "features.cmake", "features.json", ".github/workflows/wasm.yml"]
+    paths: ["platform/wasm/**", "bindings/rust/blenderui-web/**", "bindings/rust/blenderui/**", "bindings/rust/blenderui-sys/**", "bindings/rust/blenderui-vlist/**", "bindings/rust/blenderui-table/**", "bindings/rust/blenderui-paint/**", "bindings/rust/blenderui-macros/**", "bindings/rust/blenderui-tailwind/**", "bindings/rust/Cargo.toml", "examples/wasm/**", "kit/**", "gpu/**", "core/**", "types/**", "compat/**", "ui/**", "api/**", "CMakeLists.txt", "features.cmake", "features.json", ".github/workflows/wasm.yml"]
   pull_request:
-    paths: ["platform/wasm/**", "bindings/rust/blenderui-web/**", "bindings/rust/blenderui/**", "bindings/rust/blenderui-sys/**", "examples/wasm/**", "kit/**", "gpu/**", "core/**", "types/**", "compat/**", "ui/**", "api/**", "CMakeLists.txt", "features.cmake", "features.json", ".github/workflows/wasm.yml"]
+    paths: ["platform/wasm/**", "bindings/rust/blenderui-web/**", "bindings/rust/blenderui/**", "bindings/rust/blenderui-sys/**", "bindings/rust/blenderui-vlist/**", "bindings/rust/blenderui-table/**", "bindings/rust/blenderui-paint/**", "bindings/rust/blenderui-macros/**", "bindings/rust/blenderui-tailwind/**", "bindings/rust/Cargo.toml", "examples/wasm/**", "kit/**", "gpu/**", "core/**", "types/**", "compat/**", "ui/**", "api/**", "CMakeLists.txt", "features.cmake", "features.json", ".github/workflows/wasm.yml"]
   workflow_dispatch:
 
 permissions:
