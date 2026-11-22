@@ -193,7 +193,10 @@ const char *saved = BK_get_str(screen, "layout");       /* JSON: set it back to 
 Areas the screen makes (a split, a dock, a restored layout) copy their source's `"editor"` and
 are announced with `BK_EV_AREA` / `BK_AREA_NEW` on the screen (`a`: the child index): fill them.
 The notices come once the edit is done, as Blender queues its notifiers, so a handler may edit
-the screen again; `BK_area_split` returns NULL when the handler closed the new area.
+the screen again; `BK_area_split` returns NULL when the handler closed the new area. A host's
+`BK_node_remove` of an area is told on `BK_EV_CHANGE` once the area has left (the saved
+`"layout"` no longer has it). The `BK_area_*` calls refuse an area that is closing (from its
+`BK_AREA_CLOSE` handler, or one further down the chain), so nested close handlers close it once.
 `BK_AREA_CLOSE` and `BK_AREA_WINDOW` (dragged out of the window) arrive on the area itself;
 `BK_EV_CHANGE` on the screen after every change, `BK_EV_RESIZE` on a region the user resized,
 hid or flipped, `BK_EV_MOVE` on a panel dragged to a new place. Region properties: `"region"`

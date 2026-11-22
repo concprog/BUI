@@ -61,6 +61,8 @@ Splitting, docking and restoring a layout make areas. Each area has an editor na
 
 The screen's `layout` property is its arrangement as JSON: the vertices, each area's corners and editor, and each region's side, size and hidden state. Store it when the screen reports a change and set it back to restore: the screen makes or closes areas to match, and the vertices scale to the screen's size.
 
+The screen reports a change once the edit is done, as Blender queues its notifiers: an area you remove yourself is gone from the layout you save then. An area that is closing (its close handler is running, or one further down the chain) refuses split, join, dock and close, so close handlers that close each other close every area once.
+
 ## In your language
 
 Every example below is a whole file: the editors, a layout kept in `layout.json` between runs, and a window. The first run uses the starting layout; every change the user makes is saved, and the next run restores it.
@@ -465,7 +467,7 @@ void main() {
 }
 ```
 
-A D-owned node inside an area keeps its handlers however the area leaves the screen: closed, joined, docked away, restored over or by the user's drag. A close handler may `free()` such a node.
+A D-owned node inside an area keeps its handlers however the area leaves the screen: closed, joined, docked away, restored over or by the user's drag. A close handler may `free()` such a node. A D-owned area that closes takes its nodes' handlers, as `remove()` does, so a close button whose handler holds the area does not keep it alive. The screen says an area left through its `Context`: close areas of a screen that has one.
 </Tab>
 </LangTabs>
 
