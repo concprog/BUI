@@ -230,6 +230,7 @@ const char *BK_node_type(const BKNode *n)
 
 static bool node_in_popup(const BKNode *n);
 static int damage_moved(BKContext *ctx, BKNode *n, bool shown, bool in_popup);
+static void invalidate_reach(BKNode *n);
 
 static void node_detach(BKNode *child)
 {
@@ -408,6 +409,9 @@ int BK_node_move(BKNode *parent, BKNode *child, int index)
     memmove(parent->kids + index + 1, parent->kids + index, sizeof(BKNode *) * (size_t)(from - index));
   }
   parent->kids[index] = child;
+  /* the order is the stacking: where the child overlaps a sibling the pixels change even when no
+   * rect does, which the layout's moved-rect damage can't see */
+  invalidate_reach(child);
   bk_relayout(parent);
   return 1;
 }
@@ -496,6 +500,15 @@ void bk_invalidate(BKNode *n)
   BKContext *ctx = bk_ctx(n);
   if (ctx) {
     damage_grown(ctx, bk_node_rect(n), damage_margin(n, node_in_popup(n)));
+  }
+}
+
+/* Damage all a node and its kids draw (its reach), as Blender tags the whole region for redraw. */
+static void invalidate_reach(BKNode *n)
+{
+  BKContext *ctx = bk_ctx(n);
+  if (ctx) {
+    damage_grown(ctx, bk_node_rect(n), BK_MAX(damage_margin(n, node_in_popup(n)), n->reach));
   }
 }
 
