@@ -1304,10 +1304,11 @@ impl Window {
     }
 
     /// The press ends, by its release or by the window manager taking the pointer (Blender's
-    /// `button_activate_exit`): nothing is pressed or `:active`, a drag (Motion's, a selection's)
-    /// lets go, and a press that rendered renders again. A left press's end also ends its text
-    /// selection drag; true: it dragged one.
+    /// `button_activate_exit`): nothing is pressed or `:active`, a drag (Motion's, a selection's,
+    /// a scrollbar's) lets go, and a press that rendered renders again. A left press's end also
+    /// ends its text selection drag; true: it dragged one.
     fn end_press(&mut self, left: bool) -> bool {
+        self.sb_drag = None;
         self.pressed.clear();
         self.state.active.clear();
         self.dirty |= !std::mem::replace(&mut self.press_quiet, true);

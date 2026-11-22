@@ -199,3 +199,26 @@ fn a_move_from_a_listener_ends_the_press() {
         assert_eq!(moved.get(), Some(None), "the motion after it has no button pressed");
     });
 }
+
+struct Scroller;
+
+impl Render for Scroller {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        body().m_0().child(div().id("sc").w(px(100.0)).h(px(100.0)).overflow_y_scroll()
+            .child(div().id("long").h(px(1000.0))))
+    }
+}
+
+#[test]
+fn a_move_lets_go_of_a_scrollbar_drag() {
+    Application::headless().run(|cx| {
+        let h = cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| Scroller)).unwrap();
+        cx.draw(h.id);
+        // the thumb, at the scroller's right edge
+        cx.simulate_press(h.id, 95.0, 5.0);
+        h.update(cx, |_, window, _| window.start_window_move());
+        cx.simulate_mouse_move(h.id, 95.0, 90.0);
+        cx.draw(h.id);
+        assert_eq!(cx.element_bounds(h.id, "long").unwrap().origin.y, 0.0, "the motion after it does not scroll");
+    });
+}
