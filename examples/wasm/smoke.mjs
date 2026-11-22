@@ -58,12 +58,15 @@ assert.ok(!same(now(), dragged), 'the second drag moves the slider')
 x.bui_pointer_cancel()
 assert.ok(same(now(), dragged), 'a cancelled drag puts the slider back where the drag began')
 
+// against the hovered button, so neither the hover nor the dragged slider can pass for the click: what the
+// click changes is the count
 x.bui_pointer_move(60, 150)
+const beforeClick = now()
 x.bui_pointer_down(60, 150)
 x.bui_pointer_up(60, 150)
 const clicked = frame()
 assert.ok(clicked, 'a click gives a frame')
-assert.notDeepEqual(clicked.pixels, first.pixels, 'the click changed the picture')
+assert.ok(!same(clicked.pixels, beforeClick), 'the click changed the count')
 
 x.bui_resize(300, 200, 1)
 const resized = frame()

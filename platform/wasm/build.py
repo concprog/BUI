@@ -9,7 +9,7 @@ examples/wasm/counter). It is compiled for wasm32-wasip1, with BUI's C kit built
 clang, so this needs:
 
   * Rust with the target (`rustup target add wasm32-wasip1`; this adds it when it is missing),
-  * clang 19 or newer with the wasm32 backend (LLVM's own; Apple's clang has none) and CMake,
+  * clang 21 or newer with the wasm32 backend (LLVM's own; Apple's clang has none) and CMake,
   * make or Ninja,
   * the WASI sysroot: WASI_SYSROOT=<dir>, or --fetch-sysroot (wasi-sdk's, kept in ~/.bui/wasi-sysroot).
 
@@ -194,9 +194,15 @@ def build(crate, out, debug):
     return final
 
 
+class Handler(http.server.SimpleHTTPRequestHandler):
+    """The page's files with their web types: Python's guess comes from the system (on Windows, the
+    registry), which may have none for .wasm or call .js text/plain, and a browser then refuses them."""
+    extensions_map = dict(http.server.SimpleHTTPRequestHandler.extensions_map,
+                          **{".wasm": "application/wasm", ".js": "text/javascript"})
+
+
 def serve(out, port):
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=out)
-    handler.extensions_map = dict(http.server.SimpleHTTPRequestHandler.extensions_map, **{".wasm": "application/wasm", ".js": "text/javascript"})
+    handler = functools.partial(Handler, directory=out)
     print("serving %s at http://localhost:%d  (Ctrl+C to stop)" % (out, port))
     http.server.ThreadingHTTPServer(("127.0.0.1", port), handler).serve_forever()
 

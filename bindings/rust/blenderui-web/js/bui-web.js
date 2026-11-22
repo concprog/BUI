@@ -124,9 +124,10 @@ export async function mount (canvas, source, { fit = true, width = 640, height =
 
   // the backing store at the CSS size times the pixel ratio. An unstyled canvas is as big in CSS pixels as its
   // backing store: at a pixel ratio above 1 it would grow on every frame (the store follows the CSS size, which
-  // follows the store), so its logical size is pinned. A canvas with no layout yet (inside `display: none`) is
-  // not pinned, or it would keep the fallback size for good: its first resize with a layout does this instead.
-  let laidOut = false
+  // follows the store), so its logical size is pinned. That shows only once the store differs from the CSS size,
+  // which at a ratio of 1 it does not: every resize (a new ratio after a zoom or a move to another screen too)
+  // sizes the store and checks again. A canvas with no layout yet (inside `display: none`) is not pinned, or it
+  // would keep the fallback size for good: its first resize with a layout does this instead.
   const store = () => {
     const [w, h] = css()
     // assigning even the same size clears the canvas, and an unchanged size draws no new frame
@@ -135,8 +136,7 @@ export async function mount (canvas, source, { fit = true, width = 640, height =
       canvas.width = pw
       canvas.height = ph
     }
-    laidOut = !fit || canvas.clientWidth > 0
-    if (fit && laidOut && (canvas.clientWidth !== w || canvas.clientHeight !== h)) {
+    if (fit && canvas.clientWidth > 0 && (canvas.clientWidth !== w || canvas.clientHeight !== h)) {
       canvas.style.width = `${w}px`
       canvas.style.height = `${h}px`
     }
@@ -243,7 +243,7 @@ export async function mount (canvas, source, { fit = true, width = 640, height =
     })),
   ]
   const resize = guard(() => {
-    const [w, h] = laidOut ? css() : store()
+    const [w, h] = store()
     exports.bui_resize(w, h, scale())
   })
   if (fit && typeof ResizeObserver !== 'undefined') {
