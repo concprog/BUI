@@ -108,6 +108,14 @@ typedef struct BKImPlan {
   int fw, fh;
   float src[4];
 } BKImPlan;
+/* What a box `want` decodes: the whole image (no crop) at its scale in that box, rounded up to a
+ * step of 2^(1/4) and never above intrinsic. False when nothing of it shows. Any thread. */
+bool imb_whole_fit(const BKImageInfo *info, const BKImageFit *want, BKImageFit *r_whole);
+/* A cache key and request target, BK_FIT_WHOLE + want's fit: the whole decode for the box, while
+ * the image's size is not known. The worker reads the size from the file it decodes and works
+ * the target out (imb_whole_fit); the UI thread never reads the file for it. */
+enum { BK_FIT_WHOLE = 0x100 };
+
 /* False when nothing of the image shows. */
 bool imb_plan(const BKImageFit *t, int iw, int ih, int orient, BKImPlan *r_plan);
 /* Scale (to fw x fh), orient and crop a decode (freed) to the plan. */
@@ -295,8 +303,8 @@ double bk_image_next_due(BKContext *ctx);
  * otherwise NULL, with a decode queued (visible priority) whose arrival
  * redraws `rect` (window pixels, x0 y0 x1 y1) of the pass' context. */
 const BKImBuf *bk_image_cache_get(BKImageSource *s, const BKImageFit *target, const int rect[4]);
-/* What a box `want` decodes: the whole image (no crop) at its scale in that box, rounded up to a
- * step of 2^(1/4) and never above intrinsic. False when the size is unknown or nothing shows. */
+/* imb_whole_fit of the source's size; while it is not known (never read here), the BK_FIT_WHOLE
+ * key for `want`. False when nothing shows. */
 bool bk_image_cache_whole(BKImageSource *s, const BKImageFit *want, BKImageFit *r_whole);
 /* bk_image_cache_get of the whole decode for `want` into `r_ib` (src_x x src_y is the intrinsic
  * size it scales; the box crops it when drawn); while a new size decodes, the last size of it

@@ -16,7 +16,6 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later */
 
-#include <math.h>
 #include <string.h>
 
 #include "BLI_ghash.h"
@@ -239,6 +238,9 @@ static void entry_free(Entry *e)
 /* A first load, or (`step`) the next frame of what plays when it has one to decode. */
 static void request(Entry *e, int priority, bool step)
 {
+  if (step && e->target.fit >= BK_FIT_WHOLE) {
+    return; /* a BK_FIT_WHOLE key another decode took the size of: no lookup finds it, no steps */
+  }
   BKImBuf *reuse = NULL;
   double seek = -1.0;
   BKImAnim *anim = step ? imb_play_take_step(e->play, &reuse, &seek) : NULL;
@@ -271,6 +273,19 @@ static void request(Entry *e, int priority, bool step)
     C.wake_ready = bk_window_wake_ready(); /* on this (the UI) thread */
   }
   bk_loader_push(req);
+}
+
+/* A BK_FIT_WHOLE entry's decode came back with its target: the entry takes that key, where the
+ * next lookup of the now known size finds it (unless one of that size came first). */
+static void entry_rekey(Entry *e, const BKImageFit *target)
+{
+  const BKImageFit key = e->target;
+  BLI_ghash_remove(C.entries, e, NULL, NULL);
+  e->target = *target;
+  if (BLI_ghash_lookup(C.entries, e)) {
+    e->target = key;
+  }
+  BLI_ghash_insert(C.entries, e, e);
 }
 
 static void add_waiter(Entry *e, const int rect[4])
@@ -350,30 +365,17 @@ const BKImBuf *bk_image_cache_get(BKImageSource *s, const BKImageFit *target, co
   return s ? entry_get(s, target, rect)->ib : NULL;
 }
 
-/* Scale steps of the whole decodes, per doubling: a decode is at most 2^(1/4) (1.19) times the size
- * drawn, so a box resized within a step draws the same decode (no decoder runs) at a scale the
- * bilinear draw keeps sharp. */
-#define SCALE_STEPS 4.0
-
 bool bk_image_cache_whole(BKImageSource *s, const BKImageFit *want, BKImageFit *r_whole)
 {
-  BKImageInfo info;
-  if (!s || !bk_image_source_info(s, &info)) {
+  if (!s) {
     return false;
   }
-  float dst[4], src[4];
-  bk_image_fit(want, info.width, info.height, dst, src);
-  if (dst[2] < 0.5f || dst[3] < 0.5f) {
-    return false; /* nothing of it shows */
+  if (s->info_state <= 0) { /* not read (or not an image when it was): the worker works it out */
+    *r_whole = *want;
+    r_whole->fit += BK_FIT_WHOLE;
+    return true;
   }
-  /* the largest scale it is drawn at (fill stretches), as a step; never above intrinsic but for
-   * a vector image, which the loader rasterizes sharp at any size */
-  const double scale = fmax(dst[2] / src[2], dst[3] / src[3]);
-  const double step = exp2(ceil(log2(scale) * SCALE_STEPS - 1e-6) / SCALE_STEPS);
-  const double cap = info.format == BK_IMAGE_SVG ? step : fmin(1.0, step);
-  *r_whole = (BKImageFit){BK_FIT_FILL, BK_MAX(1, (int)lround(info.width * cap)),
-                          BK_MAX(1, (int)lround(info.height * cap)), 0.5f, 0.5f, want->frame};
-  return true;
+  return imb_whole_fit(&s->info, want, r_whole);
 }
 
 bool bk_image_cache_scaled(BKImageSource *s, const BKImageFit *want, const int rect[4],
@@ -509,6 +511,9 @@ int BK_image_poll(void)
         }
         else if (e->play) {
           imb_play_fail(e->play); /* a video that didn't open */
+        }
+        if (e->target.fit >= BK_FIT_WHOLE && req->target.fit < BK_FIT_WHOLE) {
+          entry_rekey(e, &req->target);
         }
         entry_account(e);
         if (e->ib) {

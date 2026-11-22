@@ -103,6 +103,15 @@ static BKImBuf *decode(BKImRequest *req)
   }
   size_t size;
   uint8_t *mem = imb_read_file(bk_image_source_path(req->source), 0, &size);
+  if (mem && req->target.fit >= BK_FIT_WHOLE) { /* the size from the file, here: the target */
+    BKImageFit want = req->target;
+    want.fit -= BK_FIT_WHOLE;
+    BKImageInfo info;
+    if (!BK_image_probe(mem, size, &info) || !imb_whole_fit(&info, &want, &req->target)) {
+      MEM_freeN(mem);
+      return NULL;
+    }
+  }
   if (!mem || req->target.frame != 0 || !imb_anim_codec(mem, size)) {
     BKImBuf *ib = mem ? imb_load(mem, size, &req->target) : NULL;
     MEM_freeN(mem);
