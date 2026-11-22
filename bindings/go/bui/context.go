@@ -61,12 +61,14 @@ func (c *Context) OnRequest(fn func()) { c.onRequest = fn }
 // Render draws into r at w x h, only what changed unless full; it returns the
 // number of regions drawn (0: nothing changed).
 func (c *Context) Render(r *Raster, w, h int, full bool) int {
-	return int(C.BK_render(c.h, r.h, C.int(w), C.int(h), cbool(full)))
+	n := int(C.BK_render(c.h, r.h, C.int(w), C.int(h), cbool(full)))
+	settle()
+	return n
 }
 
 // Configure lays the tree out for a w x h window without drawing; true when
 // the size changed.
-func (c *Context) Configure(w, h int) bool { return C.BK_configure(c.h, C.int(w), C.int(h)) != 0 }
+func (c *Context) Configure(w, h int) bool { return settled(C.BK_configure(c.h, C.int(w), C.int(h))) }
 
 // NeedsRender reports damage waiting to be drawn.
 func (c *Context) NeedsRender() bool { return C.BK_needs_render(c.h) != 0 }
@@ -78,34 +80,36 @@ func (c *Context) Animating() bool { return C.BK_animating(c.h) != 0 }
 
 // Press presses the left button at (x, y) with modifiers.
 func (c *Context) Press(x, y, mods int) bool {
-	return C.BK_press(c.h, C.int(x), C.int(y), C.int(mods)) != 0
+	return settled(C.BK_press(c.h, C.int(x), C.int(y), C.int(mods)))
 }
 
 // Release releases the left button.
 func (c *Context) Release(x, y, mods int) bool {
-	return C.BK_release(c.h, C.int(x), C.int(y), C.int(mods)) != 0
+	return settled(C.BK_release(c.h, C.int(x), C.int(y), C.int(mods)))
 }
 
 // Motion moves the pointer.
 func (c *Context) Motion(x, y, mods int) bool {
-	return C.BK_motion(c.h, C.int(x), C.int(y), C.int(mods)) != 0
+	return settled(C.BK_motion(c.h, C.int(x), C.int(y), C.int(mods)))
 }
 
 // Click presses and releases at (x, y).
 func (c *Context) Click(x, y, mods int) bool {
-	a := c.Motion(x, y, mods)
-	b := c.Press(x, y, mods)
-	return c.Release(x, y, mods) || a || b
+	// one settle after the three: a free the press asked for waits for the release
+	cx, cy, cm := C.int(x), C.int(y), C.int(mods)
+	a := C.BK_motion(c.h, cx, cy, cm)
+	b := C.BK_press(c.h, cx, cy, cm)
+	return settled(C.BK_release(c.h, cx, cy, cm) | a | b)
 }
 
 // Wheel turns the wheel by delta notches.
 func (c *Context) Wheel(x, y, delta, mods int) bool {
-	return C.BK_wheel(c.h, C.int(x), C.int(y), C.int(delta), C.int(mods)) != 0
+	return settled(C.BK_wheel(c.h, C.int(x), C.int(y), C.int(delta), C.int(mods)))
 }
 
 // Scroll scrolls precisely: dx > 0 right, dy > 0 up, in notches.
 func (c *Context) Scroll(x, y int, dx, dy float32, mods int) bool {
-	return C.BK_scroll(c.h, C.int(x), C.int(y), C.float(dx), C.float(dy), C.int(mods)) != 0
+	return settled(C.BK_scroll(c.h, C.int(x), C.int(y), C.float(dx), C.float(dy), C.int(mods)))
 }
 
 // Key presses a key: the text it types and its X11 keysym ("Return", "a",
@@ -113,28 +117,31 @@ func (c *Context) Scroll(x, y int, dx, dy float32, mods int) bool {
 func (c *Context) Key(text, keysym string, mods int) bool {
 	changed := false
 	withCstr(text, func(t *C.char) {
-		withOptCstr(keysym, func(k *C.char) { changed = C.BK_key(c.h, t, k, C.int(mods)) != 0 })
+		withOptCstr(keysym, func(k *C.char) { changed = settled(C.BK_key(c.h, t, k, C.int(mods))) })
 	})
 	return changed
 }
 
 // KeyRelease releases a key (raw events only).
 func (c *Context) KeyRelease(keysym string, mods int) bool {
-	return cstr(keysym, func(k *C.char) bool { return C.BK_key_release(c.h, k, C.int(mods)) != 0 })
+	return cstr(keysym, func(k *C.char) bool { return settled(C.BK_key_release(c.h, k, C.int(mods))) })
 }
 
 // Button presses or releases button 1, 2 or 3 (raw events only).
 func (c *Context) Button(x, y, button int, release bool, mods int) bool {
-	return C.BK_button(c.h, C.int(x), C.int(y), C.int(button), cbool(release), C.int(mods)) != 0
+	return settled(C.BK_button(c.h, C.int(x), C.int(y), C.int(button), cbool(release), C.int(mods)))
 }
 
 // ContextMenu opens the context menu at (x, y).
 func (c *Context) ContextMenu(x, y, mods int) bool {
-	return C.BK_context_menu(c.h, C.int(x), C.int(y), C.int(mods)) != 0
+	return settled(C.BK_context_menu(c.h, C.int(x), C.int(y), C.int(mods)))
 }
 
 // Timer fires a timer the context scheduled.
-func (c *Context) Timer(id int) { C.BK_timer(c.h, C.int(id)) }
+func (c *Context) Timer(id int) {
+	C.BK_timer(c.h, C.int(id))
+	settle()
+}
 
 // Bind runs fn for a key combination, as "ctrl+s" or "shift+F1". It reports
 // false when the context holds no more bindings (the kit keeps 64).
@@ -149,16 +156,19 @@ func (c *Context) Bind(combo string, fn func()) bool {
 }
 
 // ClosePopups closes menus and popups.
-func (c *Context) ClosePopups() { C.BK_close_popups(c.h) }
+func (c *Context) ClosePopups() {
+	C.BK_close_popups(c.h)
+	settle()
+}
 
 // SetPointer moves the pointer without an event.
 func (c *Context) SetPointer(x, y int) { C.BK_set_pointer(c.h, C.int(x), C.int(y)) }
 
 // Undo undoes the last value edit (Blender's Ctrl+Z).
-func (c *Context) Undo() bool { return C.BK_undo(c.h) != 0 }
+func (c *Context) Undo() bool { return settled(C.BK_undo(c.h)) }
 
 // Redo redoes it.
-func (c *Context) Redo() bool { return C.BK_redo(c.h) != 0 }
+func (c *Context) Redo() bool { return settled(C.BK_redo(c.h)) }
 
 // -- introspection ---------------------------------------------------------------
 
@@ -178,6 +188,7 @@ func (c *Context) FocusNode(n *Node) {
 		h = n.h
 	}
 	C.BK_focus_node(c.h, h)
+	settle()
 }
 
 // Cursor is the pointer shape the node under the pointer asks for.

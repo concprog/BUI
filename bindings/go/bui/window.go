@@ -40,6 +40,7 @@ type Window struct {
 	id      uintptr
 	ctx     *Context
 	ownsCtx bool
+	made    *Node // the root NewWindow made, freed with the window (never the caller's)
 	timers  map[int]func()
 	onFrame func()
 	onClose func() bool
@@ -88,7 +89,7 @@ func NewWindow(o WindowOptions) *Window {
 		made.Free()
 		return nil
 	}
-	w := &Window{h: h, id: newID(), ctx: ctx, ownsCtx: owns}
+	w := &Window{h: h, id: newID(), ctx: ctx, ownsCtx: owns, made: made}
 	windows[w.id] = w
 	C.bui_go_window_callbacks(h, C.uintptr_t(w.id))
 	if o.GPU {
@@ -118,8 +119,8 @@ func (w *Window) Close() { C.BK_window_close(w.h) }
 // IsOpen reports the window still open.
 func (w *Window) IsOpen() bool { return w.h != nil && C.BK_window_is_open(w.h) != 0 }
 
-// Free frees a closed window, and its context and tree when NewWindow made
-// them. Called inside a callback (a window's, a node's handler), it frees the
+// Free frees a closed window, and its context and root when NewWindow made
+// them: a Root given in WindowOptions stays the caller's to free. Called inside a callback (a window's, a node's handler), it frees the
 // window from the loop once no callback is running: the kit still uses the
 // window after the callback returns.
 func (w *Window) Free() {
@@ -138,10 +139,9 @@ func (w *Window) Free() {
 	C.BK_window_free(w.h)
 	w.h = nil
 	if w.ownsCtx {
-		root := w.ctx.Root()
 		w.ctx.Free()
-		root.Free()
 	}
+	w.made.Free()
 }
 
 // SetTitle sets the title.

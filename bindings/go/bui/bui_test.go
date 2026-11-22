@@ -240,15 +240,79 @@ func TestFreeInsideCallbacks(t *testing.T) {
 
 	// from a node's handler, inside the kit's dispatch on the window's context
 	b := NewNode("button").Set("text", "Close")
-	w = NewWindow(WindowOptions{Root: NewNode("column").Add(b), Width: 120, Height: 80, Hidden: true})
-	b.OnClick(func(Event) { w.Free() })
+	root := NewNode("column").Add(b)
+	defer root.Free()
+	w = NewWindow(WindowOptions{Root: root, Width: 120, Height: 80, Hidden: true})
+	inside := true
+	b.OnClick(func(Event) {
+		w.Free()
+		inside = w.h == nil
+	})
 	r := NewRaster(120, 80)
 	defer r.Free()
 	w.Context().Render(r, 120, 80, true)
 	x, y := b.Rect().Center()
-	w.Context().Click(x, y, 0)
-	if w.h == nil {
+	w.Context().Click(x, y, 0) // the free runs as the headless call returns
+	if inside {
 		t.Errorf("freed inside a handler of its context's dispatch")
 	}
 	pumpUntilFreed(w)
+	if root.Freed() || b.Freed() {
+		t.Errorf("the window freed the Root it was given")
+	}
+}
+
+func TestFreeNodeInsideItsHandler(t *testing.T) {
+	root := NewNode("column")
+	defer root.Free()
+	c := NewNode("checkbox").Set("label", "Gone")
+	root.Add(c)
+	inside := true
+	c.OnChange(func(Event) {
+		c.Free()
+		inside = c.Freed()
+	})
+	ctx := NewContext(root)
+	defer ctx.Free()
+	r := NewRaster(200, 80)
+	defer r.Free()
+	ctx.Render(r, 200, 80, true)
+	x, y := c.Rect().Center()
+	ctx.Click(x, y, 0) // the kit reads the check box after its handler returns
+	if inside {
+		t.Errorf("freed inside its handler, with the kit still using it")
+	}
+	if !c.Freed() || root.ChildCount() != 0 || len(later) != 0 {
+		t.Errorf("the free was never run once the handler returned")
+	}
+}
+
+func TestPanelMoveEvent(t *testing.T) {
+	root := NewNode("column")
+	defer root.Free()
+	p := [2]*Node{NewNode("panel").Set("text", "A"), NewNode("panel").Set("text", "B")}
+	root.Add(p[0]).Add(p[1])
+	from, to := -1.0, -1.0
+	p[0].On(EventMove, func(e Event) { from, to = e.A, e.B })
+	ctx := NewContext(root)
+	defer ctx.Free()
+	r := NewRaster(300, 400)
+	defer r.Free()
+	ctx.Render(r, 300, 400, true)
+	a, b := p[0].Rect(), p[1].Rect()
+	gx, gy := a.X+a.W-8, a.Y+8 // the first panel's grip, dragged below the second
+	ctx.Motion(gx, gy, 0)
+	ctx.Press(gx, gy, 0)
+	ctx.Motion(gx, gy+10, 0)
+	ctx.Motion(gx, b.Y+b.H-2, 0)
+	ctx.Release(gx, b.Y+b.H-2, 0)
+	if root.Child(1) != p[0] || from != 0 || to != 1 {
+		t.Errorf("the drag moved the panel from %v to %v", from, to)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Errorf("On took an unknown event kind")
+		}
+	}()
+	p[0].On(EventKind(eventKindCount), func(Event) {})
 }

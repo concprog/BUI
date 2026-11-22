@@ -97,10 +97,12 @@ go func() {
 }()
 ```
 
-`window.Free()` inside a callback (a timer, `OnFrame`, `OnClose`, a node's
-handler) does not free the window at once: the kit goes on using it after the
-callback returns. The loop frees it once no callback is running, and a loop
-nested in a callback (`bui.Pump()`) waits too.
+`window.Free()` and `node.Free()` inside a callback (a timer, `OnFrame`,
+`OnClose`, a node's handler) do not free at once: the kit goes on using the
+window or node after the callback returns. The loop frees them once no
+callback is running (headless, the next `Context` call does), and a loop
+nested in a callback (`bui.Pump()`) waits too. `window.Free()` frees the
+context and root `NewWindow` made, never a `Root` or `Context` you gave it.
 
 ## The `ui` package: MyGo's syntax
 
@@ -255,8 +257,10 @@ bui.Run()
   `[]string` and `Color`, or `SetNum`, `SetStr`, `SetColor`, `SetStrs`, and
   `Num`, `Str`, `Color`, `Strs` to read. The node types and keys are the C
   kit's: see [the C API](../../docs/c-api.md).
-- **Events**: `OnClick`, `OnChange`, `OnSubmit`, `On(kind, fn)`, and
-  `Context.OnEvent` for all of them.
+- **Events**: `OnClick`, `OnChange`, `OnSubmit`, `On(kind, fn)` for any
+  `Event*` kind (`EventMove` when a panel is dragged to a new place,
+  `EventArea` and `EventResize` from screens), and `Context.OnEvent` for all
+  of them.
 - **Geometry** in a `frame`: `Pack`, `Grid` and `Place` (Tk's managers), and
   `GridWeight`.
 - **Contexts**: `NewContext(root)`, `Render` into a `Raster`, `Configure`,
