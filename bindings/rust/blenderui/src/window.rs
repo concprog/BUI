@@ -1306,6 +1306,7 @@ impl Window {
                 let t = CString::new(title).unwrap_or_default();
                 let n = sys::BK_window_new(ctx, t.as_ptr(), w.round() as c_int, h.round() as c_int);
                 if n.is_null() {
+                    win.destroy();
                     return Err("could not create a native window".into());
                 }
                 let cb = sys::BKWindowCallbacks { data: id as *mut c_void, on_timer: Some(on_timer),
@@ -1321,12 +1322,22 @@ impl Window {
         }
     }
 
+    /// Free what the window holds of the kit. The order is the kit's: the
+    /// native window gives the context its host back, the context lets go of
+    /// its root (and of the raster it rendered last), then the tree goes
+    /// (with the canvases), then the raster.
     fn destroy(&mut self) {
         self.widgets.free_all();
+        self.screens.free_all();
+        // SAFETY: each pointer is this window's and freed once (nulled after).
         unsafe {
             if let Some(n) = self.native.take() {
                 sys::BK_window_free(n);
             }
+            sys::BK_context_free(std::mem::replace(&mut self.ctx, std::ptr::null_mut()));
+            sys::BK_node_free(std::mem::replace(&mut self.root, std::ptr::null_mut()));
+            self.overlays.clear();
+            self.canvases.clear();
             if !self.raster.is_null() {
                 sys::BUI_raster_free(self.raster);
                 self.raster = std::ptr::null_mut();
