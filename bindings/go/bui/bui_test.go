@@ -298,15 +298,21 @@ func TestFreeInsideAHandlerWhileRequestRenders(t *testing.T) {
 	r := NewRaster(200, 80)
 	defer r.Free()
 	ctx.Render(r, 200, 80, true)
-	clicking, early := false, false
+	clicking, early, requests := false, false, 0
 	ctx.OnRequest(func() { // the kit asks for a render inside the press
 		ctx.Render(r, 200, 80, false)
 		early = early || (clicking && c.Freed())
+		if clicking {
+			requests++
+		}
 	})
 	x, y := c.Rect().Center()
 	clicking = true
 	ctx.Click(x, y, 0)
 	clicking = false
+	if requests == 0 {
+		t.Fatalf("the kit never asked for a render during the click: nothing was tested")
+	}
 	if early {
 		t.Errorf("a render the kit asked for freed the node it was still using")
 	}
