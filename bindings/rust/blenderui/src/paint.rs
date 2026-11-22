@@ -473,6 +473,7 @@ impl Painter {
         self.opacity = 1.0;
         self.clip = None;
         self.partial = true;
+        end_layers_frame();
         true
     }
 
@@ -1044,8 +1045,8 @@ fn paint_frame_with(s: &mut PaintScratch, frame: &Frame, styles: &StyleStore, tc
         tour.build(frame);
         let mut cx = LayerCx { frame, styles, tc, vp, scale, app, done, mats, tour, subs };
         paint_list(&mut cx, order, p, None, 1.0);
-        LAYERS.with(|l| l.borrow_mut().end_frame());
     }
+    end_layers_frame();
 }
 
 /// Buffers a paint fills, kept between paints so a frame allocates none of them.
@@ -1245,6 +1246,13 @@ struct Caches {
     images: Cache<(Arc<Image>, Bounds<f32>)>,
     /// Filtered layers as GPU textures, for the GPU to turn (see [`gpu_turn`]).
     textures: Cache<Arc<Texture>>,
+}
+
+/// A paint is done: count it for every cached layer result, dropping those
+/// unused for [`KEEP_PAINTS`] paints. Every paint counts, layered or not, so
+/// a page that stops using layers frees their buffers.
+fn end_layers_frame() {
+    LAYERS.with(|l| l.borrow_mut().end_frame());
 }
 
 impl Caches {
