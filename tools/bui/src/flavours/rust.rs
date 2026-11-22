@@ -14,6 +14,18 @@ use crate::tools::Tool;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RustApp {}
 
+/// `cargo add blenderui`: adds the newest blenderui.
+fn add(dir: &Path) -> Cmd {
+    Cmd::new("cargo", ["add", "blenderui"]).in_dir(dir)
+}
+
+/// `cargo add blenderui@newest`: moves the requirement in `Cargo.toml` to `newest`, as the C project moves its
+/// tag. `cargo update` stays inside the requirement (`^0.5` never reaches 0.6), and `cargo add` without a
+/// version keeps the one a dependency has.
+fn move_to(dir: &Path, newest: &str) -> Cmd {
+    Cmd::new("cargo", ["add".to_owned(), format!("blenderui@{newest}")]).in_dir(dir)
+}
+
 impl Flavour for RustApp {
     fn label(&self) -> String {
         "Rust".into()
@@ -30,7 +42,7 @@ impl Flavour for RustApp {
 
     fn deps(&self, dir: &Path) -> Vec<Step> {
         vec![
-            step("Adding blenderui (newest)", Cmd::new("cargo", ["add", "blenderui"]).in_dir(dir)),
+            step("Adding blenderui (newest)", add(dir)),
             step(
                 "Compiling BUI once (a few minutes now, seconds after)",
                 Cmd::new("cargo", ["build"]).in_dir(dir),
@@ -52,16 +64,17 @@ impl Flavour for RustApp {
             return vec![Check::fail("Cargo.toml", "missing", None)];
         };
         let Some(have) = locked_version(dir, "blenderui") else {
-            let fix = Fix::run("adds blenderui", vec![Cmd::new("cargo", ["add", "blenderui"]).in_dir(dir)]);
+            let fix = Fix::run("adds blenderui", vec![add(dir)]);
             let detail = if manifest.contains("blenderui") { "not fetched yet" } else { "not a dependency" };
             return vec![Check::fail("blenderui crate", detail, Some(fix))];
         };
-        let fix = Fix::run("updates blenderui to the newest", vec![Cmd::new("cargo", ["update", "--package", "blenderui"]).in_dir(dir)]);
-        vec![check::newest("blenderui crate", &have, registry::crate_version("blenderui").as_deref(), fix)]
+        let newest = registry::bui_version();
+        let fix = Fix::run("moves blenderui to the newest", newest.iter().map(|v| move_to(dir, v)).collect());
+        vec![check::newest("blenderui crate", &have, newest.as_deref(), fix)]
     }
 
     fn update(&self, dir: &Path) -> Vec<Step> {
-        vec![step("Updating blenderui", Cmd::new("cargo", ["update", "--package", "blenderui"]).in_dir(dir))]
+        registry::bui_version().map(|v| step("Moving blenderui to the newest", move_to(dir, &v))).into_iter().collect()
     }
 }
 
@@ -75,4 +88,14 @@ fn locked_version(dir: &Path, package: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn moving_names_the_version() {
+        assert_eq!(move_to(Path::new("."), "0.6.0").display(), "cargo add blenderui@0.6.0");
+    }
 }

@@ -171,6 +171,14 @@ impl JsApp {
         let (prod, dev) = self.packages();
         [self.pm.add(dir, false, &prod), self.pm.add(dir, true, &dev)]
     }
+
+    /// BUI's packages moved to their newest release (`@latest`, as the C project moves its tag: `update` stays
+    /// inside the range, and `^0.5` never reaches 0.6), then everything else as far as its range allows.
+    fn upgrade(&self, dir: &Path) -> [Cmd; 2] {
+        let bui: Vec<String> = self.packages().0.iter().filter(|p| p.starts_with("@blender-ui/")).map(|p| format!("{p}@latest")).collect();
+        let bui: Vec<&str> = bui.iter().map(String::as_str).collect();
+        [self.pm.add(dir, false, &bui), self.pm.update(dir)]
+    }
 }
 
 /// Whether the manifest lists `package` among its dependencies.
@@ -297,12 +305,13 @@ impl Flavour for JsApp {
         let Some(have) = have else {
             return vec![Check::fail("@blender-ui/native", "not installed", Some(install))];
         };
-        let fix = Fix::run("updates the packages to the newest", vec![self.pm.update(dir)]);
+        let fix = Fix::run("moves BUI's packages to the newest", self.upgrade(dir).into());
         vec![check::newest("@blender-ui/native", &have, registry::npm_version("@blender-ui/native").as_deref(), fix)]
     }
 
     fn update(&self, dir: &Path) -> Vec<Step> {
-        vec![step("Updating packages", self.pm.update(dir))]
+        let [bui, rest] = self.upgrade(dir);
+        vec![step("Moving BUI's packages to the newest", bui), step("Updating the other packages", rest)]
     }
 }
 
@@ -384,6 +393,14 @@ mod tests {
         assert_eq!(line(PackageManager::Pnpm), "pnpm run dev --flag");
         assert_eq!(line(PackageManager::Bun), "bun run dev --flag");
         assert_eq!(PackageManager::Npm.run(Path::new("."), "dev", &[]).display(), "npm run dev");
+    }
+
+    #[test]
+    fn updating_moves_buis_packages_past_their_range() {
+        let react = JsApp { framework: Framework::React, language: Language::TypeScript, pm: PackageManager::Bun };
+        let [bui, rest] = react.upgrade(Path::new("."));
+        assert_eq!(bui.display(), "bun add @blender-ui/native@latest @blender-ui/react@latest", "not react itself");
+        assert_eq!(rest.display(), "bun update");
     }
 
     #[test]
