@@ -25,7 +25,7 @@ pub enum Tool {
     Lua,
     Luarocks,
     Cmake,
-    /// A C compiler (on Windows, Visual Studio's C++ tools).
+    /// A C and a C++ compiler (on Windows, Visual Studio's C++ tools).
     Cc,
     Git,
 }
@@ -68,7 +68,7 @@ impl Tool {
             Self::Lua => "Lua 5.4",
             Self::Luarocks => "LuaRocks",
             Self::Cmake => "CMake",
-            Self::Cc => "a C compiler",
+            Self::Cc => "a C and C++ compiler",
             Self::Git => "Git",
         }
     }
@@ -156,7 +156,9 @@ fn cc_probe() -> Option<String> {
         let path = out.trim();
         return (!path.is_empty()).then(|| "Visual Studio C++ tools".to_owned());
     }
-    ["cc", "gcc", "clang"].into_iter().find_map(|c| which(c).map(|_| c.to_owned()))
+    // BUI's kit is C++: every flavour that builds it (C, Rust, Lua) needs both compilers
+    let found = |names: [&'static str; 3]| names.into_iter().find(|c| which(c).is_some());
+    Some(format!("{} and {}", found(["cc", "gcc", "clang"])?, found(["c++", "g++", "clang++"])?))
 }
 
 /// Looks for each tool; for the missing ones shows how to install the newest, offers to run it and
