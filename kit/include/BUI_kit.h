@@ -226,7 +226,9 @@ void *BK_node_ref(const BKNode *node);
  * reachable for the node's lifetime. */
 void BK_node_set_borrowed_ref(BKNode *node, void *ref);
 void *BK_node_borrowed_ref(const BKNode *node);
-int BK_node_add(BKNode *parent, BKNode *child, int index); /* index -1: append */
+/* index -1: append. A child with a parent moves here. Returns 0 (and does nothing) when child is
+ * parent or one of its ancestors: the tree would be a cycle. */
+int BK_node_add(BKNode *parent, BKNode *child, int index);
 void BK_node_remove(BKNode *parent, BKNode *child);
 int BK_node_child_count(const BKNode *node);
 BKNode *BK_node_child(const BKNode *node, int i);
@@ -317,6 +319,7 @@ typedef struct BKMenuSpec {
   void (*fn)(void *data); /* C callback (built-in menus), used when set */
   void *data;
 } BKMenuSpec;
+/* The items of a "menubutton" (copied; other kinds of node are left alone). */
 void BK_menubutton_set_items(BKNode *button, const BKMenuSpec *items, int n);
 void BK_open_menu(BKContext *ctx,
                   BKNode *owner,
@@ -682,7 +685,9 @@ void BK_context_set_header(BKContext *ctx, BKNode *header); /* fixed top bar */
 BKNode *BK_context_root(BKContext *ctx);
 
 /* Render into `r` (w x h). Redraws only damaged regions unless `full`.
- * Returns the number of redrawn regions (0 = nothing changed). */
+ * Returns the number of redrawn regions (0 = nothing changed). The context keeps `r` as its
+ * last frame (the eyedropper picks colors from it): keep it alive until the next BK_render
+ * into another raster, or BK_context_free. */
 int BK_render(BKContext *ctx, BuiRaster *r, int w, int h, int full);
 /* The window is now w x h: lays out and reports the geometry (BK_EV_CONFIGURE) without drawing,
  * so a host whose handlers rebuild the tree does that before the first draw at the new size.

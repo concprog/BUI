@@ -309,6 +309,11 @@ int BK_node_add(BKNode *parent, BKNode *child, int index)
   if (!parent || !child || child == parent) {
     return 0;
   }
+  for (const BKNode *p = parent->parent; p; p = p->parent) {
+    if (p == child) {
+      return 0; /* under itself: the tree would be a cycle */
+    }
+  }
   if (child->parent) {
     void *ref = child->ref;
     bk_retain(ref); /* keep alive across the move */
@@ -2285,7 +2290,22 @@ int BK_configure(BKContext *ctx, int w, int h)
   return changed;
 }
 
+static int render_frame(BKContext *ctx, BuiRaster *r, int w, int h, int full);
+
 int BK_render(BKContext *ctx, BuiRaster *r, int w, int h, int full)
+{
+  /* the draw state names the raster only while it is drawn into: the host may free it after
+   * (a widget drawn later with BK_draw_widget then has no stale raster to set a clip on) */
+  BuiRaster *const outer = bk_draw.r;
+  const int regions = render_frame(ctx, r, w, h, full);
+  bk_draw.r = outer;
+  /* the context's last frame is this call's raster, also when a handler rendered the context
+   * into another one meanwhile (a render nested in a configure handler) */
+  ctx->raster = r;
+  return regions;
+}
+
+static int render_frame(BKContext *ctx, BuiRaster *r, int w, int h, int full)
 {
   BK_image_poll(); /* decoded images arrive (and damage where they show) */
   bk_image_tick(); /* animated images whose next frame is due */

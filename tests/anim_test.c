@@ -887,6 +887,7 @@ static void test_positions(void)
   CHECK(BK_timeline_label(tl, "b5", "ghost+=x") == -1.0 && BK_timeline_label_time(tl, "ghost") < 0.0);
   CHECK(BK_timeline_call(tl, hook_fn, NULL, NULL, "<=1") == -1.0);
   CHECK(BK_motion_total_duration(tl) == 2.0);
+  BK_motion_kill(tl); /* it plays on `o`, which goes with this function */
   BK_motion_release(c);
   BK_motion_release(tl);
   printf("positions: GSAP's grammar and nothing else\n");
