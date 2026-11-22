@@ -780,8 +780,8 @@ static void region_changed(BKNode *area_node, BKNode *region_node)
   const int size = (region->alignment == RGN_ALIGN_LEFT || region->alignment == RGN_ALIGN_RIGHT) ?
                        region->sizex :
                        region->sizey;
+  BKNode *screen_node = AREA_SCREEN(area_node); /* first: a resize handler may close the area */
   bk_emit(region_node, BK_EV_RESIZE, NULL, size, region_is_hidden(region));
-  BKNode *screen_node = AREA_SCREEN(area_node);
   if (screen_node) {
     bk_emit(screen_node, BK_EV_CHANGE, NULL, 0, 0);
   }
