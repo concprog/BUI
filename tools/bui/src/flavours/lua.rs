@@ -16,8 +16,9 @@ pub struct LuaApp {}
 
 const TREE: &str = "lua_modules";
 
+/// LuaRocks for Lua 5.4 (the rock's only Lua) whatever Lua it defaults to, into the project's tree.
 fn rocks(dir: &Path, args: &[&str]) -> Cmd {
-    let mut all = vec!["--tree", TREE];
+    let mut all = vec!["--lua-version=5.4", "--tree", TREE];
     all.extend_from_slice(args);
     Cmd::new("luarocks", all).in_dir(dir)
 }
@@ -61,8 +62,8 @@ impl Flavour for LuaApp {
     }
 
     fn tools(&self) -> Vec<Tool> {
-        // the rock builds BUI's native module (a C compiler)
-        vec![Tool::Lua, Tool::Luarocks, Tool::Cc]
+        // the rock builds BUI's native module with CMake (bindings/lua's rockspec: `type = "cmake"`)
+        vec![Tool::Lua, Tool::Luarocks, Tool::Cc, Tool::Cmake]
     }
 
     fn files(&self, vars: &Vars) -> Vec<File> {
@@ -102,5 +103,16 @@ impl Flavour for LuaApp {
     fn update(&self, dir: &Path) -> Vec<Step> {
         vec![step("Updating blenderui", rocks(dir, &["install", "blenderui"]))]
     }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rocks_are_for_lua_5_4_and_built_with_cmake() {
+        let cmd = rocks(Path::new("."), &["install", "blenderui"]);
+        assert_eq!(cmd.display(), "luarocks --lua-version=5.4 --tree lua_modules install blenderui");
+        assert!(LuaApp {}.tools().contains(&Tool::Cmake));
+    }
 }
