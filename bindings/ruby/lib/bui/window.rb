@@ -29,8 +29,7 @@ module BUI
         Builder.new(@context.root).build(&build) if build
         show if show
       rescue Exception # rubocop:disable Lint/RescueException
-        free_native # the native window first: it shows the context
-        release_made
+        free_made
         raise
       end
     end
@@ -100,8 +99,7 @@ module BUI
         end
         return
       end
-      free_native
-      release_made
+      free_made
     end
 
     def inspect
@@ -110,7 +108,11 @@ module BUI
 
     private
 
-    def release_made
+    # The native window first (it shows the context), then what this window made, even
+    # when the first raises (an error a queued block left).
+    def free_made
+      free_native
+    ensure
       @made_context&.free
       @made_root&.free
       @made_context = @made_root = nil
