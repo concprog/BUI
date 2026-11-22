@@ -4,9 +4,11 @@
 //   bui build app.jsx [-o app.exe]   a small executable: BUI + QuickJS (~5 MB)
 //   bui build app.jsx --bun          a Bun executable (full Node APIs, ~120 MB)
 //   bui run app.jsx [args]           run on the small runtime (no executable)
+//   bui bundle app.jsx -o main.js    one script for QuickJS, no runtime (Android: build.py --js)
 //
 // Options:
-//   -o, --out <file>   output file (default: the entry's name, .exe on Windows)
+//   -o, --out <file>   output file (default: the entry's name, .exe on Windows;
+//                      bundle: main.js); never the entry itself
 //   --bun              compile with `bun build --compile` instead of QuickJS
 //   --console          keep a console window (Windows; default: none, for apps)
 //   --dev              development builds (React's, Svelte's dev mode)
@@ -120,9 +122,19 @@ function setGuiSubsystem (buf) {
   buf.writeUInt16LE(2, pe + 24 + 68) // IMAGE_SUBSYSTEM_WINDOWS_GUI
 }
 
+/** The file to write: `-o`, else `fallback`; never the entry itself, which it would overwrite. */
+function outPath (o, fallback) {
+  const out = path.resolve(o.out ?? fallback)
+  const same = process.platform === 'win32' || process.platform === 'darwin'
+    ? out.toLowerCase() === path.resolve(o.entry).toLowerCase()
+    : out === path.resolve(o.entry)
+  if (same) fail(`the output would overwrite the entry ${o.entry}: pass another file with -o`)
+  return out
+}
+
 function build (o) {
   const name = path.basename(o.entry).replace(/\.[^.]+$/, '')
-  const out = path.resolve(o.out ?? `${name}${EXE}`)
+  const out = outPath(o, `${name}${EXE}`)
   const t0 = Date.now()
   if (o.bun) {
     bundleWith({ entry: path.resolve(o.entry), out, bun: true, dev: o.dev, console: o.console || process.platform !== 'win32' })
@@ -150,10 +162,11 @@ function run (o) {
 }
 
 const o = parse(process.argv.slice(2))
-if (!['build', 'run'].includes(o.cmd) || !o.entry) {
-  console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(1, 17).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'))
+if (!['build', 'run', 'bundle'].includes(o.cmd) || !o.entry) {
+  console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(1, 19).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'))
   process.exit(o.cmd ? 1 : 0)
 }
 if (!fs.existsSync(o.entry)) fail(`no such file: ${o.entry}`)
-if (o.cmd === 'build') build(o)
+if (o.cmd === 'bundle') fs.writeFileSync(outPath(o, 'main.js'), bundle(o.entry, o.dev))
+else if (o.cmd === 'build') build(o)
 else run(o)

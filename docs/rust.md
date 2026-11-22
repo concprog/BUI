@@ -66,7 +66,7 @@ It follows gpui closely:
 | `impl Render for View`                    | the same: `fn render(&mut self, window, cx) -> impl IntoElement` |
 | `Entity<T>`, `WeakEntity<T>`, `cx.new`    | `Copy` handles into the app's entity slots: `read` (returns `&T`), `update`, `downgrade`; `cx.release(e)` drops a value |
 | `Context<T>`: `notify`, `listener`, `entity` | the same; it derefs to `App`                              |
-| `WindowOptions { window_bounds, titlebar, .. }`, `WindowBounds::Windowed(..)` | the same, plus `is_resizable`, `window_min_size`, `gpu`, `window_background` (`WindowBackgroundAppearance::Transparent`), `kind` (`WindowKind::Floating` stays on top, `PopUp` is on top without a frame, `LayerShell(LayerShellOptions { layer, anchor, exclusive_zone, keyboard_interactivity })` is a Wayland layer-shell surface) and `window_decorations` (`WindowDecorations::Client`: no frame); `App::on_window_activation` reports focus. A Wayland toplevel cannot stay on top: use `LayerShell` |
+| `WindowOptions { window_bounds, titlebar, .. }`, `WindowBounds::Windowed(..)` | the same, plus `is_resizable`, `window_min_size`, `gpu`, `window_background` (`WindowBackgroundAppearance::Transparent`), `kind` (`WindowKind::Floating` stays on top, `PopUp` is on top without a frame, `LayerShell(LayerShellOptions { layer, anchor, exclusive_zone, keyboard_interactivity })` is a Wayland layer-shell surface) and `window_decorations` (`WindowDecorations::Client`: the app draws the title bar, its parts marked with `window_control_area` or CSS `app-region`; `Window::minimize_window`, `zoom_window`, `is_maximized`, `start_window_move` and `remove_window` go with it); `App::on_window_activation` reports focus. A Wayland toplevel cannot stay on top: use `LayerShell` |
 | `cx.set_global`, `cx.global`              | the same                                                       |
 | `cx.stop_propagation()`                   | the same                                                       |
 
@@ -268,6 +268,14 @@ div().styled().child(div().attr("styled", "false"))   // opt a subtree back out
 Your own CSS still wins over either set of defaults. From JavaScript use
 `el.setAttribute('styled', '')`, or `<div styled>` in JSX.
 
+**An app's root: `app()`.** A `body` that is `styled`, has no margin, is as tall as
+the window and scrolls when its content is taller (the window is not a scrolling
+document, so an overflowing page needs it, or a scroll container of a definite
+height such as `.css("height", "100vh")`). `app().child(h1().child("Title"))`.
+Outside `styled`, a `button()` / `input()` is a browser-look control and ignores
+`.bg()`. A control keeps its own height in a flex column that is shorter than its
+content (the column scrolls or overflows, it never squashes the control).
+
 **Dark or light.** `styled` follows Blender's theme, which is Dark by default.
 Switch every window to Blender's Light preset with
 `Application::new().theme("light")`, `blenderui::set_theme("light")` at run
@@ -390,7 +398,8 @@ Layout is computed with [taffy](https://github.com/DioxusLabs/taffy):
   left-to-right text (a compact Unicode Bidirectional Algorithm), `direction: rtl`
   and `unicode-bidi: bidi-override` apply.
 - **Scroll snapping**: `scroll-snap-type` (`x` / `y` / `both`, `mandatory` /
-  `proximity`) and `scroll-snap-align` on the children.
+  `proximity`) and `scroll-snap-align` on the children. Wheel notches and
+  pages snap; a touch or trackpad drag follows the finger.
 - **Overflow**: `hidden` / `clip` clip, `scroll` / `auto` scroll with the
   wheel (Shift for horizontal) and show overlay scrollbars.
 - **Lists**: `list-style-type` (`disc`, `circle`, `square`, `decimal`,
@@ -464,6 +473,30 @@ On the `Window` (listeners get it): `selected_text() -> Option<String>`,
 (fires for the user's changes) and `read_clipboard()` / `write_clipboard(text)`.
 `examples/selectable.rs` is a page of paragraphs; `tests/selection.rs` drives it
 headlessly with `simulate_drag`, `simulate_click` and `simulate_key_with`.
+## Screens, areas and regions
+
+Blender's editor layout (`blenderui::screen`): areas the user resizes, splits, joins and docks,
+with headers, toolbars and sidebars that resize and hide. The kit lays them out; your HTML goes in
+the regions.
+
+```rust
+use blenderui::screen::{AreaRef, AreaSplit, Editor, Editors, Region, Screen};
+
+let editors = Editors::new()
+    .editor("3D Viewport", "VIEW3D", |_: &AreaRef| {
+        Editor::new(div().child("viewport"))
+            .header(div().child("View"))
+            .sidebar(Region::new(div().child("Item")).size(280).hotkey("n"))
+    })
+    .editor("Outliner", "OUTLINER", |a| Editor::new(div().child(a.editor().to_owned())));
+Screen().editors(editors).layout(AreaSplit::v(0.75, "3D Viewport", "Outliner"))
+    .on_change(|e, _, _| println!("{}", e.layout()))
+```
+
+`Region` takes `size`, `hidden`, `side`, `overlap`, `resizable`, `maxsize`, `hotkey`, `on_resize`;
+`AreaRef` has `split`, `join`, `dock`, `swap`, `close`, `maximize`, `focus`, `restore`. See
+[Screens, areas and regions](https://bui.preetham.top/docs/concepts/screens/).
+
 ## Images
 
 `<img src>` and CSS background images read every format the kit reads (PNG,
@@ -485,7 +518,11 @@ yourself (`Image::update_texture` for Dear ImGui). See
 frame; an element that leaves the tree stops its sound): the OS decodes it at the
 size drawn, only while it shows. Keep a `blenderui::Video` to control it
 (`play`, `pause`, `seek`, `set_rate`, `time`, `duration`, `on_state`) and
-pass it with `video().video(rc.clone())` or `Painter::video`. Cargo features
+pass it with `video().video(rc.clone())` or `Painter::video`. For sound with no
+picture, `blenderui::Sound::new("song.m4a")` plays an audio file or url on the
+default output (`play`, `pause`, `seek`, `set_volume`, `time`, `duration`, and
+`state`, which reports `VideoState::Ended` at the end and `VideoState::NoOutput`
+while no output is connected; it plays on once one is). Cargo features
 (`png`, `jpeg`, `video`, `gpu`, ... from `features.json`, all default) drop
 what an app doesn't use. See [Video](https://bui.preetham.top/docs/concepts/video/).
 
@@ -552,7 +589,7 @@ let chat = cx.new(|cx| ListState::new(ChatList::from_messages(synth::messages(0,
 // elsewhere: chat.update(cx, |s, _| s.push(message));   // follows while at the bottom
 ```
 
-For items that are not messages, build a `List` from your own `ItemSource`, `Measurer` and `ItemPainter` and show it with `variable_list(&state)`. A `Record` carries an `id`, `time` and `sender` values and `flags` bits (`FLAG_PLACEHOLDER` is the engine's, `FLAG_USER << n` is free), `text`, an image and opaque `data` bytes your look decodes (stored in the page's buffer, no allocation per item); `ItemPainter::hit` returns an item-local part id for a press, delivered by `VariableList::on_item_hit(|item, part, list| ..)` next to `on_item_click`; `Measurer::estimator` has a default. Everything a look needs (`PaintSink`, `Palette`, `Rect`, `Rgba`, `Lines`, `Record`, ...) is re-exported from `blenderui::vlist`. Items are painted, not elements: no buttons or text fields inside an item. `examples/vlist_cards.rs` is a non-chat feed of task cards and `tests/vlist_custom.rs` runs a custom look headlessly. `bindings/rust/blenderui-vlist-gpui` is the same list for real gpui (outside the main workspace); its benchmark against gpui's `list` and gpui-component's `virtual_list` is in `bench/`. Measured numbers and the method are on the website page "Variable-height lists". Not built yet: selecting text across messages, a background measuring thread, damage regions, JavaScript and Python wrappers.
+For items that are not messages, build a `List` from your own `ItemSource`, `Measurer` and `ItemPainter` and show it with `variable_list(&state)`. A `Record` carries an `id`, `time` and `sender` values and `flags` bits (`FLAG_PLACEHOLDER` is the engine's, `FLAG_USER << n` is free), `text`, an image and opaque `data` bytes your look decodes (stored in the page's buffer, no allocation per item); `ItemPainter::hit` returns an item-local part id for a press, delivered by `VariableList::on_item_hit(|item, part, list| ..)` next to `on_item_click`; `on_item_hover(|item, list| ..)` reports the item under the pointer (`None` off it) and only repaints, and `on_copy(|state| ..)` returns the text Ctrl+C copies; `Measurer::estimator` has a default. Everything a look needs (`PaintSink`, `Palette`, `Rect`, `Rgba`, `Lines`, `Record`, ...) is re-exported from `blenderui::vlist`. Items are painted, not elements: no buttons or text fields inside an item. `examples/vlist_cards.rs` is a non-chat feed of task cards and `tests/vlist_custom.rs` runs a custom look headlessly. `bindings/rust/blenderui-vlist-gpui` is the same list for real gpui (outside the main workspace); its benchmark against gpui's `list` and gpui-component's `virtual_list` is in `bench/`. Measured numbers and the method are on the website page "Variable-height lists". Not built yet: selecting text across messages, a background measuring thread, damage regions, JavaScript and Python wrappers.
 
 `blenderui::shadcn` also has `VirtualList` (`count` and an `item` closure that writes each item's text, so ten million rows cost a screenful) and `ChatList`, with TanStack Virtual's names: `estimate_size`, `overscan`, `get_item_key`, `on_range_change`, and `scroll_to_index` / `scroll_to_offset` / `measure_element` on the `ListHandle` that `use_virtual_list()` returns. They sit on `ListState` and `ItemSource` (the new `CountSource` and `RowStyle` in `blenderui-vlist`), so the file-backed source works under them. See the website page "Virtual list API" and `examples/site_shadcn_list.rs`.
 
@@ -572,7 +609,7 @@ Application::headless().run(|cx| {
 });
 ```
 
-Also `simulate_mouse_move`, `simulate_scroll`, `simulate_key(text, keysym)`, `simulate_key_with` (Ctrl, Shift), `simulate_click_with`, and `simulate_press`, `simulate_release` and `simulate_drag(from, to)` for a held button.
+Also `simulate_mouse_move`, `simulate_scroll`, `simulate_key(text, keysym)`, `simulate_key_with` (Ctrl, Shift), `simulate_click_with`, and `simulate_press`, `simulate_release`, `simulate_cancel` (the host lost the pointer: no release, no click, a drag goes back) and `simulate_drag(from, to)` for a held button.
 The kit has global state, so one `Application` runs at a time per process
 (`run` takes a lock; parallel tests queue up).
 

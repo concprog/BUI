@@ -103,6 +103,15 @@ static BKImBuf *decode(BKImRequest *req)
   }
   size_t size;
   uint8_t *mem = imb_read_file(bk_image_source_path(req->source), 0, &size);
+  if (mem && req->target.fit >= BK_FIT_WHOLE) { /* the size from the file, here: the target */
+    BKImageFit want = req->target;
+    want.fit -= BK_FIT_WHOLE;
+    BKImageInfo info;
+    if (!BK_image_probe(mem, size, &info) || !imb_whole_fit(&info, &want, &req->target)) {
+      MEM_freeN(mem);
+      return NULL;
+    }
+  }
   if (!mem || req->target.frame != 0 || !imb_anim_codec(mem, size)) {
     BKImBuf *ib = mem ? imb_load(mem, size, &req->target) : NULL;
     MEM_freeN(mem);
@@ -121,6 +130,28 @@ static BKImBuf *decode(BKImRequest *req)
   return ib;
 }
 
+/* Decodes the request that is queued, with the lock held (it is let go of while decoding). */
+static void process(BKImRequest *req)
+{
+  unlink_queued(req);
+  req->state = BK_IMREQ_RUNNING;
+  BLI_mutex_unlock(&L.lock);
+
+  const double t0 = bk_time();
+  BKImBuf *ib = decode(req);
+  const double spent = bk_time() - t0;
+
+  BLI_mutex_lock(&L.lock);
+  req->result = ib;
+  req->state = BK_IMREQ_DONE;
+  L.decode_s += spent;
+  if (push_done(req)) {
+    BLI_mutex_unlock(&L.lock);
+    bk_loader_notify();
+    BLI_mutex_lock(&L.lock);
+  }
+}
+
 static void *worker(void *arg)
 {
   (void)arg;
@@ -132,25 +163,8 @@ static void *worker(void *arg)
     if (L.quit) {
       break;
     }
-    BKImRequest *req = L.queue[BK_IMAGE_PRIORITY_VISIBLE] ? L.queue[BK_IMAGE_PRIORITY_VISIBLE] :
-                                                            L.queue[BK_IMAGE_PRIORITY_PREFETCH];
-    unlink_queued(req);
-    req->state = BK_IMREQ_RUNNING;
-    BLI_mutex_unlock(&L.lock);
-
-    const double t0 = bk_time();
-    BKImBuf *ib = decode(req);
-    const double spent = bk_time() - t0;
-
-    BLI_mutex_lock(&L.lock);
-    req->result = ib;
-    req->state = BK_IMREQ_DONE;
-    L.decode_s += spent;
-    if (push_done(req)) {
-      BLI_mutex_unlock(&L.lock);
-      bk_loader_notify();
-      BLI_mutex_lock(&L.lock);
-    }
+    process(L.queue[BK_IMAGE_PRIORITY_VISIBLE] ? L.queue[BK_IMAGE_PRIORITY_VISIBLE] :
+                                                 L.queue[BK_IMAGE_PRIORITY_PREFETCH]);
   }
   BLI_mutex_unlock(&L.lock);
   return NULL;
@@ -181,6 +195,10 @@ void bk_loader_push(BKImRequest *req)
   req->result = NULL;
   push_queued(req);
   L.pending++;
+#ifdef __wasi__
+  /* WebAssembly has no worker threads: the image decodes here, and the UI takes it on its next poll */
+  process(req);
+#endif
   BLI_mutex_unlock(&L.lock);
   BLI_condition_notify_one(&L.cond);
 }

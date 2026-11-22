@@ -506,6 +506,7 @@ static int fb_set_str(BKNode *n, const char *key, const char *v)
     return 0;
   }
   bk_relayout(n);
+  bk_invalidate(n);
   return 1;
 }
 
@@ -530,6 +531,7 @@ static int fb_set_strs(BKNode *n, const char *key, const char *const *v, int cou
   fb_filters_set(FB(n), v, count);
   fb_filter_sort(FB(n));
   bk_relayout(n);
+  bk_invalidate(n);
   return 1;
 }
 

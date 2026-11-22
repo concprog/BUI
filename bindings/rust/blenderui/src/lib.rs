@@ -109,6 +109,7 @@ pub mod events;
 pub mod geometry;
 pub mod html;
 pub mod list;
+pub mod screen;
 pub mod shadcn;
 pub mod table;
 pub(crate) mod sink;
@@ -117,7 +118,9 @@ pub(crate) mod layout;
 pub mod paint;
 pub mod shader;
 pub mod video;
+pub mod sound;
 pub(crate) mod prof;
+mod config;
 mod selector;
 pub(crate) mod selection;
 pub mod hooks;
@@ -139,11 +142,12 @@ pub use list::{uniform_list, UniformList};
 pub use events::*;
 pub use geometry::{point, px, relative, rems, size, Bounds, Length, Pixels, Point, Rems, Size};
 pub use paint::{image_stats, set_image_budget, Animation, Image, Painter};
-pub use shader::{GpuTarget, ShaderEffect};
+pub use shader::{GpuTarget, RenderTarget, ShaderEffect, TargetFormat};
 pub use video::{Video, VideoState};
+pub use sound::Sound;
 pub use styled::{FontWeight, StyleBlock, Styled};
 pub use window::*;
-pub use window_kind::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions, WindowDecorations, WindowKind};
+pub use window_kind::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions, WindowControlArea, WindowDecorations, WindowKind};
 
 /// Whether `class` names also work as Tailwind CSS v4 utilities (`p-4`,
 /// `md:hover:bg-sky-500/50` ...), compiled on first use. On by default;
@@ -158,7 +162,6 @@ pub fn set_tailwind(on: bool) {
 /// the data isn't a font.
 pub fn add_font(family: &str, bold: bool, italic: bool, data: &[u8]) -> bool {
     let fam = std::ffi::CString::new(family).unwrap_or_default();
-    text::register_family(family);
     let flags = if bold { 1 } else { 0 } | if italic { 2 } else { 0 };
     let len = data.len().min(i32::MAX as usize) as i32;
     // SAFETY: the kit copies the bytes; both pointers are valid for the call.
@@ -333,8 +336,9 @@ pub mod prelude {
     pub use crate::geometry::{point, px, relative, rems, size, Bounds, Length, Pixels, Point, Rems, Size};
     pub use crate::html::*;
     pub use crate::paint::{Image, Painter};
-    pub use crate::shader::ShaderEffect;
+    pub use crate::shader::{RenderTarget, ShaderEffect, TargetFormat};
     pub use crate::styled::{FontWeight, StyleBlock, Styled};
     pub use crate::window::*;
-    pub use crate::window_kind::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions, WindowDecorations, WindowKind};
+    pub use crate::window_kind::{Anchor, KeyboardInteractivity, Layer, LayerShellOptions, WindowControlArea, WindowDecorations,
+                                 WindowKind};
 }

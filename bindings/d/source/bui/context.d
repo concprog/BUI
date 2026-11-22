@@ -568,6 +568,11 @@ final class Context {
                 return;
             }
             if (node !is null) {
+                scope (exit) {
+                    if (kind == BK_EV_AREA && cast(int) b == BK_AREA_CLOSE) {
+                        Node.areaLeaving(node); // after the area's own handlers: they find theirs
+                    }
+                }
                 void* wrapper = BK_node_ref(node);
                 if (wrapper is null) {
                     wrapper = BK_node_borrowed_ref(node);

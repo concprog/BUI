@@ -326,8 +326,13 @@ final class Node {
     /// attached (kit-rooted) child never roots its owning ancestor through a
     /// handler closure, and a borrowed wrapper stays free of closures.
     private Node handlerOwner() {
+        return ownerOf(handle);
+    }
+
+    /// The topmost D-owned wrapper at or above `h`.
+    private static Node ownerOf(BKNode* h) {
         Node owner;
-        for (auto h = handle; h !is null; h = BK_node_parent(h)) {
+        for (; h !is null; h = BK_node_parent(h)) {
             if (auto ref_ = BK_node_ref(h)) {
                 owner = cast(Node) ref_;
             }
@@ -393,9 +398,12 @@ final class Node {
         }
     }
 
-    /// Put this node's local handlers on its current owner, if it has one.
-    private void rehomeHandlers() {
-        auto owner = handlerOwner();
+    /// Put this node's local handlers on `owner`, or on its current owner
+    /// when that is null, if it has one.
+    private void rehomeHandlers(Node owner) {
+        if (owner is null) {
+            owner = handlerOwner();
+        }
         if (owner !is null && owner !is this) {
             moveHandlersTo(owner);
         }
@@ -417,19 +425,20 @@ final class Node {
         }
     }
 
-    /// Give a subtree's handlers to its new owner after a move.
-    private void rehomeSubtreeHandlers() {
+    /// Give a subtree's handlers to its new owner after a move: `owner`, or
+    /// each node's own when null (an owner known before the move is done).
+    private void rehomeSubtreeHandlers(Node owner = null) {
         if (hasHandlers_ && handle !is null) {
-            rehomeSubtree(handle);
+            rehomeSubtree(handle, owner);
         }
     }
 
-    private static void rehomeSubtree(BKNode* h) {
+    private static void rehomeSubtree(BKNode* h, Node owner) {
         if (auto wrapper = wrapperAt(h)) {
-            wrapper.rehomeHandlers();
+            wrapper.rehomeHandlers(owner);
         }
         for (int i = 0, n = BK_node_child_count(h); i < n; ++i) {
-            rehomeSubtree(BK_node_child(h, i));
+            rehomeSubtree(BK_node_child(h, i), owner);
         }
     }
 
@@ -578,6 +587,67 @@ final class Node {
     /// The parent, if there is one.
     Node parent() const {
         return wrapNode(BK_node_parent(handle));
+    }
+
+    /* -- screens: an "area" in a "screen" (BK_area_*) ------------------------ */
+
+    /// Split this area: `axis` 'v' puts the new area beside it (`factor` from the left), 'h'
+    /// above or below (from the bottom); the new area is the side past 0.5, or null when this
+    /// one is too small. The screen made it: a borrowed wrapper, gone when the area closes.
+    Node split(char axis, float factor) {
+        if (axis != 'h' && axis != 'v') {
+            throw new BuiException("Node.split", "axis must be 'h' or 'v'");
+        }
+        return wrapNode(BK_area_split(handle, axis, factor));
+    }
+
+    /// `gone` joins into this area (they share an edge). D-owned nodes in an area that leaves the
+    /// screen keep their handlers, however it leaves (see `areaLeaving`).
+    bool join(Node gone) {
+        return gone !is null && BK_area_join(handle, gone.handle) != 0;
+    }
+
+    /// Move this area beside `target` (`BK_DOCK_LEFT` ... taking `factor` of it) or into its
+    /// place (`BK_DOCK_CENTER`).
+    bool dock(Node target, int where, float factor = 0.5f) {
+        return target !is null && BK_area_dock(handle, target.handle, where, factor) != 0;
+    }
+
+    bool swap(Node other) {
+        return other !is null && BK_area_swap(handle, other.handle) != 0;
+    }
+
+    /// A neighbor takes this area's place. D-owned nodes inside the area are detached, not freed,
+    /// and keep their handlers: they move with the area when it survives (a D-owned area), or to
+    /// the survivors themselves when the kit frees the area (one the screen made).
+    bool close() {
+        return handle !is null && BK_area_close(handle) != 0;
+    }
+
+    /// `BK_AREA_CLOSE`: `area` is leaving its screen (closed, joined, docked away, a layout
+    /// restored over it, or the user's drag), and its own handlers have run. The kit detaches a
+    /// D-owned area: as `remove()` does, its subtree's handlers go to the owner it will have,
+    /// itself, so no node inside (a close button) roots it through a closure. It frees one the
+    /// screen made, whose D-owned nodes are detached and each takes its own subtree's handlers,
+    /// while the entries of the freed nodes go, as when a D-owned node is freed. Walked now,
+    /// before the kit removes it: a node a close handler freed is no longer in the tree, and
+    /// freed pointers are compared, never read.
+    ///
+    /// The kit tells a screen's host, and so only a screen in a `Context`. With none, nothing
+    /// says an area left; see the README.
+    package static void areaLeaving(BKNode* area) {
+        if (auto wrapper = cast(Node) BK_node_ref(area)) {
+            wrapper.stashSubtreeHandlers();
+            wrapper.rehomeSubtreeHandlers(wrapper);
+            return;
+        }
+        auto holder = ownerOf(area);
+        if (holder is null) {
+            holder = wrapperAt(area); // a borrowed wrapper keeps its handlers while unowned
+        }
+        if (holder !is null && !holder.store_.empty) {
+            partitionHandlers(area, &holder.store_);
+        }
     }
 
     /// x, y, w, h in window pixels.
@@ -753,6 +823,22 @@ final class Node {
 
     Node onBrowse(NodeHandler handler) {
         return on(BK_EV_BROWSE, handler);
+    }
+
+    /// A screen's areas: `BK_AREA_NEW` on the screen (`a` = the new area's index), `BK_AREA_CLOSE`
+    /// and `BK_AREA_WINDOW` on the area itself.
+    Node onArea(NodeHandler handler) {
+        return on(BK_EV_AREA, handler);
+    }
+
+    /// A panel dragged to a new place: `a` = old index, `b` = new index.
+    Node onMove(NodeHandler handler) {
+        return on(BK_EV_MOVE, handler);
+    }
+
+    /// A region resized, hidden or shown by the user: `a` = size, `b` = hidden.
+    Node onResize(NodeHandler handler) {
+        return on(BK_EV_RESIZE, handler);
     }
 
     /// The kit's `BKHost.emit` path: dispatch one event to this node's handlers.

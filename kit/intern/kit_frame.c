@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "BLI_task.h"
 #include "kit_intern.h"
 
 #ifdef _WIN32
@@ -24,11 +25,9 @@
 #  ifndef NOMINMAX
 #    define NOMINMAX
 #  endif
-#  if !defined(_WIN32_WINNT) || _WIN32_WINNT < 0x0601
-#    undef _WIN32_WINNT
-#    define _WIN32_WINNT 0x0601 /* thread pool work objects */
-#  endif
 #  include <windows.h>
+#else
+#  include <time.h>
 #endif
 
 static int u(void)
@@ -149,6 +148,15 @@ static int anchor_off(int anchor, int extra, int lo_bit, int hi_bit)
     return extra;
   }
   return extra / 2;
+}
+
+/* A text item's baseline origin from its anchor; `tw` is its measured width (cap height ~0.72 em). */
+static void text_item_origin(const BKCanvasItem *it, const float *p, float ox, float oy, float size,
+                             float tw, float *r_x, float *r_y)
+{
+  const float asc = size * 0.72f;
+  *r_x = ox + p[0] - (float)anchor_off(it->anchor, (int)tw, BK_ANCHOR_W, BK_ANCHOR_E);
+  *r_y = oy + p[1] + asc - (float)anchor_off(it->anchor, (int)asc, BK_ANCHOR_N, BK_ANCHOR_S);
 }
 
 /** \} */
@@ -875,7 +883,7 @@ static void citem_assign(CItem *c, const BKCanvasItem *item)
     bk_image_ref_set_rgba(&c->img, item->rgba, item->iw, item->ih);
   }
   /* an effect's floats (the count is validated here, at the boundary) */
-  const int nf = item->type == BK_ITEM_EFFECT && item->effect_floats ?
+  const int nf = (item->type == BK_ITEM_EFFECT || item->type == BK_ITEM_PASS) && item->effect_floats ?
                      BK_CLAMP(item->n_effect_floats, 0, BK_EFFECT_MAX_FLOATS) :
                      0;
   if (nf > 0) {
@@ -947,8 +955,8 @@ static bool citem_bbox_ex(const CItem *ci, float b[4], bool tight)
     const float size = it->size > 0 ? it->size : bk_font_size();
     float tw = 0;
     BUI_text_measure(it->family ? it->family : "", it->text_flags, size, ci->text, (int)strlen(ci->text), &tw);
-    const float x = p[0] - anchor_off(it->anchor, (int)tw, BK_ANCHOR_W, BK_ANCHOR_E);
-    const float base = p[1] + size * 0.72f - anchor_off(it->anchor, (int)(size * 0.72f), BK_ANCHOR_N, BK_ANCHOR_S);
+    float x, base;
+    text_item_origin(it, p, 0.0f, 0.0f, size, tw, &x, &base);
     x0 = x;
     x1 = x + tw;
     y0 = base - size * 0.85f;
@@ -962,9 +970,8 @@ static bool citem_bbox_ex(const CItem *ci, float b[4], bool tight)
     const float size = it->size > 0 ? it->size : bk_font_size();
     float tw = 0;
     BUI_text_measure(it->family ? it->family : "", it->text_flags, size, ci->text, (int)strlen(ci->text), &tw);
-    const float x = p[0] - anchor_off(it->anchor, (int)tw, BK_ANCHOR_W, BK_ANCHOR_E);
-    const float asc = size * 0.72f;
-    const float base = p[1] + asc - anchor_off(it->anchor, (int)asc, BK_ANCHOR_N, BK_ANCHOR_S);
+    float x, base;
+    text_item_origin(it, p, 0.0f, 0.0f, size, tw, &x, &base);
     x0 = x - size;
     x1 = x + tw + size;
     y0 = base - size * 1.5f;
@@ -1070,10 +1077,26 @@ void BK_canvas_add_item(BKNode *n, const BKCanvasItem *item)
 
 /* Whether slot `c` already holds `it`. Image items never match: a borrowed buffer can change
  * under the same pointer. */
+/* Whether image item `it` shows what slot `c` shows: the same file, fitted,
+ * framed and faded the same. Buffers are always redrawn: copied pixels and
+ * video frames change under the same pointer, and a freed buffer's address
+ * can come back with other pixels. */
+static bool citem_image_same(const CItem *c, const BKCanvasItem *it)
+{
+  const BKImageRef *r = &c->img;
+  return it->src && !it->rgba && !it->imbuf && !it->video && r->kind == BK_IMREF_SOURCE &&
+         strcmp(bk_image_source_path(r->u.source), it->src) == 0 && c->it.fit == it->fit &&
+         c->it.frame == it->frame && c->it.fade == it->fade;
+}
+
 static bool citem_same(const CItem *c, const BKCanvasItem *it)
 {
   const BKCanvasItem *o = &c->it;
-  if (item_is_image(it) || o->type != it->type || o->id != it->id ||
+  /* an image that is the same is not redrawn either (every image was, at
+   * every render: a click anywhere repainted all the covers on screen);
+   * an effect's floats move every frame */
+  if (it->type == BK_ITEM_EFFECT || it->type == BK_ITEM_PASS || (item_is_image(it) && !citem_image_same(c, it)) ||
+      o->type != it->type || o->id != it->id ||
       o->ncoords != it->ncoords || o->hidden != it->hidden || o->anchor != it->anchor ||
       o->text_flags != it->text_flags || o->clip_on != it->clip_on || o->family != it->family ||
       o->width != it->width || o->radius != it->radius || o->size != it->size ||
@@ -1207,11 +1230,18 @@ typedef struct ItemPrep {
   BKImageDraw image; /* image items: resolved (ib NULL: nothing to draw yet) */
 } ItemPrep;
 
-/* An image item placed in window space (ox, oy: the canvas origin). */
+/* An image item's opacity: `fade` is how far it is faded out (0, the default: opaque). */
+static float citem_image_alpha(const BKCanvasItem *it)
+{
+  return 1.0f - BK_CLAMP(it->fade, 0.0f, 1.0f);
+}
+
+/* An image item placed in window space (ox, oy: the canvas origin). False when
+ * nothing of it draws: a faded-out file is not decoded either. */
 static bool citem_image_resolve(const CItem *ci, float ox, float oy, BKImageDraw *r)
 {
   float b[4];
-  if (!citem_image_box(ci, b)) {
+  if (!(citem_image_alpha(&ci->it) > 0.0f) || !citem_image_box(ci, b)) {
     return false;
   }
   b[0] += ox;
@@ -1224,6 +1254,23 @@ static bool citem_image_resolve(const CItem *ci, float ox, float oy, BKImageDraw
   }
   return bk_image_ref_resolve(&ci->img, ci->it.ncoords >= 4 ? ci->it.fit : BK_FIT_FILL,
                               ci->it.frame, b, r);
+}
+
+/* A pass: `effect` over all of a render target (or a fill of it), not drawn into the canvas. */
+static void canvas_pass(BuiRaster *r, const CItem *ci)
+{
+  const BKCanvasItem *it = &ci->it;
+  if (it->hidden || it->effect_target <= 0) {
+    return;
+  }
+  if (it->effect == 0) {
+    if (it->effect_floats && it->n_effect_floats >= 4) {
+      BUI_raster_target_clear(r, it->effect_target, it->effect_floats);
+    }
+    return;
+  }
+  BUI_raster_effect_to(r, it->effect_target, it->effect, it->effect_inputs, it->effect_floats,
+                       it->n_effect_floats);
 }
 
 /* Draw one item into `r`. With `prep`, text uses the prepared run (safe on
@@ -1336,22 +1383,19 @@ static void canvas_item_draw(BuiRaster *r, const CItem *ci, float ox, float oy, 
       if (!ci->text || it->ncoords < 2) {
         return;
       }
-      const float size = it->size > 0 ? it->size : bk_font_size();
-      const int len = (int)strlen(ci->text);
-      float tw = 0;
-      if (!(it->anchor & BK_ANCHOR_W)) { /* the width only moves centred / right text */
-        BUI_text_measure(it->family ? it->family : "", it->text_flags, size, ci->text, len, &tw);
-      }
-      float x = ox + p[0], y = oy + p[1];
-      x -= anchor_off(it->anchor, (int)tw, BK_ANCHOR_W, BK_ANCHOR_E);
-      /* y: baseline from the anchor (cap height ~0.72 em) */
-      const float asc = size * 0.72f;
-      y += asc - anchor_off(it->anchor, (int)asc, BK_ANCHOR_N, BK_ANCHOR_S);
       const float *c = it->fill[3] > 0 ? it->fill : it->outline;
-      if (prep) {
+      if (prep) { /* placed on the calling thread: a band worker never touches the glyph cache */
         BUI_raster_text_run(r, prep->tx, prep->ty, prep->run, c);
       }
       else {
+        const float size = it->size > 0 ? it->size : bk_font_size();
+        const int len = (int)strlen(ci->text);
+        float tw = 0;
+        if (!(it->anchor & BK_ANCHOR_W)) { /* the width only moves centred / right text */
+          BUI_text_measure(it->family ? it->family : "", it->text_flags, size, ci->text, len, &tw);
+        }
+        float x, y;
+        text_item_origin(it, p, ox, oy, size, tw, &x, &y);
         BUI_raster_set_font(r, it->family ? it->family : "", it->text_flags);
         BUI_raster_text(r, floorf(x + 0.5f), floorf(y + 0.5f), ci->text, len, size, c);
       }
@@ -1373,7 +1417,7 @@ static void canvas_item_draw(BuiRaster *r, const CItem *ci, float ox, float oy, 
     case BK_ITEM_IMAGE: {
       BKImageDraw d;
       if (prep ? prep->image.ib != NULL : citem_image_resolve(ci, ox, oy, &d)) {
-        bk_image_draw_resolved(r, prep ? &prep->image : &d, 1.0f);
+        bk_image_draw_resolved(r, prep ? &prep->image : &d, citem_image_alpha(it));
       }
       break;
     }
@@ -1388,6 +1432,8 @@ static void canvas_item_draw(BuiRaster *r, const CItem *ci, float ox, float oy, 
  * polygons use the kit's global drawing state and keep a canvas serial. */
 
 #define PAR_MIN_ITEMS 64
+/* More bands than threads: balances uneven rows. */
+#define BANDS_PER_THREAD 3
 /* Every extra thread costs CPU (wake-ups, bands overlapping items), so an
  * animation uses the fewest threads that still meet the frame deadline, and
  * all of them only when it can't be met. */
@@ -1414,7 +1460,9 @@ static double now_ms(void)
   QueryPerformanceCounter(&t);
   return (double)t.QuadPart * 1000.0 / (double)freq.QuadPart;
 #else
-  return 0.0;
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (double)t.tv_sec * 1000.0 + (double)t.tv_nsec / 1e6;
 #endif
 }
 
@@ -1461,10 +1509,8 @@ static bool item_prepare(const CItem *ci, float ox, float oy, ItemPrep *pp)
     const float size = it->size > 0 ? it->size : bk_font_size();
     float tw = 0;
     pp->run = BUI_text_prepare(it->family ? it->family : "", it->text_flags, size, ci->text, (int)strlen(ci->text), &tw);
-    float x = ox + p[0], y = oy + p[1];
-    x -= anchor_off(it->anchor, (int)tw, BK_ANCHOR_W, BK_ANCHOR_E);
-    const float asc = size * 0.72f;
-    y += asc - anchor_off(it->anchor, (int)asc, BK_ANCHOR_N, BK_ANCHOR_S);
+    float x, y;
+    text_item_origin(it, p, ox, oy, size, tw, &x, &y);
     pp->tx = floorf(x + 0.5f);
     pp->ty = floorf(y + 0.5f);
     pp->y0 = y - size * 1.5f - 2.0f;
@@ -1497,7 +1543,6 @@ typedef struct BandJob {
   int nbands, band_h;
   const int *start; /* band b draws items idx[start[b] .. start[b + 1]) */
   const int *idx;
-  volatile long next;
 } BandJob;
 
 static void band_draw(const BandJob *j, int b)
@@ -1531,37 +1576,24 @@ static void band_draw(const BandJob *j, int b)
   free(view);
 }
 
+/* Threads the canvas may draw with: the pool's, or fewer with BUI_RASTER_THREADS. */
 static int par_threads(void)
 {
   static int n = -1;
   if (n < 0) {
     const char *env = getenv("BUI_RASTER_THREADS");
-    n = env ? atoi(env) : 0;
-#ifdef _WIN32
-    if (n <= 0) {
-      SYSTEM_INFO si;
-      GetSystemInfo(&si);
-      n = (int)si.dwNumberOfProcessors;
-    }
-#endif
-    n = BK_CLAMP(n, 1, 8);
+    const int want = env ? atoi(env) : 0;
+    n = BLI_task_scheduler_num_threads();
+    n = want > 0 ? BK_MIN(want, n) : n;
   }
   return n;
 }
 
-#ifdef _WIN32
-static BandJob g_job;
-static VOID CALLBACK band_worker(PTP_CALLBACK_INSTANCE inst, PVOID ctx, PTP_WORK work)
+static void band_task(void *__restrict userdata, const int b, const TaskParallelTLS *__restrict tls)
 {
-  (void)inst;
-  (void)work;
-  BandJob *j = (BandJob *)ctx;
-  long b;
-  while ((b = InterlockedIncrement(&j->next) - 1) < j->nbands) {
-    band_draw(j, (int)b);
-  }
+  (void)tls;
+  band_draw((const BandJob *)userdata, b);
 }
-#endif
 
 /* Draw `d` in bands on several threads; false when it has to be drawn serially. */
 static bool canvas_draw_parallel(const CanvasData *d, float ox, float oy, int threads)
@@ -1574,7 +1606,6 @@ static bool canvas_draw_parallel(const CanvasData *d, float ox, float oy, int th
       return false;
     }
   }
-#ifdef _WIN32
   ItemPrep *prep = (ItemPrep *)malloc(sizeof(ItemPrep) * (size_t)d->n);
   if (!prep) {
     return false;
@@ -1593,22 +1624,15 @@ static bool canvas_draw_parallel(const CanvasData *d, float ox, float oy, int th
     return false;
   }
   /* phase 2: bands on the pool, this thread included */
-  static PTP_WORK work = NULL;
-  if (!work) {
-    work = CreateThreadpoolWork(band_worker, &g_job, NULL);
-    if (!work) {
-      free(prep);
-      return false;
-    }
-  }
-  BandJob *j = &g_job;
+  BandJob job;
+  BandJob *j = &job;
   j->d = d;
   j->prep = prep;
   j->base = bk_draw.r;
   memcpy(j->clip, bk_draw.clip, sizeof(j->clip));
   j->ox = ox;
   j->oy = oy;
-  j->nbands = threads * 3; /* more bands than threads: balances uneven rows */
+  j->nbands = threads * BANDS_PER_THREAD;
   j->band_h = BK_MAX(1, (j->clip[3] - j->clip[1] + j->nbands - 1) / j->nbands);
   /* bucket items by band once (in list order), so each band reads only its
    * own items instead of scanning the whole list */
@@ -1662,21 +1686,15 @@ static bool canvas_draw_parallel(const CanvasData *d, float ox, float oy, int th
   free(range);
   j->start = start;
   j->idx = idx;
-  j->next = 0;
-  for (int t = 1; t < threads; t++) {
-    SubmitThreadpoolWork(work);
-  }
-  band_worker(NULL, j, NULL);
-  WaitForThreadpoolWorkCallbacks(work, FALSE);
+  /* nb = threads * BANDS_PER_THREAD: the pool uses `threads` threads, not more */
+  TaskParallelSettings settings;
+  BLI_parallel_range_settings_defaults(&settings);
+  settings.min_iter_per_thread = BANDS_PER_THREAD;
+  BLI_task_parallel_range(0, nb, j, band_task, &settings);
   free(start);
   free(idx);
   free(prep);
   return true;
-#else
-  (void)ox;
-  (void)oy;
-  return false;
-#endif
 }
 
 static void canvas_draw(BKNode *n)
@@ -1685,6 +1703,10 @@ static void canvas_draw(BKNode *n)
     bk_fill_f(n->x, n->y, n->w, n->h, n->color);
   }
   CanvasData *d = CANVAS(n);
+  /* Passes are scheduled by the invalidation, not by how much of the canvas this draw covers:
+   * once per frame that redraws the whole canvas (the first rectangle takes the flag, so
+   * several damage rectangles in one frame run them once), whatever the clip leaves. */
+  const bool whole = canvas_all_damaged(n);
   d->damaged_px = 0;
   d->all_damaged = false;
   bk_clip_push(n->x, n->y, n->w, n->h);
@@ -1708,6 +1730,13 @@ static void canvas_draw(BKNode *n)
   for (int i = 0; i < d->n; i++) {
     const BKCanvasItem *it = &d->items[i].it;
     float b[4];
+    if (it->type == BK_ITEM_PASS) { /* drawn into a render target, not here: when the whole canvas
+                                     * is redrawn it runs once, in list order */
+      if (whole) {
+        canvas_pass(bk_draw.r, &d->items[i]);
+      }
+      continue;
+    }
     if (small && citem_bbox(&d->items[i], b) &&
         (ox + b[2] < clip[0] || ox + b[0] >= clip[2] || oy + b[3] < clip[1] || oy + b[1] >= clip[3]))
     {
@@ -1733,15 +1762,16 @@ static void canvas_draw(BKNode *n)
 /* Offscreen rasterization for CSS effects (filters, blend modes, masks,
  * clip-path, rotate/skew): draws `items` (device pixels, as BK_canvas_put_item
  * takes them) with the canvas' own item code into a w x h buffer whose top
- * left is at (x0, y0), and writes straight-alpha RGBA8 to `rgba`. The CPU
+ * left is at (x0, y0), and writes premultiplied ARGB words to `argb` (the
+ * kit's image format: BK_imbuf_from_argb takes them as they are). The CPU
  * raster has no alpha channel, so the items are drawn on black and on white:
- * alpha = 1 - (white - black), colour = black / alpha (exact for coverage
- * antialiasing). Declared in the Rust sys crate, not in BUI_kit.h.
- * Returns 1 on success. */
+ * alpha = 1 - (white - black), and the colour on black is the premultiplied
+ * colour (exact for coverage antialiasing; no division). Declared in the
+ * Rust sys crate, not in BUI_kit.h. Returns 1 on success. */
 int BK_canvas_rasterize(const BKCanvasItem *items, int n, float x0, float y0, int w, int h,
-                        unsigned char *rgba)
+                        uint32_t *argb)
 {
-  if (w <= 0 || h <= 0 || w > 8192 || h > 8192 || !rgba) {
+  if (w <= 0 || h <= 0 || w > 8192 || h > 8192 || !argb) {
     return 0;
   }
   CItem *ci = (CItem *)calloc((size_t)BK_MAX(n, 1), sizeof(CItem));
@@ -1778,20 +1808,15 @@ int BK_canvas_rasterize(const BKCanvasItem *items, int n, float x0, float y0, in
     }
     for (size_t k = 0; k < (size_t)w * (size_t)h; k++) {
       const uint32_t b = black[k], wt = px[k];
-      unsigned char *o = rgba + 4 * k;
       /* per channel: white - black = 255 * (1 - alpha); use the mean */
       const int dr = (int)((wt >> 16) & 255) - (int)((b >> 16) & 255);
       const int dg = (int)((wt >> 8) & 255) - (int)((b >> 8) & 255);
       const int db = (int)(wt & 255) - (int)(b & 255);
       const int a = BK_CLAMP(255 - (dr + dg + db) / 3, 0, 255);
-      o[3] = (unsigned char)a;
-      if (a == 0) {
-        o[0] = o[1] = o[2] = 0;
-        continue;
-      }
-      o[0] = (unsigned char)BK_MIN(255, (int)((b >> 16) & 255) * 255 / a);
-      o[1] = (unsigned char)BK_MIN(255, (int)((b >> 8) & 255) * 255 / a);
-      o[2] = (unsigned char)BK_MIN(255, (int)(b & 255) * 255 / a);
+      /* premultiplied: no channel above alpha */
+      const int cr = BK_MIN(a, (int)((b >> 16) & 255)), cg = BK_MIN(a, (int)((b >> 8) & 255)),
+                cb = BK_MIN(a, (int)(b & 255));
+      argb[k] = (uint32_t)a << 24 | (uint32_t)cr << 16 | (uint32_t)cg << 8 | (uint32_t)cb;
     }
   }
   free(black);

@@ -315,3 +315,43 @@ fn each_element_has_its_own_clock_and_shared_styles_stay_clean() {
         assert!(idle(cx, win));
     });
 }
+
+static CLIP_CLICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+struct ClipMove;
+
+impl Render for ClipMove {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        body()
+            .child(div().id("o").child(div().id("e").child(div().id("g").on_click(|_, _, _| {
+                CLIP_CLICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }))))
+            .child(style().child("body { margin: 0 }
+                #o { position: relative; width: 100px; height: 100px; overflow: hidden }
+                #e { position: relative; width: 60px; height: 100px; overflow: hidden; animation: mv 100ms linear forwards }
+                #g { position: absolute; left: 0; top: 0; width: 200px; height: 100px; background: red }
+                @keyframes mv { to { translate: 50px 0 } }"))
+    }
+}
+
+/// A box that clips, moved by an animation under a clip that stays: what it
+/// clips shows where both clips overlap, not where its old clip moved to.
+#[test]
+fn a_clip_moved_under_a_still_one_is_their_overlap() {
+    Application::headless().run(|cx| {
+        let win = open(cx, 300.0, 200.0, ClipMove).id;
+        cx.draw(win);
+        for _ in 0..10 {
+            ms(cx, 16);
+            cx.draw(win);
+        }
+        // e is at 50..110 now, its parent shows 0..100: g shows at 50..100
+        cx.simulate_click(win, 105.0, 50.0);
+        assert_eq!(CLIP_CLICKS.load(std::sync::atomic::Ordering::Relaxed), 0, "past the still clip: not g");
+        cx.simulate_click(win, 75.0, 50.0);
+        assert_eq!(CLIP_CLICKS.load(std::sync::atomic::Ordering::Relaxed), 1, "inside both: g");
+        let (w, _, px) = cx.draw(win);
+        assert_ne!(px[50 * w + 105] & 0xffffff, 0xff0000, "nothing drawn past the still clip");
+        assert_eq!(px[50 * w + 75] & 0xffffff, 0xff0000, "g drawn inside both");
+    });
+}

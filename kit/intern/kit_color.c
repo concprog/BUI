@@ -654,19 +654,25 @@ static void ramp_changed(BKNode *n)
   bk_emit(n, BK_EV_CHANGE, NULL, RAMP(n)->active, 0);
 }
 
-static int ramp_add(BKNode *n, float pos)
+/* Adds a stop at `pos` (the active one when the ramp is full); `drag`: a Ctrl+click's, which the
+ * pointer then drags. Nothing reads the ramp after the change event: its handler may free it. */
+static void ramp_add(BKNode *n, float pos, bool drag)
 {
   RampData *d = RAMP(n);
-  if (d->n == RAMP_MAX) {
-    return d->active;
+  const bool full = d->n == RAMP_MAX;
+  if (!full) {
+    float c[4];
+    BK_ramp_evaluate(n, pos, c);
+    d->active = d->n++;
+    d->pos[d->active] = pos;
+    memcpy(d->col[d->active], c, sizeof(c));
   }
-  float c[4];
-  BK_ramp_evaluate(n, pos, c);
-  d->pos[d->n] = pos;
-  memcpy(d->col[d->n], c, sizeof(c));
-  d->active = d->n++;
-  ramp_changed(n);
-  return d->active;
+  if (drag) {
+    d->drag = d->active;
+  }
+  if (!full) {
+    ramp_changed(n);
+  }
 }
 
 static void ramp_remove(BKNode *n)
@@ -700,7 +706,7 @@ static int ramp_press(BKNode *n, BKEvent *e)
   RampData *d = RAMP(n);
   const float pos = ramp_pos_at(n, e->x);
   if (EV_CTRL(e) || !d->n) { /* Ctrl+click: add a stop */
-    d->drag = ramp_add(n, pos);
+    ramp_add(n, pos, true);
     return 1;
   }
   int best = 0;
@@ -778,7 +784,7 @@ static void ramp_draw(BKNode *n)
     const float dark[4] = {0, 0, 0, 0.6f}, white[4] = {1, 1, 1, 1}, black[4] = {0, 0, 0, 0.8f};
     bk_fill_f(sx - 1, n->y, 3, bh, dark);
     bk_fill_f(sx, n->y, 1, bh, active ? white : black);
-    const float ty = n->y + bh + 1, ts = 0.28f * uu;
+    const float ty = n->y + bh + 1, ts = n->cls->overhang * uu;
     const float tri[3][2] = {{sx - ts, ty + ts * 1.6f}, {sx + ts, ty + ts * 1.6f}, {sx, ty}};
     const float frame[4] = {active ? 1.0f : 0.1f, active ? 1.0f : 0.1f, active ? 1.0f : 0.1f, 1};
     bk_polygon(tri, 3, frame);
@@ -808,7 +814,7 @@ static int ramp_set_num(BKNode *n, const char *key, double v)
     return 1;
   }
   if (strcmp(key, "add") == 0) {
-    ramp_add(n, (float)v);
+    ramp_add(n, (float)v, false);
     return 1;
   }
   if (strcmp(key, "remove") == 0) {
@@ -849,6 +855,10 @@ static int ramp_color_set(BKNode *n, const float c[4])
 
 const BKClass bk_cls_ramp = {.name = "ramp",
                              .flags = CLS_INTERACTIVE,
+                             /* half the width of a stop marker: it goes out at the ends. Below the
+                              * band (1.1u + 1) a marker is 1.6 times that tall, so it ends at
+                              * 1.548u + 1, within a pixel of the node's 1.6u: the margin covers it. */
+                             .overhang = 0.28f,
                              .init = ramp_init,
                              .free_ext = ramp_free,
                              .measure = ramp_measure,

@@ -45,6 +45,9 @@ def main() -> int:
     found["bindings/rust/Cargo.toml [workspace.package]"] = re.search(
         r'^version\s*=\s*"([^"]+)"', read(RUST / "Cargo.toml"), re.M).group(1)
 
+    found["tools/bui/Cargo.toml (the bui command)"] = re.search(
+        r'^version\s*=\s*"([^"]+)"', read(ROOT / "tools" / "bui" / "Cargo.toml"), re.M).group(1)
+
     header = read(ROOT / "kit" / "include" / "BUI_kit.h")
     parts = [re.search(rf"#define BUI_KIT_VERSION_{p}\s+(\d+)", header) for p in ("MAJOR", "MINOR", "PATCH")]
     string = re.search(r'#define BUI_KIT_VERSION_STRING\s+"([^"]+)"', header)
@@ -60,6 +63,9 @@ def main() -> int:
     found[f"bindings/lua/{rocks[0].name} (file name)"] = re.fullmatch(r"blenderui-(.+)-\d+\.rockspec", rocks[0].name).group(1)
     found["bindings/lua rockspec: version"] = re.search(r'^version\s*=\s*"([^"]+)-\d+"', rock, re.M).group(1)
     found["bindings/lua rockspec: source tag"] = re.search(r'tag\s*=\s*"v([^"]+)"', rock).group(1)
+
+    found["bindings/ruby/lib/bui/version.rb"] = re.search(
+        r'VERSION\s*=\s*"([^"]+)"', read(ROOT / "bindings" / "ruby" / "lib" / "bui" / "version.rb")).group(1)
 
     # the DUB package and its hand-written copies of the kit version
     found["bindings/d/dub.json"] = json.loads(read(D / "dub.json"))["version"]

@@ -147,7 +147,23 @@ double bk_time(void)
 /** \name Nodes
  * \{ */
 
-static int g_gen = 1; /* layout generation for the natural-size cache */
+/* natural-size cache: a node's size is valid while its `nat_gen` is the epoch. Zero marks it stale
+ * (a node and its ancestors, see bk_stale). The epoch moves for inputs of every node: theme, scale,
+ * font. */
+static int g_epoch = 1;
+
+void bk_measure_reset(void)
+{
+  g_epoch++;
+}
+
+void bk_stale(BKNode *n)
+{
+  for (; n; n = n->parent) {
+    n->nat_gen = 0;
+    n->flags |= NF_ARRANGE;
+  }
+}
 
 static const BKClass *const g_classes[] = {
     &bk_cls_column,   &bk_cls_row,       &bk_cls_split,       &bk_cls_grid,       &bk_cls_box,
@@ -160,6 +176,7 @@ static const BKClass *const g_classes[] = {
     &bk_cls_gridview, &bk_cls_ramp,      &bk_cls_curve,      &bk_cls_normal,
     &bk_cls_histogram, &bk_cls_frame,     &bk_cls_radio,      &bk_cls_canvas,
     &bk_cls_textarea,  &bk_cls_image,     &bk_cls_meter,      &bk_cls_custom,      &bk_cls_video,
+    &bk_cls_screen,    &bk_cls_area,
 #ifdef BUI_FILEBROWSER
     &bk_cls_filebrowser,
 #endif
@@ -193,6 +210,7 @@ BKNode *bk_node_new_cls(const BKClass *cls)
   n->split = 0.4f;
   n->color[3] = 1.0f;
   n->nat_gen = 0;
+  n->flags |= NF_ARRANGE;
   if (cls->init) {
     cls->init(n);
   }
@@ -210,15 +228,23 @@ const char *BK_node_type(const BKNode *n)
   return n->cls->name;
 }
 
+static bool node_in_popup(const BKNode *n);
+static int damage_moved(BKContext *ctx, BKNode *n, bool shown, bool in_popup);
+static void invalidate_reach(BKNode *n);
+
 static void node_detach(BKNode *child)
 {
   BKNode *p = child->parent;
   if (!p) {
     return;
   }
+  if (p->cls->detach) {
+    p->cls->detach(p, child);
+  }
   BKContext *ctx = bk_ctx(child);
   if (ctx) {
     bk_forget(ctx, child);
+    damage_moved(ctx, child, false, node_in_popup(p)); /* what it showed goes */
     bk_relayout(p);
   }
   for (int i = 0; i < p->nkids; i++) {
@@ -229,6 +255,9 @@ static void node_detach(BKNode *child)
     }
   }
   child->parent = NULL;
+  if (p->cls->detached) {
+    p->cls->detached(p, child);
+  }
 }
 
 void BK_node_free(BKNode *n)
@@ -273,6 +302,7 @@ void BK_node_free(BKNode *n)
   free(n->linked_start);
   bk_te_free(n->edit);
   free(n->geom);
+  free(n->rgn);
   bk_image_ref_clear(&n->image);
   free(n);
 }
@@ -314,6 +344,15 @@ int BK_node_add(BKNode *parent, BKNode *child, int index)
       return 0; /* under itself: the tree would be a cycle */
     }
   }
+  if (parent->cls->accept && child->parent != parent && !parent->cls->accept(parent, child)) {
+    return 0;
+  }
+  if (child->parent == parent) {
+    /* a reorder inside one parent never detaches: the parent's detach hook (a screen closing the
+     * area) must not run */
+    BK_node_move(parent, child, index);
+    return 1;
+  }
   if (child->parent) {
     void *ref = child->ref;
     bk_retain(ref); /* keep alive across the move */
@@ -344,8 +383,43 @@ void BK_node_remove(BKNode *parent, BKNode *child)
   if (!child || child->parent != parent) {
     return;
   }
+  /* the parent's hold: read first, as the detached hook may tell the host (BK_EV_CHANGE), whose
+   * handler may free the child */
+  void *ref = child->ref;
   node_detach(child);
-  bk_release(child->ref);
+  bk_release(ref);
+}
+
+int BK_node_move(BKNode *parent, BKNode *child, int index)
+{
+  if (!parent || !child || child->parent != parent) {
+    return 0;
+  }
+  int from = 0;
+  while (from < parent->nkids && parent->kids[from] != child) {
+    from++;
+  }
+  if (from == parent->nkids) {
+    return 0;
+  }
+  index = (index < 0 || index >= parent->nkids) ? parent->nkids - 1 : index;
+  if (from == index) {
+    return 1;
+  }
+  /* shift the ones between, in place: the child never leaves, so it keeps the focus, a text
+   * edit and its context (BK_node_remove + BK_node_add forget them) */
+  if (from < index) {
+    memmove(parent->kids + from, parent->kids + from + 1, sizeof(BKNode *) * (size_t)(index - from));
+  }
+  else {
+    memmove(parent->kids + index + 1, parent->kids + index, sizeof(BKNode *) * (size_t)(from - index));
+  }
+  parent->kids[index] = child;
+  /* the order is the stacking: where the child overlaps a sibling the pixels change even when no
+   * rect does, which the layout's moved-rect damage can't see */
+  invalidate_reach(child);
+  bk_relayout(parent);
+  return 1;
 }
 
 int BK_node_child_count(const BKNode *n)
@@ -396,25 +470,87 @@ BKRect bk_node_rect(const BKNode *n)
   return bk_rect(n->x, n->y, n->w, n->h);
 }
 
+/* What a node draws outside its rect: its class's overhang, else a few pixels of outline. */
+static int class_margin(const BKNode *n)
+{
+  return BK_MAX(3, (int)ceilf(n->cls->overhang * (float)bk_unit()) + 1);
+}
+
+/* The same, and a popup's shadow. */
+static int damage_margin(const BKNode *n, bool in_popup)
+{
+  const int shadow = (int)(bk_theme.menu_shadow_width * bk_scale_fac) + 6;
+  return in_popup ? BK_MAX(shadow, class_margin(n)) : class_margin(n);
+}
+
+static void damage_grown(BKContext *ctx, BKRect r, int m)
+{
+  if (r.xmax <= r.xmin || r.ymax <= r.ymin) {
+    return;
+  }
+  bk_ctx_dirty_rect(ctx, (BKRect){r.xmin - m, r.ymin - m, r.xmax + m, r.ymax + m});
+}
+
+static bool node_in_popup(const BKNode *n)
+{
+  for (; n; n = n->parent) {
+    if (n->cls->flags & CLS_POPUP) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void bk_invalidate(BKNode *n)
 {
   BKContext *ctx = bk_ctx(n);
-  if (!ctx) {
-    return;
+  if (ctx) {
+    damage_grown(ctx, bk_node_rect(n), damage_margin(n, node_in_popup(n)));
   }
-  int m = 3;
-  for (const BKNode *p = n; p; p = p->parent) {
-    if (p->cls->flags & CLS_POPUP) {
-      m = (int)(bk_theme.menu_shadow_width * bk_scale_fac) + 6;
-      break;
+}
+
+/* Damage all a node and its kids draw (its reach), as Blender tags the whole region for redraw. */
+static void invalidate_reach(BKNode *n)
+{
+  BKContext *ctx = bk_ctx(n);
+  if (ctx) {
+    damage_grown(ctx, bk_node_rect(n), BK_MAX(damage_margin(n, node_in_popup(n)), n->reach));
+  }
+}
+
+/* Blender tags a region for redraw; here a layout tags each node whose place on screen changed
+ * (moved, resized, shown or hidden): its old and new places are damaged, nothing else is.
+ * The same walk sets each node's reach (returned): how far past its rect it and its kids draw,
+ * its own margin (a popup's with its shadow) and its kids' beyond it, unless it clips them
+ * (a class with its own draw_tree: scroll, panel, frame). */
+static int damage_moved(BKContext *ctx, BKNode *n, bool shown, bool in_popup)
+{
+  shown = shown && NODE_VISIBLE(n);
+  const bool popup = n->cls->flags & CLS_POPUP;
+  in_popup = in_popup || popup;
+  const BKRect now = shown ? bk_node_rect(n) : (BKRect){0, 0, 0, 0};
+  if (memcmp(&now, &n->shown, sizeof(now)) != 0) {
+    const int m = damage_margin(n, in_popup);
+    damage_grown(ctx, n->shown, m);
+    damage_grown(ctx, now, m);
+    n->shown = now;
+  }
+  int reach = damage_margin(n, popup);
+  for (int i = 0; i < n->nkids; i++) {
+    const BKNode *k = n->kids[i];
+    const int r = damage_moved(ctx, n->kids[i], shown, in_popup);
+    if (shown && NODE_VISIBLE(k) && !n->cls->draw_tree) {
+      reach = BK_MAX(reach, BK_MAX(BK_MAX(n->x - (k->x - r), (k->x + k->w + r) - (n->x + n->w)),
+                                   BK_MAX(n->y - (k->y - r), (k->y + k->h + r) - (n->y + n->h))));
     }
   }
-  bk_ctx_dirty_rect(ctx, bk_rect(n->x - m, n->y - m, n->w + 2 * m, n->h + 2 * m));
+  n->reach = reach;
+  return reach;
 }
 
 void bk_relayout(BKNode *n)
 {
-  g_gen++;
+  bk_stale(n);
   BKContext *ctx = bk_ctx(n);
   if (ctx) {
     ctx->layout_dirty = true;
@@ -424,7 +560,7 @@ void bk_relayout(BKNode *n)
 
 void bk_natural(BKNode *n, int *r_w, int *r_h)
 {
-  if (n->nat_gen != g_gen) {
+  if (n->nat_gen != g_epoch) {
     int w = 4 * bk_unit(), h = bk_unit();
     if (n->cls->measure || BK_HTML(n)) {
       const float saved = bk_text_scale;
@@ -447,16 +583,23 @@ void bk_natural(BKNode *n, int *r_w, int *r_h)
     }
     n->nat_w = w;
     n->nat_h = h;
-    n->nat_gen = g_gen;
+    n->nat_gen = g_epoch;
   }
   *r_w = n->nat_w;
   *r_h = n->nat_h;
 }
 
 int bk_configure_pending;
+static bool g_arrange_all; /* a layout after a measure epoch change */
 
 void bk_arrange(BKNode *n, int x, int y, int w, int h)
 {
+  if (!g_arrange_all && !(n->flags & NF_ARRANGE) && n->x == x && n->y == y && n->w == w &&
+      n->h == h)
+  {
+    return; /* nothing it places from changed */
+  }
+  n->flags &= ~NF_ARRANGE;
   if ((n->flags & NF_EVENTS) && (n->x != x || n->y != y || n->w != w || n->h != h)) {
     n->flags |= NF_CONFIGURED; /* reported after layout (Tk's <Configure>) */
     bk_configure_pending = 1;
@@ -493,9 +636,10 @@ static void draw_tree_in(BKNode *n)
     n->cls->draw_tree(n);
     return;
   }
-  /* Skip whole subtrees outside the redrawn region (children stay inside
-   * their parent's rect; emboss/outlines spill by a pixel or two). */
-  BKRect r = bk_rect(n->x - 3, n->y - 3, n->w + 6, n->h + 6);
+  /* Skip whole subtrees outside the redrawn region: all the node and its kids draw lies
+   * within its reach (a node no layout saw yet: its class margin). */
+  const int m = BK_MAX(class_margin(n), n->reach);
+  BKRect r = bk_rect(n->x - m, n->y - m, n->w + 2 * m, n->h + 2 * m);
   if (!bk_clip_visible(&r)) {
     return;
   }
@@ -524,15 +668,31 @@ bool bk_contains(const BKNode *n, int x, int y)
   return x >= n->x && x < n->x + n->w && y >= n->y && y < n->y + n->h;
 }
 
+int bk_scroll_take(float *rem, float px)
+{
+  *rem += px;
+  const int whole = (int)*rem; /* truncates toward zero */
+  *rem -= (float)whole;
+  return whole;
+}
+
+bool bk_scroll_at_end(int pos, int max, float px)
+{
+  return (px > 0.0f && pos <= 0) || (px < 0.0f && pos >= max);
+}
+
+/* Whether the node's geometry clip (a clipped scroll viewport) rules the point out. */
+static bool clip_excludes(const BKNode *n, int x, int y)
+{
+  const BKGeom *g = n->geom;
+  return g && g->has_clip &&
+         (x < g->clip[0] || y < g->clip[1] || x >= g->clip[0] + g->clip[2] ||
+          y >= g->clip[1] + g->clip[3]);
+}
+
 BKNode *bk_hit(BKNode *n, int x, int y)
 {
-  if (!NODE_VISIBLE(n) || !bk_contains(n, x, y)) {
-    return NULL;
-  }
-  const BKGeom *g = n->geom;
-  if (g && g->has_clip &&
-      (x < g->clip[0] || y < g->clip[1] || x >= g->clip[0] + g->clip[2] || y >= g->clip[1] + g->clip[3]))
-  {
+  if (!NODE_VISIBLE(n) || !bk_contains(n, x, y) || clip_excludes(n, x, y)) {
     return NULL;
   }
   if (n->cls->hit) {
@@ -601,6 +761,7 @@ void bk_set_value_silent(BKNode *n, double v)
   v = bk_clamp_value(n, v);
   if (v != n->value) {
     n->value = v;
+    bk_relayout(n); /* a number's width follows its text */
     bk_invalidate(n);
   }
 }
@@ -611,6 +772,7 @@ void bk_set_value(BKNode *n, double v)
   if (v != n->value) {
     bk_undo_record(n, 0);
     n->value = v;
+    bk_relayout(n);
     bk_changed(n);
   }
 }
@@ -820,6 +982,7 @@ static const struct {
     {"align", NF_ALIGN, true},         {"emboss", NF_EMBOSS, false},
     {"vertical", NF_VERTICAL, true},   {"icon_only", NF_ICON_ONLY, true},
     {"collapsed", NF_COLLAPSED, true}, {"integer", NF_INTEGER, false},
+    {"pinned", NF_PINNED, true},
     {"live", NF_LIVE, false},          {"alpha", NF_ALPHA, false},
     {"square", NF_SQUARE, false},      {"directory", NF_DIRECTORY, false},
     {"line", NF_LINE, false},          {"bold", NF_BOLD, true},
@@ -949,10 +1112,14 @@ void bk_views_check(BKContext *ctx)
   }
 }
 
-int BK_set_num(BKNode *n, const char *key, double v)
+static int set_num(BKNode *n, const char *key, double v)
 {
   if (n->cls->set_num && n->cls->set_num(n, key, v)) {
     return 1;
+  }
+  const int region = bk_region_set_num(n, key, v); /* an area's region: size, hidden ... */
+  if (region != 0) {
+    return region > 0;
   }
   if ((key[0] == 'x' || key[0] == 'y') && view_set_num(n, key, v)) {
     return 1;
@@ -988,6 +1155,7 @@ int BK_set_num(BKNode *n, const char *key, double v)
     if (n->cls == &bk_cls_tabs || n->cls == &bk_cls_sidetabs || n->cls == &bk_cls_sidebar) {
       n->current = (int)v;
       bk_relayout(n);
+      bk_invalidate(n);
     }
     else {
       if (!(n->flags & NF_DEFAULT_SET)) { /* the value a widget is made with is its default */
@@ -1023,6 +1191,12 @@ int BK_set_num(BKNode *n, const char *key, double v)
   }
   if (strcmp(key, "precision") == 0) {
     n->precision = (int)v;
+    bk_invalidate(n);
+    return 1;
+  }
+  if (strcmp(key, "radius") == 0) { /* HTML look border-radius (CSS px); negative: the default */
+    n->has_radius = v >= 0;
+    n->radius = (float)v;
     bk_invalidate(n);
     return 1;
   }
@@ -1065,6 +1239,7 @@ int BK_set_num(BKNode *n, const char *key, double v)
   if (strcmp(key, "tile") == 0) {
     n->tile = (float)v;
     bk_relayout(n);
+    bk_invalidate(n);
     return 1;
   }
   if (strcmp(key, "height") == 0) {
@@ -1080,11 +1255,13 @@ int BK_set_num(BKNode *n, const char *key, double v)
   if (strcmp(key, "scroll") == 0) {
     n->scroll = (int)v;
     bk_relayout(n);
+    bk_invalidate(n);
     return 1;
   }
   if (strcmp(key, "scroll_x") == 0) {
     n->scroll_x = (int)v;
     bk_relayout(n);
+    bk_invalidate(n);
     return 1;
   }
   if (strcmp(key, "selmode") == 0) {
@@ -1113,6 +1290,7 @@ int BK_set_num(BKNode *n, const char *key, double v)
   if (strcmp(key, "font_scale") == 0) {
     n->font_scale = (float)v;
     bk_relayout(n);
+    bk_invalidate(n);
     return 1;
   }
   if (strcmp(key, "cursor") == 0) { /* < 0: back to the class cursor */
@@ -1122,20 +1300,42 @@ int BK_set_num(BKNode *n, const char *key, double v)
   if (strcmp(key, "current") == 0) {
     n->current = (int)v;
     bk_relayout(n);
+    bk_invalidate(n);
     return 1;
   }
   if (strcmp(key, "icon") == 0) {
     n->icon = (int)v;
     bk_relayout(n);
+    bk_invalidate(n);
     return 1;
   }
   return 0;
+}
+
+/* "set_value" marks the node stale itself, only when the value changes. */
+static bool notifies(const char *key)
+{
+  return strcmp(key, "set_value") == 0;
+}
+
+/* Any property can change a measured size, so a write marks the node (and its ancestors) stale.
+ * It does so before the setter runs: a setter can emit a change event (a ramp's "add"), and its
+ * handler may free the node. */
+int BK_set_num(BKNode *n, const char *key, double v)
+{
+  if (!notifies(key)) {
+    bk_stale(n);
+  }
+  return set_num(n, key, v);
 }
 
 double BK_get_num(BKNode *n, const char *key)
 {
   double cv;
   if (n->cls->get_num && n->cls->get_num(n, key, &cv)) {
+    return cv;
+  }
+  if (bk_region_get_num(n, key, &cv)) {
     return cv;
   }
   for (size_t i = 0; i < sizeof(g_flag_props) / sizeof(g_flag_props[0]); i++) {
@@ -1197,6 +1397,9 @@ double BK_get_num(BKNode *n, const char *key)
   if (strcmp(key, "corners") == 0) {
     return n->corners;
   }
+  if (strcmp(key, "radius") == 0) {
+    return n->has_radius ? n->radius : -1;
+  }
   if (strcmp(key, "rename_row") == 0) {
     return n->rename_row;
   }
@@ -1221,10 +1424,14 @@ static void edit_follow_text(BKNode *n)
   n->edit = fresh;
 }
 
-int BK_set_str(BKNode *n, const char *key, const char *v)
+static int set_str(BKNode *n, const char *key, const char *v)
 {
   if (n->cls->set_str && n->cls->set_str(n, key, v)) {
     return 1;
+  }
+  const int region = bk_region_set_str(n, key, v); /* region, side, hotkey */
+  if (region != 0) {
+    return region > 0;
   }
   if (strcmp(key, "text") == 0 || strcmp(key, "title") == 0) {
     bk_set_text(&n->text, v);
@@ -1246,6 +1453,7 @@ int BK_set_str(BKNode *n, const char *key, const char *v)
       bk_undo_record(n, 1);
       bk_set_text(&n->text, v);
       edit_follow_text(n);
+      bk_stale(n);
       bk_changed(n);
     }
     return 1;
@@ -1304,6 +1512,15 @@ int BK_set_str(BKNode *n, const char *key, const char *v)
   return 0;
 }
 
+/* As BK_set_num. */
+int BK_set_str(BKNode *n, const char *key, const char *v)
+{
+  if (!notifies(key)) {
+    bk_stale(n);
+  }
+  return set_str(n, key, v);
+}
+
 const char *BK_get_str(BKNode *n, const char *key)
 {
   if (n->cls->get_str) {
@@ -1311,6 +1528,10 @@ const char *BK_get_str(BKNode *n, const char *key)
     if (s) {
       return s;
     }
+  }
+  const char *region = bk_region_get_str(n, key);
+  if (region) {
+    return region;
   }
   if (strcmp(key, "value") == 0 && n->cls == &bk_cls_textarea) {
     return bk_textarea_text(n);
@@ -1384,7 +1605,7 @@ int BK_get_color(BKNode *n, const char *key, float r[4])
   return 0;
 }
 
-int BK_set_strs(BKNode *n, const char *key, const char *const *v, int count)
+static int set_strs(BKNode *n, const char *key, const char *const *v, int count)
 {
   if (n->cls->set_strs && n->cls->set_strs(n, key, v, count)) {
     return 1;
@@ -1425,6 +1646,13 @@ int BK_set_strs(BKNode *n, const char *key, const char *const *v, int count)
     return 1;
   }
   return 0;
+}
+
+/* As BK_set_num. */
+int BK_set_strs(BKNode *n, const char *key, const char *const *v, int count)
+{
+  bk_stale(n);
+  return set_strs(n, key, v, count);
 }
 
 int BK_strs_count(BKNode *n, const char *key)
@@ -1563,6 +1791,7 @@ void bk_theme_mark_set(void)
 void bk_theme_changed(void)
 {
   bk_theme_gen++;
+  bk_measure_reset();
   for (BKContext *c = g_contexts; c; c = c->next_ctx) {
     c->layout_dirty = true; /* shadow widths size popups */
     c->full_dirty = true;
@@ -2015,9 +2244,22 @@ void bk_clipboard_set(BKContext *ctx, const char *s)
 /** \name Rendering
  * \{ */
 
+static void region_scroll_rects(BKContext *ctx, BKRect *r_track, BKRect *r_thumb);
+
+/* The region scrollbar's track, empty while the content fits. */
+static BKRect region_track(BKContext *ctx)
+{
+  BKRect track = {0, 0, 0, 0}, thumb;
+  if (ctx->content_h > ctx->win_h - ctx->header_h) {
+    region_scroll_rects(ctx, &track, &thumb);
+  }
+  return track;
+}
+
 static void layout(BKContext *ctx)
 {
-  g_gen++;
+  const BKRect track = region_track(ctx);
+  const int old_content_h = ctx->content_h, old_scroll = ctx->scroll, old_header_h = ctx->header_h;
   const int w = ctx->win_w, h = ctx->win_h;
   int hw = 0, hh = 0;
   if (ctx->header) {
@@ -2031,6 +2273,8 @@ static void layout(BKContext *ctx)
   ctx->content_h = ch;
   const int view_h = h - hh;
   ctx->scroll = BK_CLAMP(ctx->scroll, 0, BK_MAX(0, ch - view_h));
+  g_arrange_all = ctx->arrange_epoch != g_epoch;
+  ctx->arrange_epoch = g_epoch;
   if (ctx->root) {
     bk_arrange(ctx->root, 0, hh - ctx->scroll, w, BK_MAX(ch, view_h));
   }
@@ -2040,7 +2284,21 @@ static void layout(BKContext *ctx)
   for (int i = 0; i < ctx->npopups; i++) {
     bk_popup_place(ctx->popups[i], w, h);
   }
+  g_arrange_all = false;
   ctx->layout_dirty = false;
+  if (old_content_h != ctx->content_h || old_scroll != ctx->scroll || old_header_h != ctx->header_h) {
+    damage_grown(ctx, track, 0); /* the thumb moved */
+    damage_grown(ctx, region_track(ctx), 0);
+  }
+  BKNode *roots[] = {ctx->root, ctx->header};
+  for (int i = 0; i < 2; i++) {
+    if (roots[i]) {
+      damage_moved(ctx, roots[i], true, false);
+    }
+  }
+  for (int i = 0; i < ctx->npopups; i++) {
+    damage_moved(ctx, ctx->popups[i], true, false);
+  }
 }
 
 /* interface_region_tooltip.cc: portions of the line height, and the wrap width. */
@@ -2268,6 +2526,39 @@ static void draw_region(BKContext *ctx, const BKRect *rect)
   bk_image_pass_end();
 }
 
+/* BUI_CHECK_DAMAGE=1: draw a partial frame again in full and count the pixels the damage missed. */
+static void check_damage(BKContext *ctx, BuiRaster *r, int w, int h)
+{
+  static int on = -1;
+  if (on < 0) {
+    const char *env = getenv("BUI_CHECK_DAMAGE");
+    on = env && env[0] == '1';
+  }
+  const uint32_t *px = on ? BUI_raster_pixels(r) : NULL;
+  if (!px) {
+    return;
+  }
+  const size_t n = (size_t)w * (size_t)h;
+  uint32_t *partial = (uint32_t *)malloc(n * sizeof(uint32_t));
+  if (!partial) {
+    return;
+  }
+  memcpy(partial, px, n * sizeof(uint32_t));
+  BUI_raster_begin_frame(r, w, h);
+  const BKRect all = bk_rect(0, 0, w, h);
+  draw_region(ctx, &all);
+  BUI_raster_end_frame(r);
+  px = BUI_raster_pixels(r);
+  size_t missed = 0;
+  for (size_t i = 0; i < n; i++) {
+    missed += partial[i] != px[i];
+  }
+  if (missed) {
+    fprintf(stderr, "bui: damage missed %zu pixels\n", missed);
+  }
+  free(partial);
+}
+
 int BK_needs_render(BKContext *ctx)
 {
   return ctx->layout_dirty || ctx->full_dirty || ctx->ndirty > 0;
@@ -2318,8 +2609,9 @@ static int render_frame(BKContext *ctx, BuiRaster *r, int w, int h, int full)
   BK_configure(ctx, w, h);
   if (BUI_raster_width(r) != w || BUI_raster_height(r) != h) {
     ctx->layout_dirty = true;
+    full = 1; /* a new frame buffer: nothing in it to keep */
   }
-  if (full || ctx->layout_dirty) {
+  if (full) {
     ctx->full_dirty = true;
   }
   if (ctx->layout_dirty) {
@@ -2331,7 +2623,6 @@ static int render_frame(BKContext *ctx, BuiRaster *r, int w, int h, int full)
   }
   bk_custom_frames(ctx); /* immediate-mode nodes build this frame (they dirty themselves) */
   if (ctx->layout_dirty) {
-    ctx->full_dirty = true;
     layout(ctx);
   }
   if (!ctx->full_dirty && ctx->ndirty == 0) {
@@ -2361,6 +2652,7 @@ static int render_frame(BKContext *ctx, BuiRaster *r, int w, int h, int full)
     }
     BUI_raster_end_frame_region(r, bbox.xmin, bbox.ymin, bk_rw(&bbox), bk_rh(&bbox));
     regions = ctx->ndirty;
+    check_damage(ctx, r, w, h);
   }
   ctx->full_dirty = false;
   ctx->ndirty = 0;
@@ -2717,30 +3009,22 @@ static int in_BK_press(BKContext *ctx, int x, int y, int mods)
   return 1;
 }
 
-static int in_BK_release(BKContext *ctx, int x, int y, int mods)
+/* Ends the press at (x, y): the grabbed widget's release, then the grab, drag and pointer state.
+ * `cancelled`: the host lost the pointer, so the release sees it outside (no click), no BK_EV_RELEASE
+ * is sent and no menu item is picked. */
+static int end_press(BKContext *ctx, int x, int y, int mods, bool cancelled)
 {
-  const int button = ctx->next_button > 0 ? ctx->next_button : 1;
-  ctx->next_button = 0;
-  if (custom_extra_button(ctx, x, y, button, 1, mods)) {
-    return 1;
-  }
-  if (ctx->modal) {
-    BKEvent e = make_event(ctx, ctx->modal, x, y, mods);
-    if (ctx->modal->cls->release) {
-      ctx->modal->cls->release(ctx->modal, &e);
-    }
-    return 1;
-  }
   const bool was_continuous = continuous(ctx);
   const int vx = x + ctx->off_x, vy = y + ctx->off_y;
   BKNode *grab = ctx->grab;
   ctx->dt_active = 0;
   if (grab && NODE_ENABLED(grab)) {
     BKEvent e = make_event(ctx, grab, vx, vy, mods);
+    e.inside = e.inside && !cancelled;
     if (grab->cls->release) {
       grab->cls->release(grab, &e);
     }
-    if (ctx->grab == grab) {
+    if (ctx->grab == grab && !cancelled) {
       bk_event(grab, BK_EV_RELEASE, mods, &e);
     }
   }
@@ -2751,7 +3035,7 @@ static int in_BK_release(BKContext *ctx, int x, int y, int mods)
   if (grab) {
     bk_invalidate(grab);
   }
-  if (ctx->dragging && bk_popup_index(ctx, grab) < 0) {
+  if (ctx->dragging && !cancelled && bk_popup_index(ctx, grab) < 0) {
     /* Blender: press a menu button, drag onto an item, release to pick. */
     for (int i = ctx->npopups - 1; i >= 0; i--) {
       BKNode *p = ctx->popups[i];
@@ -2786,6 +3070,59 @@ static int in_BK_release(BKContext *ctx, int x, int y, int mods)
   return 1;
 }
 
+static int in_BK_release(BKContext *ctx, int x, int y, int mods)
+{
+  const int button = ctx->next_button > 0 ? ctx->next_button : 1;
+  ctx->next_button = 0;
+  if (custom_extra_button(ctx, x, y, button, 1, mods)) {
+    return 1;
+  }
+  if (ctx->modal) {
+    BKEvent e = make_event(ctx, ctx->modal, x, y, mods);
+    if (ctx->modal->cls->release) {
+      ctx->modal->cls->release(ctx->modal, &e);
+    }
+    return 1;
+  }
+  return end_press(ctx, x, y, mods, false);
+}
+
+/* Blender: Escape cancels a drag (EVT_BUT_CANCEL in ui_handle_button_event), putting the value back.
+ * True when there was one to cancel. */
+static bool cancel_drag(BKContext *ctx)
+{
+  if (!ctx->grab || !ctx->dragging || !ctx->grab->cls->cancel) {
+    return false;
+  }
+  ctx->grab->cls->cancel(ctx->grab);
+  ctx->has_ungrab = false;
+  return true;
+}
+
+/* Blender's button_activate_exit with data->cancel: the press ends and nothing is applied (a modal
+ * ends, a drag puts its value back, the release clicks nothing, no menu item is picked). The host
+ * lost the pointer (BK_cancel), or the window manager took it for a move from the press (the window
+ * hosts). The click history ends too: the next press is a fresh click, not a double. */
+void bk_cancel_press(BKContext *ctx, int mods)
+{
+  ctx->next_button = 0;
+  ctx->last_click_node = NULL;
+  if (ctx->modal) {
+    bk_end_modal(ctx);
+  }
+  else if (ctx->grab) {
+    cancel_drag(ctx);
+    end_press(ctx, ctx->pointer_x, ctx->pointer_y, mods, true);
+  }
+}
+
+static int in_BK_cancel(BKContext *ctx, int mods)
+{
+  const bool pressed = ctx->modal || ctx->grab;
+  bk_cancel_press(ctx, mods);
+  return pressed;
+}
+
 static void raw_event(BKNode *n, int kind, int mods, const BKEvent *e, int button);
 
 static BKNode *buttons_target(BKContext *ctx, int x, int y)
@@ -2800,6 +3137,11 @@ static BKNode *buttons_target(BKContext *ctx, int x, int y)
 static int in_BK_context_menu(BKContext *ctx, int x, int y, int mods)
 {
   if (custom_extra_button(ctx, x, y, 3, 0, mods | BK_BUTTON3)) {
+    return 1;
+  }
+  if (ctx->grab && ctx->dragging && ctx->grab->cls->cancel) {
+    ctx->grab->cls->cancel(ctx->grab); /* Blender: the right button cancels a drag, as Escape */
+    ctx->has_ungrab = false;
     return 1;
   }
   if (buttons_target(ctx, x, y) && !ctx->grab) { /* an editor takes the right button */
@@ -2869,6 +3211,8 @@ static int undo_key(BKContext *ctx, const char *keysym, int mods)
   return 0;
 }
 
+static BKNode *deepest(BKNode *n, int x, int y);
+
 static int in_BK_key(BKContext *ctx, const char *text, const char *keysym, int mods)
 {
   hide_tooltip(ctx);
@@ -2892,9 +3236,7 @@ static int in_BK_key(BKContext *ctx, const char *text, const char *keysym, int m
     }
     return 1;
   }
-  if (ctx->grab && ctx->dragging && ctx->grab->cls->cancel && bk_keysym_is(e.keysym, "Escape")) {
-    ctx->grab->cls->cancel(ctx->grab); /* Blender: Escape cancels a drag */
-    ctx->has_ungrab = false;
+  if (bk_keysym_is(e.keysym, "Escape") && cancel_drag(ctx)) {
     return 1;
   }
   if (ctx->focus) {
@@ -2915,7 +3257,13 @@ static int in_BK_key(BKContext *ctx, const char *text, const char *keysym, int m
     }
     return 0;
   }
-  for (BKNode *n = ctx->hover; n; n = n->parent) { /* bubble up to a handler */
+  /* bubble up to a handler: from the hovered widget, or over none from what is under the pointer
+   * (Blender's region and area keymaps: Ctrl+Space anywhere in an editor) */
+  BKNode *start = ctx->hover;
+  if (!start && ctx->root && ctx->pointer_y >= ctx->header_h) {
+    start = deepest(ctx->root, ctx->pointer_x, ctx->pointer_y);
+  }
+  for (BKNode *n = start; n; n = n->parent) {
     if (!NODE_ENABLED(n)) {
       continue;
     }
@@ -2943,7 +3291,7 @@ static int in_BK_key(BKContext *ctx, const char *text, const char *keysym, int m
 
 static BKNode *deepest(BKNode *n, int x, int y)
 {
-  if (!NODE_VISIBLE(n) || !bk_contains(n, x, y)) {
+  if (!NODE_VISIBLE(n) || !bk_contains(n, x, y) || clip_excludes(n, x, y)) {
     return NULL;
   }
   for (int i = n->nkids - 1; i >= 0; i--) {
@@ -2955,7 +3303,11 @@ static BKNode *deepest(BKNode *n, int x, int y)
   return n;
 }
 
-static int in_BK_wheel(BKContext *ctx, int x, int y, int delta, int mods)
+/* `px`: the exact distance in pixels (BK_scroll_px; same sign as `delta`), 0 for a plain wheel step.
+ * Scroll containers and raw events use it, other widgets keep the step. `horizontal`: a sideways
+ * wheel or swipe, sent on as Shift + wheel to the widgets; the region only scrolls vertically, so
+ * it never moves it (Blender's View2D pans a region locked in x only in y). */
+static int in_BK_wheel(BKContext *ctx, int x, int y, int delta, float px, int mods, bool horizontal)
 {
   hide_tooltip(ctx);
   BKNode *target = hit_all(ctx, x, y);
@@ -2968,6 +3320,7 @@ static int in_BK_wheel(BKContext *ctx, int x, int y, int delta, int mods)
     }
     BKEvent e = make_event(ctx, n, x, y, mods);
     e.delta = delta;
+    e.wheel_y = px;
     if (n == target) {
       bk_event(n, BK_EV_WHEEL, mods, &e);
     }
@@ -2979,14 +3332,21 @@ static int in_BK_wheel(BKContext *ctx, int x, int y, int delta, int mods)
   }
   /* scroll the region */
   const int view_h = ctx->win_h - ctx->header_h;
-  if (ctx->content_h > view_h && !ctx->npopups) {
-    const int ns = BK_CLAMP(ctx->scroll - delta * 2 * bk_unit(), 0, ctx->content_h - view_h);
-    if (ns != ctx->scroll) {
+  if (ctx->content_h > view_h && !ctx->npopups && !horizontal) {
+    const int step = px != 0.0f ? bk_scroll_take(&ctx->scroll_rem, px) : delta * 2 * bk_unit();
+    const int ns = BK_CLAMP(ctx->scroll - step, 0, ctx->content_h - view_h);
+    const bool moved = ns != ctx->scroll;
+    if (moved) {
       ctx->scroll = ns;
       ctx->layout_dirty = true;
       bk_ctx_request(ctx);
-      return 1;
     }
+    if (bk_scroll_at_end(ns, ctx->content_h - view_h, px)) {
+      ctx->scroll_rem = 0.0f; /* at the end it scrolls toward: the leftover is not carried */
+    }
+    /* a pixel step is consumed while the region can still scroll that way (a sub-pixel one is
+     * kept in the remainder: not visible yet, however it nets out) */
+    return moved || (px != 0.0f && !bk_scroll_at_end(ns, ctx->content_h - view_h, px));
   }
   return 0;
 }
@@ -2998,27 +3358,41 @@ void BK_bind(BKContext *ctx, const char *combo, void *ref)
   }
   BKKeyBinding *k = &ctx->keys[ctx->nkeys++];
   memset(k, 0, sizeof(*k));
+  k->mods = bk_combo_parse(combo, k->keysym, sizeof(k->keysym));
+  k->ref = ref;
+  bk_retain(ref);
+}
+
+int bk_combo_parse(const char *combo, char *r_keysym, int size)
+{
+  int mods = 0;
   const char *s = combo;
   while (1) {
     const char *plus = strchr(s, '+');
-    if (!plus) {
+    if (!plus || plus[1] == '\0') { /* "ctrl++": the key is '+' */
       break;
     }
     const int len = (int)(plus - s);
     if (len == 4 && strncmp(s, "ctrl", 4) == 0) {
-      k->mods |= BK_CTRL;
+      mods |= BK_CTRL;
     }
     else if (len == 5 && strncmp(s, "shift", 5) == 0) {
-      k->mods |= BK_SHIFT;
+      mods |= BK_SHIFT;
     }
     else if (len == 3 && strncmp(s, "alt", 3) == 0) {
-      k->mods |= BK_ALT;
+      mods |= BK_ALT;
     }
     s = plus + 1;
   }
-  strncpy(k->keysym, s, sizeof(k->keysym) - 1);
-  k->ref = ref;
-  bk_retain(ref);
+  snprintf(r_keysym, (size_t)size, "%s", s);
+  return mods;
+}
+
+bool bk_combo_matches(const char *combo, int mods, const char *keysym)
+{
+  char key[32];
+  const int want = bk_combo_parse(combo, key, sizeof(key));
+  return key[0] && (mods & (BK_SHIFT | BK_CTRL | BK_ALT)) == want && bk_keysym_is(keysym, key);
 }
 
 int BK_cursor(BKContext *ctx)
@@ -3457,9 +3831,19 @@ int BK_motion(BKContext *ctx, int x, int y, int mods)
   INPUT_ENTRY(in_BK_motion(ctx, x, y, mods));
 }
 
+int BK_cancel(BKContext *ctx, int mods)
+{
+  INPUT_ENTRY(in_BK_cancel(ctx, mods));
+}
+
 int BK_wheel(BKContext *ctx, int x, int y, int delta, int mods)
 {
-  INPUT_ENTRY(in_BK_wheel(ctx, x, y, delta, mods));
+  INPUT_ENTRY(in_BK_wheel(ctx, x, y, delta, 0.0f, mods, false));
+}
+
+static int wheel_axis(BKContext *ctx, int x, int y, int delta, float px, int mods, bool horizontal)
+{
+  INPUT_ENTRY(in_BK_wheel(ctx, x, y, delta, px, mods, horizontal));
 }
 
 int BK_key(BKContext *ctx, const char *text, const char *keysym, int mods)
@@ -3489,7 +3873,24 @@ int BK_scroll(BKContext *ctx, int x, int y, float dx, float dy, int mods)
     r |= BK_wheel(ctx, x, y, dy > 0.0f ? 1 : -1, mods);
   }
   if (dx != 0.0f) { /* X11's buttons 6 / 7: Shift + wheel, left = up */
-    r |= BK_wheel(ctx, x, y, dx > 0.0f ? -1 : 1, mods | BK_SHIFT);
+    r |= wheel_axis(ctx, x, y, dx > 0.0f ? -1 : 1, 0.0f, mods | BK_SHIFT, true);
+  }
+  return r;
+}
+
+int BK_scroll_px(BKContext *ctx, int x, int y, float dx, float dy, int mods)
+{
+  const float notch = 2.0f * (float)bk_unit();
+  BKNode *t = BK_IS_CUSTOM(ctx->grab) ? ctx->grab : (ctx->modal ? NULL : hit_all(ctx, x, y));
+  if (BK_IS_CUSTOM(t) && NODE_ENABLED(t)) {
+    return BK_scroll(ctx, x, y, dx / notch, dy / notch, mods); /* custom nodes take notches */
+  }
+  int r = 0;
+  if (dy != 0.0f) {
+    r |= wheel_axis(ctx, x, y, dy > 0.0f ? 1 : -1, dy, mods, false);
+  }
+  if (dx != 0.0f) { /* Shift + wheel, left = up, as BK_scroll */
+    r |= wheel_axis(ctx, x, y, dx > 0.0f ? -1 : 1, -dx, mods | BK_SHIFT, true);
   }
   return r;
 }
@@ -3584,7 +3985,7 @@ static void raw_event(BKNode *n, int kind, int mods, const BKEvent *e, int butto
   }
   snprintf(buf, sizeof(buf), "%d %d", mods, button);
   if (kind == BK_EV_WHEEL && e) {
-    bk_emit(n, kind, buf, e->delta, 0);
+    bk_emit(n, kind, buf, e->delta, e->wheel_y); /* b: the exact pixels of BK_scroll_px, else 0 */
     return;
   }
   bk_emit(n, kind, buf, e ? e->x - n->x : 0, e ? e->y - n->y : 0);
@@ -3768,11 +4169,19 @@ int BK_animating(BKContext *ctx)
   return ctx->nanim > 0 || bk_custom_animating(ctx) || (!BK_anim_host_clock() && BK_anim_active());
 }
 
+static float anim_target(const BKNode *n)
+{
+  if (n->cls->anim_target) {
+    return n->cls->anim_target(n);
+  }
+  return (n->flags & NF_COLLAPSED) ? 0.0f : 1.0f;
+}
+
 void bk_anim_start(BKNode *n)
 {
   BKContext *ctx = bk_ctx(n);
   if (!ctx || !g_animations) {
-    n->anim = (n->flags & NF_COLLAPSED) ? 0.0f : 1.0f;
+    n->anim = anim_target(n);
     return;
   }
   const double now = bk_time();
@@ -3805,12 +4214,14 @@ static void anim_step(BKContext *ctx)
   ctx->anim_t = now;
   for (int i = ctx->nanim - 1; i >= 0; i--) {
     BKNode *n = ctx->anim[i];
-    const float target = (n->flags & NF_COLLAPSED) ? 0.0f : 1.0f;
+    const float target = anim_target(n);
     const double time = n->cls->anim_time;
     /* do_animate: fac = (now - starttime) / ANIMATION_TIME; fac = min(sqrt(fac), 1) */
     float fac = (float)((now - ctx->anim_start[i]) / (time > 0.0 ? time : ANIMATION_TIME));
     fac = BK_MIN(time > 0.0 ? BK_MAX(fac, 0.0f) : sqrtf(BK_MAX(fac, 0.0f)), 1.0f);
     n->anim = fac >= 1.0f ? target : ctx->anim_from[i] + (target - ctx->anim_from[i]) * fac;
+    bk_stale(n); /* its size follows `anim` */
+    bk_invalidate(n); /* its pixels follow it, even when its rect stays */
     if (n->anim == target) {
       const int last = --ctx->nanim;
       ctx->anim[i] = ctx->anim[last];
@@ -3818,7 +4229,6 @@ static void anim_step(BKContext *ctx)
       ctx->anim_from[i] = ctx->anim_from[last];
     }
   }
-  g_gen++;
   ctx->layout_dirty = true;
 }
 

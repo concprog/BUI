@@ -66,6 +66,7 @@ struct BKImageSource {
   int refs;
   int info_state; /* 0 unknown, 1 read, -1 not an image */
   BKImageInfo info;
+  Entry *shown; /* its whole still drawn last: drawn while another size decodes */
   char path[1]; /* NUL-terminated, allocated with the struct */
 };
 
@@ -184,6 +185,15 @@ static void lru_front(Entry *e)
   C.lru_head = e;
 }
 
+/* `e` used now: to the front, so eviction (from the tail) finds the oldest first. */
+static void lru_touch(Entry *e)
+{
+  if (e != C.lru_head) {
+    lru_unlink(e);
+    lru_front(e);
+  }
+}
+
 static void pend_unlink(Entry *e)
 {
   *(e->pend_prev ? &e->pend_prev->pend_next : &C.pending) = e->pend_next;
@@ -216,6 +226,9 @@ static void entry_free(Entry *e)
   }
   C.bytes -= e->bytes;
   BK_imbuf_free(e->ib);
+  if (e->source->shown == e) {
+    e->source->shown = NULL;
+  }
   bk_image_source_release(e->source);
   MEM_freeN(e->spare);
   MEM_freeN(e);
@@ -225,6 +238,9 @@ static void entry_free(Entry *e)
 /* A first load, or (`step`) the next frame of what plays when it has one to decode. */
 static void request(Entry *e, int priority, bool step)
 {
+  if (step && e->target.fit >= BK_FIT_WHOLE) {
+    return; /* a BK_FIT_WHOLE key another decode took the size of: no lookup finds it, no steps */
+  }
   BKImBuf *reuse = NULL;
   double seek = -1.0;
   BKImAnim *anim = step ? imb_play_take_step(e->play, &reuse, &seek) : NULL;
@@ -257,6 +273,19 @@ static void request(Entry *e, int priority, bool step)
     C.wake_ready = bk_window_wake_ready(); /* on this (the UI) thread */
   }
   bk_loader_push(req);
+}
+
+/* A BK_FIT_WHOLE entry's decode came back with its target: the entry takes that key, where the
+ * next lookup of the now known size finds it (unless one of that size came first). */
+static void entry_rekey(Entry *e, const BKImageFit *target)
+{
+  const BKImageFit key = e->target;
+  BLI_ghash_remove(C.entries, e, NULL, NULL);
+  e->target = *target;
+  if (BLI_ghash_lookup(C.entries, e)) {
+    e->target = key;
+  }
+  BLI_ghash_insert(C.entries, e, e);
 }
 
 static void add_waiter(Entry *e, const int rect[4])
@@ -308,10 +337,7 @@ static Entry *lookup(BKImageSource *s, const BKImageFit *target, bool create, in
     request(e, priority, false);
   }
   else if (e) {
-    if (e != C.lru_head) {
-      lru_unlink(e);
-      lru_front(e);
-    }
+    lru_touch(e);
     if (e->req && (priority > e->req->priority || e->used != C.gen)) {
       bk_loader_touch(e->req, BK_MAX(priority, e->req->priority), C.gen);
     }
@@ -322,11 +348,8 @@ static Entry *lookup(BKImageSource *s, const BKImageFit *target, bool create, in
   return e;
 }
 
-const BKImBuf *bk_image_cache_get(BKImageSource *s, const BKImageFit *target, const int rect[4])
+static Entry *entry_get(BKImageSource *s, const BKImageFit *target, const int rect[4])
 {
-  if (!s) {
-    return NULL;
-  }
   Entry *e = lookup(s, target, true, BK_IMAGE_PRIORITY_VISIBLE);
   if (e->req || e->play) {
     add_waiter(e, rect);
@@ -334,14 +357,54 @@ const BKImBuf *bk_image_cache_get(BKImageSource *s, const BKImageFit *target, co
   if (e->play && e->ib) {
     imb_play_drawn(e->play, bk_time());
   }
-  return e->ib;
+  return e;
+}
+
+const BKImBuf *bk_image_cache_get(BKImageSource *s, const BKImageFit *target, const int rect[4])
+{
+  return s ? entry_get(s, target, rect)->ib : NULL;
+}
+
+bool bk_image_cache_whole(BKImageSource *s, const BKImageFit *want, BKImageFit *r_whole)
+{
+  if (!s) {
+    return false;
+  }
+  if (s->info_state <= 0) { /* not read (or not an image when it was): the worker works it out */
+    *r_whole = *want;
+    r_whole->fit += BK_FIT_WHOLE;
+    return true;
+  }
+  return imb_whole_fit(&s->info, want, r_whole);
+}
+
+bool bk_image_cache_scaled(BKImageSource *s, const BKImageFit *want, const int rect[4],
+                           const BKImBuf **r_ib)
+{
+  BKImageFit whole;
+  if (!bk_image_cache_whole(s, want, &whole)) {
+    return false;
+  }
+  Entry *e = entry_get(s, &whole, rect);
+  *r_ib = e->ib;
+  if (e->ib && !e->play) {
+    s->shown = e;
+  }
+  else if (!e->ib && s->shown && s->shown->ib && s->shown->target.frame == whole.frame) {
+    lru_touch(s->shown); /* on screen until the new size comes */
+    s->shown->used = C.gen;
+    *r_ib = s->shown->ib;
+  }
+  return true;
 }
 
 void bk_image_cache_prefetch(BKImageSource *s, const BKImageFit *target)
 {
-  if (s) {
-    lookup(s, target, true, BK_IMAGE_PRIORITY_PREFETCH);
+  BKImageFit whole;
+  if (!s) {
+    return;
   }
+  lookup(s, bk_image_cache_whole(s, target, &whole) ? &whole : target, true, BK_IMAGE_PRIORITY_PREFETCH);
 }
 
 /** \} */
@@ -449,10 +512,13 @@ int BK_image_poll(void)
         else if (e->play) {
           imb_play_fail(e->play); /* a video that didn't open */
         }
+        if (e->target.fit >= BK_FIT_WHOLE && req->target.fit < BK_FIT_WHOLE) {
+          entry_rekey(e, &req->target);
+        }
         entry_account(e);
         if (e->ib) {
           C.stats.decoded++;
-          if (e->source->info_state == 0) { /* free intrinsic size for layout */
+          if (e->source->info_state <= 0) { /* free intrinsic size for layout (or a file that came later) */
             e->source->info = (BKImageInfo){e->ib->ftype, e->ib->src_x, e->ib->src_y, e->ib->frames};
             e->source->info_state = 1;
           }
