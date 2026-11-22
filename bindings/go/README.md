@@ -97,12 +97,13 @@ go func() {
 }()
 ```
 
-`window.Free()` and `node.Free()` inside a callback (a timer, `OnFrame`,
-`OnClose`, a node's handler) do not free at once: the kit goes on using the
-window or node after the callback returns. The loop frees them once no
-callback is running (headless, the next `Context` call does), and a loop
+`window.Free()`, `context.Free()` and `node.Free()` inside a callback (a
+timer, `OnFrame`, `OnClose`, a node's handler) do not free at once: the kit
+goes on using them after the callback returns. The loop frees them once no
+callback is running (headless, as the `Context` call that ran it returns), and a loop
 nested in a callback (`bui.Pump()`) waits too. `window.Free()` frees the
-context and root `NewWindow` made, never a `Root` or `Context` you gave it.
+context and root `NewWindow` made, never a `Root` or `Context` you gave it;
+`context.Free()` panics while a window shows the context: free the window first.
 
 ## The `ui` package: MyGo's syntax
 

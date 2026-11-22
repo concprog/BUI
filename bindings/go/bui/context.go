@@ -29,14 +29,35 @@ func NewContext(root *Node) *Context {
 	return c
 }
 
-// Free frees the context (not its tree).
+// Free frees the context (not its tree; its key bindings go with it). Called
+// inside a callback, it frees the context once no callback is running, as
+// Node.Free does. It panics while a window shows the context: free the window
+// first (inside a callback, a window whose Free waits counts as freed).
 func (c *Context) Free() {
 	if c.h == nil {
+		return
+	}
+	if c.shown(callbacks > 0) {
+		panic("bui: a window shows the context: free the window first")
+	}
+	if callbacks > 0 {
+		later = append(later, c.Free)
 		return
 	}
 	delete(contexts, c.id)
 	C.BK_context_free(c.h)
 	c.h = nil
+}
+
+// shown reports a window showing c, leaving out the ones whose free waits for
+// the loop when pending (they go before a free asked for after theirs).
+func (c *Context) shown(pending bool) bool {
+	for _, w := range windows {
+		if w.ctx == c && !(pending && w.freeLater) {
+			return true
+		}
+	}
+	return false
 }
 
 // Root is the tree the context shows.
