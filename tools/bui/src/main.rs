@@ -31,7 +31,7 @@ fn main() -> ExitCode {
         Ok(code) => code,
         Err(e) => {
             ui::error(format!("{e:#}"));
-            if project::find(std::path::Path::new(".")).is_some() {
+            if matches!(project::find(std::path::Path::new(".")), Ok(Some(_))) {
                 ui::info(format!("Run {} to check your setup.", ui::code("bui doctor")));
             }
             ExitCode::FAILURE
@@ -54,7 +54,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         None => {
-            home::show();
+            home::show()?;
             Ok(ExitCode::SUCCESS)
         }
     }
