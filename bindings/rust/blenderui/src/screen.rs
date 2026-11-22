@@ -780,12 +780,16 @@ struct KitScreen {
 }
 
 impl KitScreen {
-    /// Forget its areas and free its kit node (with its areas and regions).
+    /// Forget its areas and free its kit node (with its areas and regions). The kit's children,
+    /// not the records: an area split or made since the last sync has none yet.
     fn free(&self) {
+        // SAFETY: our live screen node; its children are its areas.
+        let n = unsafe { sys::BK_node_child_count(self.node) };
         LIVE.with(|l| {
             let mut l = l.borrow_mut();
-            for a in &self.areas {
-                l.remove(&(a.node as usize));
+            for i in 0..n {
+                // SAFETY: a child index of our live screen node.
+                l.remove(&(unsafe { sys::BK_node_child(self.node, i) } as usize));
             }
         });
         // SAFETY: our screen node (and its areas and regions), detached and freed.
