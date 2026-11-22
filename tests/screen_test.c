@@ -36,9 +36,14 @@ static unsigned g_saved_ids[8];
 static int g_saved_n;
 static bool g_saved_dangling;
 static int layout_ids(BKNode *s, unsigned *ids, int max);
+static void render(void);
 /* Close handlers in a chain: closing [i] closes [i + 1] (once), what BK_area_close said in [i]. */
 static BKNode *g_close_chain[4];
 static int g_chain_closed[3];
+/* This screen, after its close in the chain: rendered, and whether its layout then names a vertex
+ * the screen lacks. By the host: the handler removes the next area (BK_node_remove) instead. */
+static BKNode *g_chain_render;
+static bool g_chain_dangling, g_chain_by_host;
 
 static void request(void *data)
 {
@@ -63,7 +68,17 @@ static void emit(void *data, BKNode *node, int kind, void *ref, double a, double
     for (int i = 0; b == BK_AREA_CLOSE && i < 3; i++) {
       if (node == g_close_chain[i]) {
         g_close_chain[i] = NULL;
-        g_chain_closed[i] = BK_area_close(g_close_chain[i + 1]);
+        if (g_chain_by_host) {
+          BK_node_remove(g_chain_render, g_close_chain[i + 1]);
+          g_chain_closed[i] = 1;
+        }
+        else {
+          g_chain_closed[i] = BK_area_close(g_close_chain[i + 1]);
+        }
+        if (g_chain_render) {
+          render();
+          g_chain_dangling |= strstr(BK_get_str(g_chain_render, "layout"), "-1") != NULL;
+        }
         break;
       }
     }
@@ -808,6 +823,31 @@ int main(void)
     int rr[4];
     rect_of(a, rr);
     CHECK(rr[2] == W && rr[3] == H);
+    free_screen(s);
+  }
+
+  /* -- a close handler closes (or its host removes) another area and renders: the closing one
+   * keeps its vertices -- */
+  for (int by_host = 0; by_host < 2; by_host++) {
+    BKNode *a;
+    BKNode *s = test_screen(&a);
+    BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);  /* a | b */
+    BKNode *c = BK_area_split(a, BK_AXIS_H, 0.75f); /* c over a */
+    CHECK(b && c && BK_node_child_count(s) == 3);
+    g_close_chain[0] = a, g_close_chain[1] = b;
+    g_chain_render = s, g_chain_dangling = false, g_chain_by_host = by_host;
+    g_save_on_change = s, g_saved_dangling = false;
+    CHECK(BK_area_close(a));
+    g_save_on_change = NULL, g_chain_render = NULL;
+    CHECK(g_chain_closed[0] == 1 && !g_chain_dangling && !g_saved_dangling);
+    CHECK(BK_node_child_count(s) == 1 && BK_node_child(s, 0) == c);
+    memset(g_close_chain, 0, sizeof(g_close_chain));
+    int rr[4];
+    rect_of(c, rr);
+    CHECK(rr[2] == W && rr[3] == H);
+    if (by_host) {
+      BK_node_free(b); /* the host's own */
+    }
     free_screen(s);
   }
 

@@ -214,6 +214,18 @@ static bool screen_accept(BKNode *n, BKNode *child)
   return IS_AREA(child) && (n->nkids == 0 || AREA(child)->v1 != NULL);
 }
 
+/* An area's close handler is running: the area still names its vertices (screen_detached clears
+ * them once it is unlinked), so the screen's geometry stays as it is until that close is done. */
+static bool screen_closing(const BKNode *screen_node)
+{
+  SCREEN_AREAS_ITER (screen_node, area) {
+    if (area->closing) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static void screen_detach(BKNode *n, BKNode *child)
 {
   BKScreen *screen = SCREEN(n);
@@ -222,6 +234,7 @@ static void screen_detach(BKNode *n, BKNode *child)
   }
   /* The host removes an area: a neighbor takes its place (screen_area_close). Back to the normal
    * state first, as Blender's operators do (ED_screen_state_toggle), or the others stay hidden. */
+  const bool nested = screen_closing(n); /* from a close handler: that close cleans up */
   AREA(child)->closing = true;
   SCREEN_AREAS_ITER (n, other) {
     if (other->full) {
@@ -232,7 +245,7 @@ static void screen_detach(BKNode *n, BKNode *child)
   if (n->nkids == 1) {
     screen_geom_free(screen); /* the last one: the screen starts over */
   }
-  else if (screen_area_close(n, child, NULL)) {
+  else if (screen_area_close(n, child, NULL) && !nested) {
     screen_remove_unused_scredges(n);
     screen_remove_unused_scrverts(screen);
   }
@@ -252,7 +265,7 @@ static void screen_detached(BKNode *n, BKNode *child)
   area->v1 = area->v2 = area->v3 = area->v4 = NULL; /* nothing of this screen: it may join another */
   area->full = 0;
   area->new_pending = false;
-  if (by_host) {
+  if (by_host && !screen_closing(n)) {
     screen_changed(n);
   }
 }
@@ -748,6 +761,9 @@ static BKNode *api_screen(BKNode *area)
 
 static void api_done(BKNode *screen_node)
 {
+  if (screen_closing(screen_node)) {
+    return; /* an edit from a close handler: the close further up cleans up and tells the host */
+  }
   BKScreen *screen = SCREEN(screen_node);
   screen_remove_double_scredges(screen);
   screen_remove_unused_scredges(screen_node);
