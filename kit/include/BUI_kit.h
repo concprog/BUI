@@ -976,9 +976,12 @@ void BK_window_set_keep_alive(int on);
 #ifdef __ANDROID__
 /* Android: the host is the activity's surface (kit_window_android.c). `android_main` passes its
  * `struct android_app *` before anything else, which installs the host's input and lifecycle
- * callbacks; BK_window_supported() is 1 from then on. BK_android_assets is the APK's
- * `AAssetManager *` (the assets/ folder). */
+ * callbacks and starts a new run (a relaunch after Back reuses the process); BK_window_supported()
+ * is 1 from then on. `android_main` calls BK_android_detach before it returns (the glue then frees
+ * the app): a BK_window_wake from another thread does nothing from then on. BK_android_assets is
+ * the APK's `AAssetManager *` (the assets/ folder). */
 void BK_android_attach(void *android_app);
+void BK_android_detach(void);
 void *BK_android_assets(void);
 #endif
 

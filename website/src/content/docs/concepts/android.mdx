@@ -127,6 +127,7 @@ Python, Qt, tkinter and D need their runtime on the device and are not available
 - **Scale.** A CSS pixel is a dp, as in Chrome on Android.
 - **Touch.** One finger is the pointer and a tap is a click. A drag that starts on a widget that drags (sliders, text, scrollbars) drags it; anywhere else it scrolls, following the finger exactly and carrying on after it lifts with the deceleration of iOS's scroll views. A touch at the right edge of a custom node drags the app's scrollbar, so a list of millions of rows can be dragged to any place. Two fingers always scroll.
 - **Keyboard.** It opens while a text field is edited (through the input method manager, since the activity's view is not a text editor); keys arrive as key events. Predictive keyboards and IME composition are not wired up yet.
+- **Lifecycle.** One activity: launching the app while it runs brings it back, and after Back finishes it the next launch runs `bui_app_main` again from a fresh start, even in the same process. A Lua script that fails shows its error on screen, also after it opened its window.
 - **Big lists.** The Rust demo scrolls a list of 10 million rows and a chat of 100 000 messages (`blenderui::vlist`): only the rows in view exist, so a frame costs the visible rows, not the list.
 - **Fonts.** The system's Roboto is used (Inter is left out, 0.8 MB). Register your own with `BUI_text_add_font` and select it with `BK_set_font`.
 - **Size.** About 1.1 MB per ABI for the C demo, 1.4 MB with Lua and 2.0 MB with Rust (arm64-v8a).

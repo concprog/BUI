@@ -106,7 +106,7 @@ def build_rust(crate, ndk, abi, make):
     env.setdefault("LIBCLANG_PATH", llvm if os.name == "nt" else os.path.normpath(os.path.join(llvm, "..", "lib")))
     env.update(**{"BINDGEN_EXTRA_CLANG_ARGS_" + var: shlex.quote("--sysroot=" + sysroot.replace("\\", "/"))})
     manifest = os.path.abspath(os.path.join(crate, "Cargo.toml"))
-    cmd = ["cargo", "build", "--release", "--target", triple, "--manifest-path", manifest,
+    cmd = ["cargo", "build", "--release", "--lib", "--target", triple, "--manifest-path", manifest,
            "--message-format=json-render-diagnostics"]
     print("+", " ".join(cmd))
     done = subprocess.run(cmd, env=env, check=True, stdout=subprocess.PIPE, text=True)
@@ -162,7 +162,9 @@ def apk(root_sdk, libs, out, assets):
         for name, path in assets.items():  # assets/<name>: the app's scripts and data
             dst.write(path, "assets/" + name, compress_type=zipfile.ZIP_DEFLATED)
     aligned = os.path.join(out, "aligned.apk")
-    run([os.path.join(tools, "zipalign" + exe), "-f", "-P", "16", "4", raw, aligned])
+    # 4-byte alignment for the stored entries (resources.arsc); the libraries are deflated, so the
+    # 16 KB page alignment of -P (build-tools 35 or newer) has nothing to align
+    run([os.path.join(tools, "zipalign" + exe), "-f", "4", raw, aligned])
     final = os.path.join(out, "bui.apk")
     run([os.path.join(tools, "apksigner" + bat), "sign", "--ks", keystore(out), "--ks-pass", "pass:android",
          "--out", final, aligned])

@@ -54,8 +54,10 @@ void bui_app_main(void)
 {
   BKContext *ctx = BK_context_new(bui_demo_build());
   BKWindow *win = BK_window_new(ctx, "BUI", 360, 720);
-  BK_window_show(win);
-  BK_window_run();
-  BK_window_free(win);
+  if (win) {
+    BK_window_show(win);
+    BK_window_run();
+    BK_window_free(win);
+  }
   BK_context_free(ctx);
 }

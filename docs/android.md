@@ -68,7 +68,13 @@ formats).
   (`adjustResize`).
 - **Window.** One window, the surface. `BK_window_new` waits for the surface so the app builds its UI at
   the real size and scale. `BK_window_set_size` and most `BK_window_wm` keys do nothing;
-  `BK_window_wm_get` answers `scale`, `screen` and `pointer`.
+  `BK_window_wm_get` answers `scale`, `screen` and `pointer`. `BK_window_timer` returns -1 when the
+  window's 16 timers are all in use, as on the other hosts.
+- **Lifecycle.** One activity (`launchMode="singleTask"`): launching the app while it runs brings it
+  back. Back finishes it and `bui_app_main` returns; the next launch may reuse the process, and runs
+  `bui_app_main` again from a fresh start (`BK_android_attach` resets the host). Once `android_main`
+  returns (`BK_android_detach`), a `BK_window_wake` from another thread does nothing. A Lua script that
+  fails shows its error on screen, also after it opened its window (closing the Lua state frees it).
 
 ## Fonts
 
@@ -83,7 +89,9 @@ Inter is left out of the build (`BUI_NO_INTER`, 0.8 MB). The shell registers the
 `--gc-sections`, stripped, GPU renderers, Dear ImGui, the file browser and every image format but PNG and
 SVG off (`features.json`). arm64-v8a: the C demo is 2.5 MB (APK about 1.1 MB), with Lua 3.2 MB (APK 1.4
 MB), with Rust 4.3 MB (APK 2.0 MB; blenderui's layout, CSS and Tailwind engines). The APK deflates the
-library and the installer extracts it. `-Os` saved only 4%, so speed was kept. About 0.45 MB is the icon
+library and the installer extracts it, so `zipalign` aligns the stored entries to 4 bytes only (no `-P`
+page alignment, which build-tools 34 lacks and a deflated library does not need). `-Os` saved only 4%,
+so speed was kept. About 0.45 MB is the icon
 set.
 
 ## Tested, and not

@@ -63,7 +63,8 @@ static int asset_searcher(lua_State *L)
   return 1;
 }
 
-/* The script failed: say why on screen (the log has it too). */
+/* The script failed: say why on screen (the log has it too). The Lua state is closed by now, so
+ * a window the script left open is freed: the error is the activity's one window. */
 static void show_error(const char *message)
 {
   __android_log_print(ANDROID_LOG_ERROR, "bui", "lua: %s", message);
@@ -74,9 +75,11 @@ static void show_error(const char *message)
   BK_node_add(page, label, -1);
   BKContext *ctx = BK_context_new(page);
   BKWindow *win = BK_window_new(ctx, "BUI", 360, 720);
-  BK_window_show(win);
-  BK_window_run();
-  BK_window_free(win);
+  if (win) { /* none: the activity is going (the log has the message) */
+    BK_window_show(win);
+    BK_window_run();
+    BK_window_free(win);
+  }
   BK_context_free(ctx);
 }
 
@@ -104,12 +107,17 @@ void bui_app_main(void)
   lua_rawseti(L, -2, n + 1);
   lua_pop(L, 2);
 
+  /* the error outlives the state: closing it frees the script's window (if it opened one) */
+  char error[4096] = "";
   const int loaded = load_asset(L, "main.lua");
   if (loaded <= 0) {
-    show_error(loaded < 0 ? error_text(L) : "assets/main.lua is missing");
+    snprintf(error, sizeof(error), "%s", loaded < 0 ? error_text(L) : "assets/main.lua is missing");
   }
   else if (lua_pcall(L, 0, 0, 0) != LUA_OK) { /* runs until the window closes */
-    show_error(error_text(L));
+    snprintf(error, sizeof(error), "%s", error_text(L));
   }
   lua_close(L);
+  if (error[0]) {
+    show_error(error);
+  }
 }

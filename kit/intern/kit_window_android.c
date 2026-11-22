@@ -28,6 +28,7 @@
 #  include <android/native_window.h>
 #  include <jni.h>
 #  include <math.h>
+#  include <pthread.h>
 #  include <stdatomic.h>
 #  include <stdlib.h>
 #  include <string.h>
@@ -90,11 +91,15 @@ struct BKWindow {
 };
 
 static BKWindow *g_win;
-static struct android_app *g_app;
+static struct android_app *g_app; /* the running activity's, from BK_android_attach to _detach */
 static int g_quit, g_keep_alive;
 static void (*g_wake_cb)(void);
 static atomic_int g_wake_flag; /* set by any thread (BK_window_wake), consumed by the loop */
 static int (*g_stop)(void);
+/* g_app's looper for wakes from other threads, NULL once detached: the glue frees the app (and
+ * its looper goes) when android_main returns, so a wake holds the lock while it uses it. */
+static pthread_mutex_t g_wake_lock = PTHREAD_MUTEX_INITIALIZER;
+static ALooper *g_looper;
 
 static double now_ms(void)
 {
@@ -278,7 +283,10 @@ static void draw(BKWindow *win)
   if (full || (back[2] > 0 && back[3] > 0)) {
     convert(src, win->w, dst, buf.stride, full ? whole[0] : back);
   }
-  ANativeWindow_unlockAndPost(surface);
+  if (ANativeWindow_unlockAndPost(surface) != 0) {
+    win->full = win->dirty = 1; /* the kit's damage is spent: try again with the next event */
+    return;
+  }
   win->frames++;
 }
 
@@ -645,10 +653,14 @@ static int32_t on_touch(BKWindow *win, AInputEvent *e)
       }
       break;
     case AMOTION_EVENT_ACTION_POINTER_DOWN:
-      if (count >= 2 && !win->scrolling) { /* a second finger: scroll instead of drag */
-        win->pending_tap = 0;
-        cancel_press(win);
-        win->scrolling = 1;
+      if (count >= 2) { /* a second finger: scroll instead of drag */
+        if (!win->scrolling) {
+          win->pending_tap = 0;
+          cancel_press(win);
+          win->scrolling = 1;
+        }
+        /* from the two fingers' middle now, even mid scroll: the one finger's point it followed
+         * until now is not where the middle is (no jump) */
         win->scroll_x = (AMotionEvent_getX(e, 0) + AMotionEvent_getX(e, 1)) * 0.5f - (float)win->ox;
         win->scroll_y = (AMotionEvent_getY(e, 0) + AMotionEvent_getY(e, 1)) * 0.5f - (float)win->oy;
       }
@@ -750,9 +762,25 @@ static void on_cmd(struct android_app *app, int32_t cmd)
 
 void BK_android_attach(void *android_app)
 {
+  /* A new activity: the process (and these) may outlive the last one, which Back finished. */
+  g_quit = g_keep_alive = 0;
+  g_wake_cb = NULL;
+  g_stop = NULL;
+  atomic_store(&g_wake_flag, 0);
   g_app = (struct android_app *)android_app;
   g_app->onAppCmd = on_cmd;
   g_app->onInputEvent = on_input;
+  pthread_mutex_lock(&g_wake_lock);
+  g_looper = g_app->looper;
+  pthread_mutex_unlock(&g_wake_lock);
+}
+
+void BK_android_detach(void)
+{
+  pthread_mutex_lock(&g_wake_lock); /* a wake in flight on another thread finishes first */
+  g_looper = NULL;
+  pthread_mutex_unlock(&g_wake_lock);
+  g_app = NULL;
 }
 
 void *BK_android_assets(void)
@@ -892,9 +920,11 @@ int BK_window_wake_init(void (*cb)(void))
 void BK_window_wake(void)
 {
   atomic_store(&g_wake_flag, 1); /* any thread: the loop calls the wake callback soon */
-  if (g_app) {
-    ALooper_wake(g_app->looper);
+  pthread_mutex_lock(&g_wake_lock);
+  if (g_looper) {
+    ALooper_wake(g_looper);
   }
+  pthread_mutex_unlock(&g_wake_lock);
 }
 
 void BK_window_set_keep_alive(int on)
@@ -915,9 +945,14 @@ BKWindow *BK_window_new(BKContext *ctx, const char *title, int width, int height
     return NULL;
   }
   BKWindow *win = (BKWindow *)calloc(1, sizeof(BKWindow));
+  BuiRaster *raster = win ? BUI_raster_create(1, 1) : NULL;
+  if (!raster) {
+    free(win);
+    return NULL;
+  }
   win->ctx = ctx;
   win->prev = ctx->host;
-  win->raster = BUI_raster_create(1, 1);
+  win->raster = raster;
   win->next_timer = 1;
   apply_density(win);
   win->req_w = width;
@@ -1032,7 +1067,7 @@ void BK_window_render_now(BKWindow *win)
 int BK_window_timer(BKWindow *win, int ms)
 {
   const int id = win->next_timer++;
-  return add_timer(win, ms, id, 1) ? id : 0;
+  return add_timer(win, ms, id, 1) ? id : -1;
 }
 
 void BK_window_cancel_timer(BKWindow *win, int id)

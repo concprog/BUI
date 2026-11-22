@@ -13,4 +13,5 @@ void android_main(struct android_app *app)
   BK_android_attach(app);
   bui_android_fonts();
   bui_app_main();
+  BK_android_detach(); /* the glue frees `app` once this returns */
 }
