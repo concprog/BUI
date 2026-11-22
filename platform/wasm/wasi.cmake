@@ -41,7 +41,7 @@ set(CMAKE_SYSROOT "${WASI_SYSROOT}")
 # what wasi-libc is: one thread, no signals, no exceptions, no dlopen, no setjmp
 add_compile_options(
   "SHELL:-isystem \"${CMAKE_CURRENT_LIST_DIR}/include\"" # <setjmp.h> without exception handling
-  -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN
+  -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_GETPID
   -fno-exceptions)
 # libc++ (the no-exceptions build) comes with wasi-sdk's sysroot; try/catch in Blender's containers compile away
 add_compile_options(

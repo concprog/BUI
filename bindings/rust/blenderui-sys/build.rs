@@ -113,7 +113,8 @@ fn main() {
         let lib = PathBuf::from(sysroot).join("lib/wasm32-wasip1");
         println!("cargo:rustc-link-search=native={}", lib.join("noeh").display());
         println!("cargo:rustc-link-search=native={}", lib.display());
-        for name in ["c++", "c++abi", "wasi-emulated-signal", "wasi-emulated-process-clocks", "wasi-emulated-mman"] {
+        for name in ["c++", "c++abi", "wasi-emulated-signal", "wasi-emulated-process-clocks", "wasi-emulated-mman",
+                     "wasi-emulated-getpid"] {
             println!("cargo:rustc-link-lib=static={name}");
         }
     } else if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") && target != "android" {
