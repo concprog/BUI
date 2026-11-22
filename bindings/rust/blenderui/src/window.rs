@@ -1082,7 +1082,8 @@ pub struct Window {
     /// The text selection (see `selection`).
     selector: Selector,
     /// The press in progress changed only the text selection: nothing answers to it, so it and its
-    /// release render nothing (the selection is drawn on the frame as it is).
+    /// release render nothing (the selection is drawn on the frame as it is). No press: true (its
+    /// end renders nothing).
     press_quiet: bool,
     /// The next `present` shows the frame it already showed (a selection change): its text boxes are
     /// the same, so the selection's index of them stays.
@@ -1156,7 +1157,7 @@ impl Window {
                 sb_drag: None,
                 stuck: HashMap::new(),
                 selector: Selector::default(),
-                press_quiet: false,
+                press_quiet: true,
                 same_frame: false,
                 sel_repaint: false,
                 selection_hooks: Vec::new(),
@@ -1295,9 +1296,23 @@ impl Window {
     }
 
     /// Let the window manager move the window with the pointer, from a press (what a drag area
-    /// of a title bar the app draws does by itself).
-    pub fn start_window_move(&self) {
+    /// of a title bar the app draws does by itself). The window manager takes the pointer, so the
+    /// press ends here: its release never comes.
+    pub fn start_window_move(&mut self) {
+        self.end_press(true);
         self.wm(c"move", 0.0);
+    }
+
+    /// The press ends, by its release or by the window manager taking the pointer (Blender's
+    /// `button_activate_exit`): nothing is pressed or `:active`, a drag (Motion's, a selection's)
+    /// lets go, and a press that rendered renders again. A left press's end also ends its text
+    /// selection drag; true: it dragged one.
+    fn end_press(&mut self, left: bool) -> bool {
+        self.pressed.clear();
+        self.state.active.clear();
+        self.dirty |= !std::mem::replace(&mut self.press_quiet, true);
+        self.caches.anim.pointer_up();
+        left && self.selector.release()
     }
 
     fn wm(&self, key: &CStr, a: f64) {
@@ -1968,12 +1983,8 @@ impl Window {
                 // click: the deepest element under both press and release
                 let common = self.pressed.iter().zip(&path).take_while(|(a, b)| a == b)
                     .map(|(a, _)| *a).last();
-                self.pressed.clear();
-                self.state.active.clear();
-                self.dirty |= !std::mem::take(&mut self.press_quiet);
-                self.caches.anim.pointer_up();
                 // a press that selected text is a selection, not a click (as in a browser)
-                let dragged = button == MouseButton::Left && self.selector.release();
+                let dragged = self.end_press(button == MouseButton::Left);
                 if let (Some(target), MouseButton::Left, false) = (common, button, dragged) {
                     self.toggle_details(target);
                     let down = MouseDownEvent { button, position: point(px(x), px(y)), modifiers, click_count: 1 };

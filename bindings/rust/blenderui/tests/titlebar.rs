@@ -168,3 +168,34 @@ fn a_window_a_close_hook_closes_gets_its_hooks_once() {
         assert_eq!(cx.global::<Closed>().0.len(), 4, "a closed window does not close again");
     });
 }
+
+/// A press whose listener hands the pointer to the window manager.
+struct Grip {
+    moved: Rc<Cell<Option<Option<MouseButton>>>>,
+}
+
+impl Render for Grip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let moved = self.moved.clone();
+        body().child(div().id("grip").w(px(100.0)).h(px(40.0)).active(|s| s.h(px(60.0)))
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
+            .on_mouse_move(move |e, _, _| moved.set(Some(e.pressed_button))))
+    }
+}
+
+#[test]
+fn a_move_from_a_listener_ends_the_press() {
+    Application::headless().run(|cx| {
+        let moved = Rc::new(Cell::new(None));
+        let h = cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| Grip { moved: moved.clone() }))
+            .unwrap();
+        cx.draw(h.id);
+        let (x, y) = centre(cx, h.id, "grip");
+        // the window manager takes the pointer: no release comes
+        cx.simulate_press(h.id, x, y);
+        cx.draw(h.id);
+        assert_eq!(cx.element_bounds(h.id, "grip").unwrap().size.height, 40.0, "not :active");
+        cx.simulate_mouse_move(h.id, x + 1.0, y);
+        assert_eq!(moved.get(), Some(None), "the motion after it has no button pressed");
+    });
+}
