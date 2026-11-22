@@ -34,6 +34,9 @@ const PRELUDE: &str = include_str!("prelude.js");
 /// looper thread's 1 MB).
 const MAX_STACK: usize = if cfg!(target_os = "android") { 512 << 10 } else { 48 << 20 };
 
+/// The rounds of a pump (events, timers, jobs, commands) before it yields to the native loop.
+const ROUNDS: usize = 64;
+
 // ==========================================================================
 // State shared between the host functions and the pump (UI thread only).
 // Each cell's value is moved out while used: no RefCell.
@@ -166,9 +169,10 @@ fn pump(cx: &mut App) -> Option<f64> {
     SCHEDULED.with(|s| s.set(false));
     let Some(js) = JS.with(|c| c.take()) else { return None };
     let mut next = None;
+    let mut settled = false;
     // a bounded number of rounds, so the native loop keeps running (input,
     // painting) even if JavaScript keeps itself busy
-    for _ in 0..64 {
+    for _ in 0..ROUNDS {
         let events = take(&EVENTS);
         let answers = take(&ANSWERS);
         js.context.with(|ctx| {
@@ -190,19 +194,9 @@ fn pump(cx: &mut App) -> Option<f64> {
                     }
                 }
             }
-            if let Ok(tick) = g.get::<_, Function>("__bui_tick") {
-                let t: rquickjs::Result<f64> = tick.call(());
-                next = match t {
-                    Ok(t) if t >= 0.0 => Some(t),
-                    Ok(_) => None,
-                    Err(e) => {
-                        report::<()>(&ctx, Err(e));
-                        None
-                    }
-                };
-            }
         });
         run_jobs(&js);
+        next = run_timers(&js);
         let commands = take(&COMMANDS);
         let busy = !commands.is_empty();
         for c in commands {
@@ -216,8 +210,13 @@ fn pump(cx: &mut App) -> Option<f64> {
             || ANSWERS.with(|c| { let v = c.take(); let n = !v.is_empty(); c.set(v); n })
             || next.is_some_and(|t| t <= now_ms());
         if !more || QUIT.with(|q| q.get()) {
+            settled = true;
             break;
         }
+    }
+    // out of rounds with work left: it is due now (the next pump, native or headless)
+    if !settled {
+        next = Some(now_ms());
     }
     let busy = js.context.with(|ctx| {
         ctx.globals().get::<_, Function>("__bui_busy").and_then(|f| f.call::<_, bool>(())).unwrap_or(false)
@@ -237,12 +236,14 @@ fn pump(cx: &mut App) -> Option<f64> {
         w
     });
     if let Some(timer) = w.and_then(|w| w.timer) {
-        let at = next.map(|t| START.get_or_init(Instant::now).checked_add(Duration::from_secs_f64(t / 1000.0)));
-        let _ = timer.send(at.flatten());
+        // a deadline past `Instant`'s range is no deadline
+        let at = next.and_then(|t| START.get_or_init(Instant::now).checked_add(Duration::try_from_secs_f64(t / 1000.0).ok()?));
+        let _ = timer.send(at);
     }
     next
 }
 
+/// Run the promise jobs (microtasks) until none is left.
 fn run_jobs(js: &Js) {
     loop {
         match js.runtime.execute_pending_job() {
@@ -256,6 +257,36 @@ fn run_jobs(js: &Js) {
             }
         }
     }
+}
+
+/// Run the due timers as HTML's event loop does: each one is a task, and the
+/// microtasks run after each. Returns the next deadline (ms on the `now_ms`
+/// clock), read after the last microtask: one may have set a timer.
+fn run_timers(js: &Js) -> Option<f64> {
+    loop {
+        let more = js.context.with(|ctx| {
+            let r = ctx.globals().get::<_, Function>("__bui_tick").and_then(|f| f.call::<_, bool>(()));
+            r.unwrap_or_else(|e| {
+                report::<()>(&ctx, Err(e));
+                false
+            })
+        });
+        run_jobs(js);
+        if !more {
+            break;
+        }
+    }
+    js.context.with(|ctx| {
+        let r = ctx.globals().get::<_, Function>("__bui_next").and_then(|f| f.call::<_, f64>(()));
+        match r {
+            Ok(t) if t >= 0.0 => Some(t),
+            Ok(_) => None,
+            Err(e) => {
+                report::<()>(&ctx, Err(e));
+                None
+            }
+        }
+    })
 }
 
 fn apply(cx: &mut App, c: Command) {
@@ -568,6 +599,12 @@ fn rss() -> f64 {
 
 // ==========================================================================
 // Startup
+/// Give `ctx` the globals of `prelude.js`, on the Rust host.
+fn install(ctx: &Ctx<'_>, argv: Vec<String>) -> rquickjs::Result<()> {
+    let host = host_object(ctx, argv)?;
+    ctx.eval::<Function, _>(PRELUDE)?.call((host,))
+}
+
 fn start(cx: &mut App, name: String, source: Vec<u8>, args: Vec<String>) {
     let runtime = Runtime::new().expect("QuickJS runtime");
     runtime.set_max_stack_size(MAX_STACK);
@@ -577,17 +614,8 @@ fn start(cx: &mut App, name: String, source: Vec<u8>, args: Vec<String>) {
     let mut argv = vec![exe, name.clone()];
     argv.extend(args);
     let ok = context.with(|ctx| {
-        let host = match host_object(&ctx, argv) {
-            Ok(h) => h,
-            Err(e) => {
-                report::<()>(&ctx, Err(e));
-                return false;
-            }
-        };
-        let prelude: rquickjs::Result<Function> = ctx.eval(PRELUDE);
-        let r = prelude.and_then(|p| p.call::<_, ()>((host,)));
-        if r.is_err() {
-            report(&ctx, r);
+        if let Err(e) = install(&ctx, argv) {
+            report::<()>(&ctx, Err(e));
             return false;
         }
         let mut opts = rquickjs::context::EvalOptions::default();
@@ -629,8 +657,9 @@ pub fn run(name: String, source: Vec<u8>, args: Vec<String>, headless: bool) {
                     match next {
                         Some(t) => {
                             let wait = t - now_ms();
-                            if wait > 0.0 {
-                                std::thread::sleep(Duration::from_secs_f64(wait / 1000.0));
+                            // past `Duration`'s range (or not a number): no wait
+                            if let Ok(d) = Duration::try_from_secs_f64(wait / 1000.0) {
+                                std::thread::sleep(d);
                             }
                         }
                         // headless, only timers can bring new work: none, and no
@@ -709,5 +738,40 @@ mod tests {
         assert_eq!(n, 2, "positions are kept: the batch refers to them");
         assert!(bad.is_some_and(|e| e.contains("drag")), "the first error is reported");
         assert_eq!(kinds, ["Clear", "DragElastic"], "the bad one becomes a removal; the other is kept");
+    }
+
+    /// QuickJS with the prelude, and `js` run.
+    fn engine(js: &str) -> Js {
+        let runtime = Runtime::new().expect("runtime");
+        let context = Context::full(&runtime).expect("context");
+        context.with(|ctx| {
+            install(&ctx, Vec::new()).expect("prelude");
+            ctx.eval::<(), _>(js).expect("script");
+        });
+        Js { runtime, context }
+    }
+
+    /// A timer set by a promise job, which a timer's callback started, is the next deadline.
+    #[test]
+    fn a_timer_set_in_a_promise_job_is_kept() {
+        let js = engine("globalThis.log = []; setTimeout(() => { log.push('a'); Promise.resolve().then(() => { log.push('job'); setTimeout(() => log.push('b'), 0) }) }, 0); setTimeout(() => log.push('c'), 0)");
+        let next = run_timers(&js);
+        assert!(next.is_some_and(|t| t <= now_ms()), "the new timer is due: {next:?}");
+        assert_eq!(run_timers(&js), None);
+        let log: Vec<String> = js.context.with(|ctx| ctx.eval("log").expect("log"));
+        // the job runs after its task, before the next timer (HTML's event loop)
+        assert_eq!(log, ["a", "job", "c", "b"]);
+    }
+
+    /// Delays that are not a number of ms, or are past a WebIDL long, are 0 (as browsers take them).
+    #[test]
+    fn a_delay_out_of_range_is_zero() {
+        for d in ["Infinity", "-Infinity", "NaN", "-5", "2 ** 40", "'soon'"] {
+            let js = engine(&format!("setTimeout(() => {{}}, {d})"));
+            let next = run_timers(&js);
+            assert_eq!(next, None, "{d}: the timer ran");
+        }
+        let js = engine("setTimeout(() => {}, 60000)");
+        assert!(run_timers(&js).is_some_and(|t| t.is_finite() && t > now_ms()));
     }
 }
