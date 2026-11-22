@@ -534,6 +534,7 @@ int main(void)
     BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);
     CHECK(b != NULL && count_verts(s) == 6);
     BK_node_remove(s, b);
+    BK_node_free(b); /* a removed node is the caller's */
     CHECK(BK_node_child_count(s) == 1 && count_verts(s) == 4);
     free_screen(s);
   }
