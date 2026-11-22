@@ -2350,7 +2350,8 @@ impl Window {
                 if let Some(&deepest) = path.last() {
                     self.emit(app, deepest, &e, |l| l.scroll.iter().collect());
                 }
-                self.scroll_by(&path, -pixels.unwrap_or(ev.a as f32 * 40.0), modifiers.shift);
+                // a touch drag follows the finger: it snaps no step (browsers snap such a gesture at its end)
+                self.scroll_by(&path, -pixels.unwrap_or(ev.a as f32 * 40.0), modifiers.shift, pixels.is_none());
             }
             sys::BK_EV_KEY | sys::BK_EV_KEYRELEASE => {
                 let mut parts = ev.text.splitn(2, '\t');
@@ -2413,7 +2414,7 @@ impl Window {
             .find(|n| n.scroll_range.1 > 0.0)
             .map(|n| n.bounds.size.height * 0.9);
         if let Some(page) = page {
-            self.scroll_by(&path, dir * page, false);
+            self.scroll_by(&path, dir * page, false, true);
         }
     }
 
@@ -2465,8 +2466,9 @@ impl Window {
         self.scrolled = true;
     }
 
-    /// Scroll the innermost scroll container along `path` that can move.
-    fn scroll_by(&mut self, path: &[Key], dy: f32, horizontal: bool) {
+    /// Scroll the innermost scroll container along `path` that can move; a
+    /// discrete step (`snaps`: a wheel notch, a page) lands on its snap positions.
+    fn scroll_by(&mut self, path: &[Key], dy: f32, horizontal: bool, snaps: bool) {
         let Some(f) = &self.frame else { return };
         for key in path.iter().rev() {
             let Some(&i) = f.by_key().get(key) else { continue };
@@ -2478,7 +2480,7 @@ impl Window {
             } else {
                 (sx, (sy + dy).clamp(0.0, ry))
             };
-            let (nx, ny) = snap(f, &self.caches.styles, i, (sx, sy), (nx, ny));
+            let (nx, ny) = if snaps { snap(f, &self.caches.styles, i, (sx, sy), (nx, ny)) } else { (nx, ny) };
             if (nx, ny) != (sx, sy) {
                 // the user scrolls: a glide there stops
                 self.glides.retain(|g| g.container != *key);

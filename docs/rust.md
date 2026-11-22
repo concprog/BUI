@@ -398,7 +398,8 @@ Layout is computed with [taffy](https://github.com/DioxusLabs/taffy):
   left-to-right text (a compact Unicode Bidirectional Algorithm), `direction: rtl`
   and `unicode-bidi: bidi-override` apply.
 - **Scroll snapping**: `scroll-snap-type` (`x` / `y` / `both`, `mandatory` /
-  `proximity`) and `scroll-snap-align` on the children.
+  `proximity`) and `scroll-snap-align` on the children. Wheel notches and
+  pages snap; a touch or trackpad drag follows the finger.
 - **Overflow**: `hidden` / `clip` clip, `scroll` / `auto` scroll with the
   wheel (Shift for horizontal) and show overlay scrollbars.
 - **Lists**: `list-style-type` (`disc`, `circle`, `square`, `decimal`,
