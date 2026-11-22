@@ -220,8 +220,15 @@ static void screen_detach(BKNode *n, BKNode *child)
   if (!IS_AREA(child) || screen->detaching || AREA(child)->v1 == NULL) {
     return;
   }
-  /* The host removes an area: a neighbor takes its place (screen_area_close). */
+  /* The host removes an area: a neighbor takes its place (screen_area_close). Back to the normal
+   * state first, as Blender's operators do (ED_screen_state_toggle), or the others stay hidden. */
   screen->detaching = child;
+  SCREEN_AREAS_ITER (n, other) {
+    if (other->full) {
+      screen_state_apply(n, other->node, other->full);
+      break;
+    }
+  }
   if (n->nkids == 1) {
     screen_geom_free(screen); /* the last one: the screen starts over */
   }
