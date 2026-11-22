@@ -1505,8 +1505,10 @@ fn paint_layer_inner(cx: &mut LayerCx, root: usize, list: &[usize], p: &mut Pain
         return;
     }
     // where the raster sits in the layer (both on the same device grid), which holds it whole
+    // (no more than a raster holds either: past the limit the layer is cut, its raster clipped to it)
     let at_inner = ((ix0 - x0) as usize, (iy0 - y0) as usize);
-    let (w, h) = (w.max(at_inner.0 + iw), h.max(at_inner.1 + ih));
+    let side = |s: usize, at: usize, i: usize| s.max(at + i).min(crate::effects::MAX_RASTER);
+    let (w, h) = (side(w, at_inner.0, iw), side(h, at_inner.1, ih));
     let b = n.bounds;
     let u = Units { font_size: c.font_size, viewport: cx.vp };
     // the root's own transform (a layer's: more than a move and a scale), about

@@ -123,7 +123,7 @@ All notable changes to **blenderui** (BUI). The format follows
   - A layer off the window or outside its clip is not drawn.
   - A layer's opacity is applied when its image is drawn: a new `BKCanvasItem::fade` field, 0 by default (the D binding initializes it: D's floats start as NaN), fades an image item. A fully faded file is not decoded.
   - A layer's outer clip is applied to its image, not its raster, where it draws: under a scaled ancestor that is the scaled clip (a blurred child of a scaled scroller was cut at the unscaled size).
-  - A layer's raster has a size of the content's alone (a pixel over its span), not of where it falls on the device grid: a raster kept from another position of a fractional scroll or glide could be a pixel short and cut its last row or column. A glide still reuses it. A span of the whole raster limit (8192 device pixels) is held to it, not dropped for its pixel over.
+  - A layer's raster has a size of the content's alone (a pixel over its span), not of where it falls on the device grid: a raster kept from another position of a fractional scroll or glide could be a pixel short and cut its last row or column. A glide still reuses it. A span of the whole raster limit (8192 device pixels) is held to it, not dropped for its pixel over, and so is the layer around it (its filters' margin): a layer past it is cut, not allocated whole.
   - Layer results are kept for three paints without use.
   - A box with no area no longer stretches its layer to the page's corner. That bug made every blurred line of a list as big as the page.
   - Subtree tests use an Euler tour instead of walking up from each box, which was quadratic.
