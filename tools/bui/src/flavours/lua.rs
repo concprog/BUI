@@ -38,7 +38,7 @@ fn rock_env(dir: &Path) -> Vec<(String, String)> {
                 l.strip_prefix("SET \"")?.strip_suffix('"')?.split_once('=')?
             };
             let v = v.trim_matches('\'');
-            matches!(k, "LUA_PATH" | "LUA_CPATH" | "PATH").then(|| (k.to_owned(), v.replace("$PATH", &std::env::var("PATH").unwrap_or_default())))
+            matches!(k, "LUA_PATH" | "LUA_CPATH" | "PATH").then(|| (k.to_owned(), v.replace("$PATH", &crate::sys::child_path().to_string_lossy())))
         })
         .collect()
 }

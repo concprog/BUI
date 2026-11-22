@@ -1,6 +1,7 @@
 //! The machine: the operating system, finding programs and running commands.
 
 use std::collections::VecDeque;
+use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -60,13 +61,22 @@ fn candidates(dir: &Path, name: &str) -> Vec<PathBuf> {
     }
 }
 
+/// The folders programs are looked for in: `path` (a `PATH`), then where installers put them.
+fn search_dirs(path: &OsStr) -> impl Iterator<Item = PathBuf> + '_ {
+    std::env::split_paths(path).chain(extra_dirs())
+}
+
 /// The program `name` on `PATH` (or where installers put it), as the shell would find it.
 pub fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path)
-        .chain(extra_dirs())
-        .flat_map(|d| candidates(&d, name))
-        .find(|p| p.is_file())
+    search_dirs(&path).flat_map(|d| candidates(&d, name)).find(|p| p.is_file())
+}
+
+/// `PATH` for every command bui runs: the folders `which` searches, so what a tool installed a moment ago (npm
+/// after fnm, cargo after rustup) is found by the commands that use it too, not only by `which`.
+pub fn child_path() -> OsString {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(search_dirs(&path)).unwrap_or(path)
 }
 
 /// A command to run: a program and its arguments, or a line for the shell (installers pipe).
@@ -151,6 +161,7 @@ impl Cmd {
         if let Some(d) = &self.cwd {
             c.current_dir(d);
         }
+        c.env("PATH", child_path());
         c.envs(self.env.iter().map(|(k, v)| (k, v)));
         Ok(c)
     }
@@ -247,6 +258,17 @@ mod tests {
         assert!(semver("v1.0.0") > semver("0.99.99"));
         assert_eq!(semver("1.2"), [1, 2, 0]);
         assert_eq!(semver("0.5.1-beta"), [0, 5, 1]);
+    }
+
+    #[test]
+    fn commands_search_where_which_does() {
+        let path = child_path();
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        for d in extra_dirs() {
+            assert!(dirs.contains(&d), "{} missing from the child PATH", d.display());
+        }
+        let parent = std::env::var_os("PATH").unwrap_or_default();
+        assert!(std::env::split_paths(&parent).zip(&dirs).all(|(a, b)| a == *b), "PATH comes first, in its order");
     }
 
     #[test]
