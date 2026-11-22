@@ -91,7 +91,8 @@ add_to_path() {
   line="export PATH=\"$INSTALL_DIR:\$PATH\" # added by the bui installer"
   zshrc="${ZDOTDIR:-$HOME}/.zshrc"
   # the login shell's own file, made when it is missing (a new Mac has no .zshrc, and zsh does not read .profile)
-  case "${SHELL##*/}" in
+  login="${SHELL:-}" # unset in a shell started without a login (set -u)
+  case "${login##*/}" in
     zsh) own="$zshrc" ;;
     bash) own="$HOME/.bashrc" ;;
     *) own="" ;;

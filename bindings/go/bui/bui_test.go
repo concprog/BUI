@@ -287,6 +287,34 @@ func TestFreeNodeInsideItsHandler(t *testing.T) {
 	}
 }
 
+func TestFreeInsideAHandlerWhileRequestRenders(t *testing.T) {
+	root := NewNode("column")
+	defer root.Free()
+	c := NewNode("checkbox").Set("label", "Gone")
+	root.Add(c)
+	c.OnChange(func(Event) { c.Free() })
+	ctx := NewContext(root)
+	defer ctx.Free()
+	r := NewRaster(200, 80)
+	defer r.Free()
+	ctx.Render(r, 200, 80, true)
+	clicking, early := false, false
+	ctx.OnRequest(func() { // the kit asks for a render inside the press
+		ctx.Render(r, 200, 80, false)
+		early = early || (clicking && c.Freed())
+	})
+	x, y := c.Rect().Center()
+	clicking = true
+	ctx.Click(x, y, 0)
+	clicking = false
+	if early {
+		t.Errorf("a render the kit asked for freed the node it was still using")
+	}
+	if !c.Freed() || root.ChildCount() != 0 || len(later) != 0 {
+		t.Errorf("the free was never run once the click returned")
+	}
+}
+
 func TestPanelMoveEvent(t *testing.T) {
 	root := NewNode("column")
 	defer root.Free()

@@ -188,6 +188,9 @@ func goHostEmit(id C.uintptr_t, n *C.BKNode, kind C.int, ref C.uintptr_t, a, b C
 
 //export goHostRequest
 func goHostRequest(id C.uintptr_t) {
+	// the kit asks from inside its calls (a press, a setter): a render here
+	// must not settle the frees a handler of that call left for later
+	defer enter()()
 	if ctx := contexts[uintptr(id)]; ctx != nil && ctx.onRequest != nil {
 		ctx.onRequest()
 	}

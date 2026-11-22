@@ -714,7 +714,9 @@ impl App {
             }
         }
         for id in 0..self.windows.len() {
-            let Some(w) = self.windows[id].as_deref_mut() else { continue };
+            // a render may shut the app down (the windows go once it returns)
+            let Some(slot) = self.windows.get_mut(id) else { break };
+            let Some(w) = slot.as_deref_mut() else { continue };
             // a closed window draws no more frames (its animations stop with it)
             if w.life != Life::Open || (!w.dirty && !w.scrolled && !w.motion_frame && !w.sel_repaint && w.glides.is_empty()) {
                 continue;
@@ -1913,8 +1915,10 @@ impl Window {
         }?;
         self.dirty |= self.caches.anim.redraw_motion(frame, &mut self.caches.styles, vp)?;
         if self.caches.anim.take_reclip() {
-            // a clip moved under one that stays: placed again, the moved values are in the styles
+            // a clip moved under one that stays: placed again, the moved values are in the styles,
+            // and the in-view states follow the new clips
             crate::layout::replace(frame, vp, &self.state, &mut self.caches);
+            self.dirty |= self.caches.anim.in_view(frame, vp);
         }
         Some(moved_css)
     }
@@ -2123,6 +2127,11 @@ impl Window {
     /// Call the listeners `pick` selects, from element `key` up to the root.
     /// The frame is moved out of the window meanwhile, so listeners can take
     /// `&mut Window` while the frame lends them out: no copies, no `Rc`.
+    /// The element the event its listeners are running for fired on (`None` outside one).
+    pub(crate) fn event_target(&self) -> Option<Key> {
+        self.lent_bounds.first().map(|&(k, _)| k)
+    }
+
     fn emit<E: 'static>(&mut self, app: &mut App, key: Key, e: &E,
                         pick: impl Fn(&Listeners) -> Vec<&Listener<E>>) {
         let Some(frame) = self.frame.take() else { return };

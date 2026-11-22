@@ -242,25 +242,25 @@ func (n *Node) Set(key string, value any) *Node {
 
 // SetNum sets a number property; false when the node has no such key.
 func (n *Node) SetNum(key string, v float64) bool {
-	return C.BK_set_num(n.h, ckey(key), C.double(v)) != 0
+	return settled(C.BK_set_num(n.h, ckey(key), C.double(v)))
 }
 
 // SetStr sets a string property; false when the node has no such key.
 func (n *Node) SetStr(key, v string) bool {
-	return cstr(v, func(s *C.char) bool { return C.BK_set_str(n.h, ckey(key), s) != 0 })
+	return cstr(v, func(s *C.char) bool { return settled(C.BK_set_str(n.h, ckey(key), s)) })
 }
 
 // SetColor sets a color property; false when the node has no such key.
 func (n *Node) SetColor(key string, c Color) bool {
 	rgba := [4]C.float{C.float(c.R), C.float(c.G), C.float(c.B), C.float(c.A)}
-	return C.BK_set_color(n.h, ckey(key), &rgba[0]) != 0
+	return settled(C.BK_set_color(n.h, ckey(key), &rgba[0]))
 }
 
 // SetStrs sets a list property ("items" of a dropdown, "headers" of a tree).
 func (n *Node) SetStrs(key string, values []string) bool {
 	list := cstrings(values)
 	defer list.free()
-	return C.BK_set_strs(n.h, ckey(key), list.ptr(), C.int(len(values))) != 0
+	return settled(C.BK_set_strs(n.h, ckey(key), list.ptr(), C.int(len(values))))
 }
 
 // Num reads a number property (0 when unknown).

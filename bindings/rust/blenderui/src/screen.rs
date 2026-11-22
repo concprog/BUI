@@ -683,7 +683,9 @@ impl ScreenBuilder {
 
     fn into_div(self) -> Div {
         let ScreenBuilder { id, editors, layout, saved, resize_only, on_change, on_window, class, style, attrs } = self;
-        let mut d = Div::new("bui-screen").key(id.unwrap_or(Cow::Borrowed("bui-screen")));
+        let id = id.unwrap_or(Cow::Borrowed("bui-screen"));
+        let own = crate::layout::id_key(&id); // the key `Screens::sync` gives it
+        let mut d = Div::new("bui-screen").key(id);
         if let Some(c) = class {
             d = d.class(c);
         }
@@ -700,7 +702,8 @@ impl ScreenBuilder {
             d = d.on_change(move |e, w, app| {
                 match (e.value.strip_prefix("window\t"), &on_window, &on_change) {
                     (Some(editor), Some(f), _) => f(&AreaEvent { editor: editor.to_owned() }, w, app),
-                    (None, _, Some(f)) if is_layout(&e.value) => {
+                    // the screen's own change, not one bubbling up from a field inside it
+                    (None, _, Some(f)) if w.event_target() == Some(own) => {
                         f(&ScreenEvent { layout: e.value.clone() }, w, app);
                     }
                     _ => {}
@@ -780,27 +783,21 @@ struct KitScreen {
 }
 
 impl KitScreen {
-    /// Forget its areas and free its kit node (with its areas and regions).
+    /// Forget its areas and free its kit node (with its areas and regions). The kit's children,
+    /// not the records: an area split or made since the last sync has none yet.
     fn free(&self) {
+        // SAFETY: our live screen node; its children are its areas.
+        let n = unsafe { sys::BK_node_child_count(self.node) };
         LIVE.with(|l| {
             let mut l = l.borrow_mut();
-            for a in &self.areas {
-                l.remove(&(a.node as usize));
+            for i in 0..n {
+                // SAFETY: a child index of our live screen node.
+                l.remove(&(unsafe { sys::BK_node_child(self.node, i) } as usize));
             }
         });
         // SAFETY: our screen node (and its areas and regions), detached and freed.
         unsafe { sys::BK_node_free(self.node) };
     }
-}
-
-/// What every layout the kit writes starts with (`screen_layout_get`): a
-/// change whose value doesn't is not the screen's (a text field inside it
-/// whose own change nobody handled reaches the screen's handler too).
-const LAYOUT_PREFIX: &str = "{\"bui_screen\"";
-
-/// Whether a change's value is a screen layout.
-fn is_layout(value: &str) -> bool {
-    value.starts_with(LAYOUT_PREFIX)
 }
 
 /// The screens of one window, by element key.

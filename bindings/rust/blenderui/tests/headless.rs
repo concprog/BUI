@@ -559,3 +559,24 @@ fn shutdown_from_a_handler_waits_for_it() {
         assert!(cx.window_ids().is_empty());
     });
 }
+
+struct QuitOnRender;
+
+impl Render for QuitOnRender {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        cx.shutdown();
+        body().m_0()
+    }
+}
+
+/// `shutdown` from a render: the windows the flush had still to render are gone.
+#[test]
+fn shutdown_from_a_render_stops_the_flush() {
+    Application::headless().run(|cx| {
+        let win = open(cx, 100.0, 100.0, QuitOnRender);
+        let other = open(cx, 100.0, 100.0, Boxes);
+        cx.draw(win.id);
+        assert!(cx.window(win.id).is_none() && cx.window(other.id).is_none(), "both windows freed");
+        assert!(cx.window_ids().is_empty());
+    });
+}

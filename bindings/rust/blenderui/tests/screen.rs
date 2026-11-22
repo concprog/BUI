@@ -239,7 +239,7 @@ impl Render for FieldInScreen {
 }
 
 /// A text field in a screen whose change nobody handles reaches the screen's handler: its text
-/// is not taken for a layout, even when it looks like JSON.
+/// is not taken for a layout, even when it starts like one.
 #[test]
 fn a_field_change_in_a_screen_is_not_a_layout() {
     Application::headless().run(|cx| {
@@ -256,10 +256,62 @@ fn a_field_change_in_a_screen_is_not_a_layout() {
         }
         let f = cx.element_bounds(id, "field").expect("the field");
         cx.simulate_click(id, f.origin.x + 10.0, f.origin.y + f.size.height / 2.0);
-        cx.simulate_key(id, "{", "braceleft");
+        let forged = "{\"bui_screen\": 1}";
+        for c in forged.chars() {
+            let sym = match c {
+                '{' => "braceleft",
+                '}' => "braceright",
+                '"' => "quotedbl",
+                '_' => "underscore",
+                ':' => "colon",
+                ' ' => "space",
+                _ => "",
+            };
+            let text = c.to_string();
+            cx.simulate_key(id, &text, if sym.is_empty() { &text } else { sym });
+        }
         cx.simulate_key(id, "", "Return");
         cx.draw(id);
         let seen = FIELD_LAYOUTS.lock().unwrap().clone();
-        assert!(seen.iter().all(|l| l.starts_with("{\"bui_screen\"")), "only layouts: {seen:?}");
+        assert!(!seen.is_empty(), "the screen's own layout came");
+        assert!(seen.iter().all(|l| l != forged && l.starts_with("{\"bui_screen\"")), "only layouts: {seen:?}");
+    });
+}
+
+thread_local! {
+    static KEPT: std::cell::Cell<Option<AreaRef>> = const { std::cell::Cell::new(None) };
+}
+
+struct Keeping;
+
+impl Render for Keeping {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let editors = Editors::new().editor("A", "A", |area: &AreaRef| {
+            KEPT.with(|k| k.set(Some(*area)));
+            Editor::new(div().child("a"))
+        });
+        body().m_0().w(px(900.0)).h(px(600.0)).child(Screen().editors(editors).layout(AreaSplit::from("A")))
+    }
+}
+
+/// An area split from code and the screen freed before the next render: the new area goes with it.
+#[test]
+fn an_area_split_before_the_screen_is_freed_goes_with_it() {
+    Application::headless().run(|cx| {
+        let opts = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(900.0), px(600.0)),
+            })),
+            ..Default::default()
+        };
+        let id = cx.open_window(opts, |_, cx| cx.new(|_| Keeping)).unwrap().id;
+        cx.draw(id);
+        let kept = KEPT.with(std::cell::Cell::get).expect("the factory ran");
+        let new = kept.split(Axis::V, 0.5).expect("a split");
+        cx.shutdown(); // the window and its screen go, the new area unsynced
+        assert_eq!(new.editor(), "", "a freed area shows nothing");
+        assert!(new.split(Axis::V, 0.5).is_none() && !new.close());
+        assert_eq!(kept.editor(), "");
     });
 }

@@ -71,6 +71,7 @@ struct BKWindow {
   int sw, sh; /* the surface */
   int req_w, req_h; /* logical size the app asked for, used before the surface exists */
   int dirty, full, want_frame, frames;
+  double retry_ms; /* a present failed: when to draw it all again (0: none pending) */
   int ime_on;
   float scale, density;
   int next_timer;
@@ -214,9 +215,22 @@ static void convert(const uint32_t *src, int src_stride, uint32_t *dst, int dst_
   }
 }
 
+/* How long a failed present waits before the next try: a surface that keeps failing must not
+ * keep the loop spinning (`dirty` would not let it sleep). */
+#define RETRY_MS 32.0
+
+/* The surface took no frame: the kit's damage is spent, so the next one is drawn whole, after
+ * RETRY_MS or with the next event that draws, whichever comes first. */
+static void retry_later(BKWindow *win)
+{
+  win->full = 1;
+  win->retry_ms = now_ms() + RETRY_MS;
+}
+
 static void draw(BKWindow *win)
 {
   ANativeWindow *surface = g_app->window;
+  win->retry_ms = 0.0; /* this is the try (with no surface, the next one draws all) */
   if (!surface || win->w <= 0 || win->h <= 0) {
     return;
   }
@@ -252,7 +266,7 @@ static void draw(BKWindow *win)
   }
   ANativeWindow_Buffer buf;
   if (ANativeWindow_lock(surface, &buf, &dirty) != 0) {
-    win->full = win->dirty = 1; /* try again with the next event */
+    retry_later(win);
     return;
   }
   if (buf.width != win->sw || buf.height != win->sh || buf.format != WINDOW_FORMAT_RGBX) {
@@ -284,7 +298,7 @@ static void draw(BKWindow *win)
     convert(src, win->w, dst, buf.stride, full ? whole[0] : back);
   }
   if (ANativeWindow_unlockAndPost(surface) != 0) {
-    win->full = win->dirty = 1; /* the kit's damage is spent: try again with the next event */
+    retry_later(win);
     return;
   }
   win->frames++;
@@ -806,6 +820,7 @@ static int wait_ms(const BKWindow *win)
   }
   double next = 0.0;
   if (win) {
+    next = g_app->window ? win->retry_ms : 0.0; /* a failed present waits for the surface too */
     for (int i = 0; i < MAX_TIMERS; i++) {
       if (win->timers[i].due_ms != 0.0 && (next == 0.0 || win->timers[i].due_ms < next)) {
         next = win->timers[i].due_ms;
@@ -873,6 +888,9 @@ static void step(int block)
   fire_timers(win);
   if (win->fling) {
     fling_step(win);
+  }
+  if (win->retry_ms != 0.0 && win->retry_ms <= now_ms()) {
+    win->dirty = 1; /* the failed present's turn (`draw` clears it) */
   }
   if (win->open && g_app->window &&
       (win->dirty || win->want_frame || BK_needs_render(win->ctx) || BK_animating(win->ctx))) {
