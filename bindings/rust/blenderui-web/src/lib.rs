@@ -131,6 +131,12 @@ pub fn pointer_up(x: f32, y: f32) {
     with_host(|h| h.app.simulate_release(h.window, x, y));
 }
 
+/// The press was cancelled (`pointercancel`, a lost pointer capture): a drag goes back and nothing is
+/// clicked, with no motion and no release.
+pub fn pointer_cancel() {
+    with_host(|h| h.app.simulate_cancel(h.window));
+}
+
 /// The wheel turned: positive `lines` are wheel-up (the content scrolls toward its start), negative
 /// are wheel-down, as on a desktop.
 pub fn wheel(x: f32, y: f32, lines: i32) {
@@ -249,6 +255,11 @@ macro_rules! export {
         #[unsafe(no_mangle)]
         pub extern "C" fn bui_pointer_up(x: f32, y: f32) {
             $crate::pointer_up(x, y);
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn bui_pointer_cancel() {
+            $crate::pointer_cancel();
         }
 
         #[unsafe(no_mangle)]

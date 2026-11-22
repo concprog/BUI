@@ -896,6 +896,15 @@ impl App {
         });
     }
 
+    /// The host lost the pointer mid-press (a cancelled touch, a lost pointer capture): a drag goes back
+    /// as Escape puts it back, and the press ends with no motion, no mouse-up and no click.
+    pub fn simulate_cancel(&mut self, window: WindowId) {
+        self.with_window(window.0, |w, _| w.cancel_press());
+        self.input(window, |ctx, _| unsafe {
+            sys::BK_cancel(ctx, 0);
+        });
+    }
+
     /// Press at `from`, drag to `to` and release there.
     pub fn simulate_drag(&mut self, window: WindowId, from: (f32, f32), to: (f32, f32)) {
         self.simulate_mouse_move(window, from.0, from.1);
@@ -1815,6 +1824,24 @@ impl Window {
         (Modifiers::from_kit(mods), button)
     }
 
+    /// Ends the press of `button` (released or cancelled): the pressed elements stop being `:active` and
+    /// a text selection drag stops. True when the press selected text (which is not a click).
+    fn end_press(&mut self, button: MouseButton) -> bool {
+        self.pressed.clear();
+        self.state.active.clear();
+        self.dirty |= !std::mem::take(&mut self.press_quiet);
+        self.caches.anim.pointer_up();
+        button == MouseButton::Left && self.selector.release()
+    }
+
+    /// The host lost the pointer mid-press: a scrollbar drag stays where it is, the press ends, and
+    /// nothing gets a mouse-up or a click (the kit sends no `BK_EV_RELEASE` for it).
+    fn cancel_press(&mut self) {
+        if self.sb_drag.take().is_none() {
+            self.end_press(self.press_button);
+        }
+    }
+
     /// Focus the element `key` (path: its ancestors, for `:focus-within`).
     fn set_focus(&mut self, path: &[Key]) {
         self.state.focused = path.last().copied();
@@ -1908,12 +1935,8 @@ impl Window {
                 // click: the deepest element under both press and release
                 let common = self.pressed.iter().zip(&path).take_while(|(a, b)| a == b)
                     .map(|(a, _)| *a).last();
-                self.pressed.clear();
-                self.state.active.clear();
-                self.dirty |= !std::mem::take(&mut self.press_quiet);
-                self.caches.anim.pointer_up();
                 // a press that selected text is a selection, not a click (as in a browser)
-                let dragged = button == MouseButton::Left && self.selector.release();
+                let dragged = self.end_press(button);
                 if let (Some(target), MouseButton::Left, false) = (common, button, dragged) {
                     self.toggle_details(target);
                     let down = MouseDownEvent { button, position: point(px(x), px(y)), modifiers, click_count: 1 };

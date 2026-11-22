@@ -122,15 +122,23 @@ export async function mount (canvas, source, { fit = true, width = 640, height =
   const css = () => (fit ? [Math.max(1, canvas.clientWidth || width), Math.max(1, canvas.clientHeight || height)] : [width, height])
   const scale = () => window.devicePixelRatio || 1
 
-  const [w0, h0] = css()
-  canvas.width = Math.round(w0 * scale())
-  canvas.height = Math.round(h0 * scale())
-  if (fit && (canvas.clientWidth !== w0 || canvas.clientHeight !== h0)) {
-    // an unstyled canvas is as big in CSS pixels as its backing store: at a pixel ratio above 1 it would grow
-    // on every frame (the store follows the CSS size, which follows the store). Pin the logical size.
-    canvas.style.width = `${w0}px`
-    canvas.style.height = `${h0}px`
+  // the backing store at the CSS size times the pixel ratio. An unstyled canvas is as big in CSS pixels as its
+  // backing store: at a pixel ratio above 1 it would grow on every frame (the store follows the CSS size, which
+  // follows the store), so its logical size is pinned. A canvas with no layout yet (inside `display: none`) is
+  // not pinned, or it would keep the fallback size for good: its first resize with a layout does this instead.
+  let laidOut = false
+  const store = () => {
+    const [w, h] = css()
+    canvas.width = Math.round(w * scale())
+    canvas.height = Math.round(h * scale())
+    laidOut = !fit || canvas.clientWidth > 0
+    if (fit && laidOut && (canvas.clientWidth !== w || canvas.clientHeight !== h)) {
+      canvas.style.width = `${w}px`
+      canvas.style.height = `${h}px`
+    }
+    return [w, h]
   }
+  const [w0, h0] = store()
   if (!exports.bui_start(w0, h0, scale())) throw new Error('the app did not open a window')
 
   let running = true
@@ -187,6 +195,11 @@ export async function mount (canvas, source, { fit = true, width = 640, height =
     pressed = false
     exports.bui_pointer_up(x, y)
   }
+  const cancel = guard((e) => {
+    if (!e.isPrimary || !pressed) return
+    pressed = false
+    exports.bui_pointer_cancel()
+  })
   off = [
     on('pointermove', guard((e) => {
       if (!e.isPrimary) return
@@ -205,18 +218,10 @@ export async function mount (canvas, source, { fit = true, width = 640, height =
       // the primary button's own release, or the last release of a chord whose primary button went earlier
       if (e.isPrimary && (e.button === 0 || !(e.buttons & 1))) release(...at(e))
     })),
-    // cancelled (a dialog, an unplugged device) or capture lost: end the press away from the canvas, so it
-    // clicks nothing
-    on('pointercancel', guard((e) => {
-      if (!e.isPrimary || !pressed) return
-      exports.bui_pointer_move(-1, -1)
-      release(-1, -1)
-    })),
-    on('lostpointercapture', guard((e) => {
-      if (!e.isPrimary || !pressed) return
-      exports.bui_pointer_move(-1, -1)
-      release(-1, -1)
-    })),
+    // cancelled (a dialog, an unplugged device) or capture lost: the press ends with no motion and no release,
+    // so a drag stops where it was (a Blender field goes back, as on Escape) and nothing is clicked
+    on('pointercancel', cancel),
+    on('lostpointercapture', cancel),
     on('wheel', guard((e) => {
       e.preventDefault()
       // the module's positive lines are wheel-up, the DOM's positive deltaY is wheel-down
@@ -234,7 +239,7 @@ export async function mount (canvas, source, { fit = true, width = 640, height =
     })),
   ]
   const resize = guard(() => {
-    const [w, h] = css()
+    const [w, h] = laidOut ? css() : store()
     exports.bui_resize(w, h, scale())
   })
   if (fit && typeof ResizeObserver !== 'undefined') {

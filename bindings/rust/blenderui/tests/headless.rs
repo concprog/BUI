@@ -337,6 +337,26 @@ fn backspace_resets_to_the_value_the_field_was_made_with() {
     });
 }
 
+/// A cancelled press (the host lost the pointer mid-drag) puts a dragged Blender field back, as Escape does.
+#[test]
+fn a_cancelled_drag_puts_the_value_back() {
+    Application::headless().run(|cx| {
+        let win = open(cx, 300.0, 100.0, Number { number: None });
+        let id = win.id;
+        cx.draw(id);
+        let n = cx.element_bounds(id, "n").unwrap();
+        let (x, y) = (n.origin.x + n.size.width / 2.0, n.origin.y + n.size.height / 2.0);
+        cx.simulate_press(id, x, y);
+        cx.simulate_mouse_move(id, x + 30.0, y);
+        cx.simulate_mouse_move(id, x + 60.0, y);
+        let moved = win.root().read(cx).number.expect("the drag changes the value");
+        assert!((moved - 5.0).abs() > 0.01, "the drag should change the value, got {moved}");
+        cx.simulate_cancel(id);
+        let back = win.root().read(cx).number.unwrap();
+        assert!((back - 5.0).abs() < 1e-9, "a cancelled drag should give 5, got {back}");
+    });
+}
+
 /// Every builder call moves the element: rarely used parts stay out of line.
 #[test]
 fn element_stays_small() {

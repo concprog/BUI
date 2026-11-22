@@ -92,8 +92,11 @@ The C kit is built for WebAssembly by CMake through `platform/wasm/wasi.cmake`, 
   stopped (no more frames, no listeners) and the error goes to `onerror` (default `console.error`);
   `stop()` frees the app (`bui_stop`, `App::shutdown`). Startup errors (the module fails to load, or
   `bui_start` traps or returns 0) reject the `mount()` promise instead and do not reach `onerror`: catch it.
-  A press the browser cancels (`pointercancel`, lost capture) or whose primary button is released while another
-  button is held is released in the module too.
+  A press the browser cancels (`pointercancel`, lost capture) is cancelled in the module (`bui_pointer_cancel`):
+  it ends with no motion and no release, so a drag stops where it was (a Blender field goes back, as on
+  Escape) and nothing is clicked. A press whose primary button is released while another button is held is
+  released in the module too. A canvas with no layout at mount (inside `display: none`) is sized on its first
+  resize with one, so `fit` follows its CSS once it is shown.
 
 ```js
 import { mount } from './bui-web.js'

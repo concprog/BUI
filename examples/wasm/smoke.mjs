@@ -4,8 +4,9 @@
 //   node examples/wasm/smoke.mjs examples/wasm/counter/dist/app.wasm
 //
 // It starts the app in a 420 x 300 canvas, asks for frames, clicks the button and checks that the first
-// frame exists, a second one only comes when something changed, a click changes the picture, and a
-// resize gives a frame of the new size.
+// frame exists, a second one only comes when something changed, a click changes the picture, a cancelled
+// press (pointercancel) clicks nothing and leaves a dragged slider where it was, and a resize gives a frame
+// of the new size.
 //
 // SPDX-License-Identifier: GPL-2.0-or-later
 import assert from 'node:assert/strict'
@@ -32,6 +33,29 @@ assert.deepEqual([first.w, first.h], [420, 300])
 assert.ok(first.pixels.some((v, i) => i % 4 === 3 && v === 255), 'opaque pixels')
 assert.ok(new Set(first.pixels).size > 8, 'more than a flat color was drawn')
 assert.equal(frame(), null, 'nothing changed: no new frame')
+
+// a cancelled press (pointercancel, a lost capture) ends with no motion and no release: the button under it
+// is not clicked, and a dragged slider stays where the drag left it (it does not jump to the canvas's corner)
+// (compared as bytes: a failed deepEqual of whole frames runs out of memory printing the difference)
+const same = (a, b) => Buffer.compare(a, b) === 0
+const now = () => frame()?.pixels ?? new Uint8Array(x.memory.buffer.slice(x.bui_pixels(), x.bui_pixels() + x.bui_width() * x.bui_height() * 4))
+x.bui_pointer_move(60, 150)
+const hovered = now()
+x.bui_pointer_down(60, 150)
+x.bui_pointer_cancel()
+assert.ok(same(now(), hovered), 'a cancelled press on the button does not click it')
+x.bui_pointer_move(100, 178)
+const untouched = now()
+x.bui_pointer_down(100, 178)
+x.bui_pointer_move(140, 178)
+x.bui_pointer_up(140, 178)
+const dragged = now()
+assert.ok(!same(dragged, untouched), 'the drag moves the slider')
+x.bui_pointer_down(140, 178)
+x.bui_pointer_move(60, 178)
+x.bui_pointer_move(140, 178)
+x.bui_pointer_cancel()
+assert.ok(same(now(), dragged), 'a cancelled drag leaves the slider where the drag left it')
 
 x.bui_pointer_move(60, 150)
 x.bui_pointer_down(60, 150)

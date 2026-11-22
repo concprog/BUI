@@ -2697,30 +2697,22 @@ static int in_BK_press(BKContext *ctx, int x, int y, int mods)
   return 1;
 }
 
-static int in_BK_release(BKContext *ctx, int x, int y, int mods)
+/* Ends the press at (x, y): the grabbed widget's release, then the grab, drag and pointer state.
+ * `cancelled`: the host lost the pointer, so the release sees it outside (no click), no BK_EV_RELEASE
+ * is sent and no menu item is picked. */
+static int end_press(BKContext *ctx, int x, int y, int mods, bool cancelled)
 {
-  const int button = ctx->next_button > 0 ? ctx->next_button : 1;
-  ctx->next_button = 0;
-  if (custom_extra_button(ctx, x, y, button, 1, mods)) {
-    return 1;
-  }
-  if (ctx->modal) {
-    BKEvent e = make_event(ctx, ctx->modal, x, y, mods);
-    if (ctx->modal->cls->release) {
-      ctx->modal->cls->release(ctx->modal, &e);
-    }
-    return 1;
-  }
   const bool was_continuous = continuous(ctx);
   const int vx = x + ctx->off_x, vy = y + ctx->off_y;
   BKNode *grab = ctx->grab;
   ctx->dt_active = 0;
   if (grab && NODE_ENABLED(grab)) {
     BKEvent e = make_event(ctx, grab, vx, vy, mods);
+    e.inside = e.inside && !cancelled;
     if (grab->cls->release) {
       grab->cls->release(grab, &e);
     }
-    if (ctx->grab == grab) {
+    if (ctx->grab == grab && !cancelled) {
       bk_event(grab, BK_EV_RELEASE, mods, &e);
     }
   }
@@ -2731,7 +2723,7 @@ static int in_BK_release(BKContext *ctx, int x, int y, int mods)
   if (grab) {
     bk_invalidate(grab);
   }
-  if (ctx->dragging && bk_popup_index(ctx, grab) < 0) {
+  if (ctx->dragging && !cancelled && bk_popup_index(ctx, grab) < 0) {
     /* Blender: press a menu button, drag onto an item, release to pick. */
     for (int i = ctx->npopups - 1; i >= 0; i--) {
       BKNode *p = ctx->popups[i];
@@ -2764,6 +2756,49 @@ static int in_BK_release(BKContext *ctx, int x, int y, int mods)
   set_hover(ctx, hit_all(ctx, x, y));
   update_cursor(ctx);
   return 1;
+}
+
+static int in_BK_release(BKContext *ctx, int x, int y, int mods)
+{
+  const int button = ctx->next_button > 0 ? ctx->next_button : 1;
+  ctx->next_button = 0;
+  if (custom_extra_button(ctx, x, y, button, 1, mods)) {
+    return 1;
+  }
+  if (ctx->modal) {
+    BKEvent e = make_event(ctx, ctx->modal, x, y, mods);
+    if (ctx->modal->cls->release) {
+      ctx->modal->cls->release(ctx->modal, &e);
+    }
+    return 1;
+  }
+  return end_press(ctx, x, y, mods, false);
+}
+
+/* Blender: Escape cancels a drag (EVT_BUT_CANCEL in ui_handle_button_event), putting the value back.
+ * True when there was one to cancel. */
+static bool cancel_drag(BKContext *ctx)
+{
+  if (!ctx->grab || !ctx->dragging || !ctx->grab->cls->cancel) {
+    return false;
+  }
+  ctx->grab->cls->cancel(ctx->grab);
+  ctx->has_ungrab = false;
+  return true;
+}
+
+static int in_BK_cancel(BKContext *ctx, int mods)
+{
+  ctx->next_button = 0;
+  if (ctx->modal) {
+    bk_end_modal(ctx);
+    return 1;
+  }
+  if (!ctx->grab) {
+    return 0;
+  }
+  cancel_drag(ctx);
+  return end_press(ctx, ctx->pointer_x, ctx->pointer_y, mods, true);
 }
 
 static void raw_event(BKNode *n, int kind, int mods, const BKEvent *e, int button);
@@ -2872,9 +2907,7 @@ static int in_BK_key(BKContext *ctx, const char *text, const char *keysym, int m
     }
     return 1;
   }
-  if (ctx->grab && ctx->dragging && ctx->grab->cls->cancel && bk_keysym_is(e.keysym, "Escape")) {
-    ctx->grab->cls->cancel(ctx->grab); /* Blender: Escape cancels a drag */
-    ctx->has_ungrab = false;
+  if (bk_keysym_is(e.keysym, "Escape") && cancel_drag(ctx)) {
     return 1;
   }
   if (ctx->focus) {
@@ -3435,6 +3468,11 @@ int BK_release(BKContext *ctx, int x, int y, int mods)
 int BK_motion(BKContext *ctx, int x, int y, int mods)
 {
   INPUT_ENTRY(in_BK_motion(ctx, x, y, mods));
+}
+
+int BK_cancel(BKContext *ctx, int mods)
+{
+  INPUT_ENTRY(in_BK_cancel(ctx, mods));
 }
 
 int BK_wheel(BKContext *ctx, int x, int y, int delta, int mods)
