@@ -342,7 +342,7 @@ fetchcontent_declare(
     /// from `CMAKE_BUILD_TYPE`, Visual Studio and Xcode from `--config`.
     #[test]
     fn every_preset_names_its_build_type() {
-        let file = render(&["c"], &Vars::new("demo", "v1.0.0")).into_iter().find(|f| f.path == "CMakePresets.json").unwrap();
+        let file = render(&["c"], &Vars::with_tag("demo", "v1.0.0")).into_iter().find(|f| f.path == "CMakePresets.json").unwrap();
         let doc: serde_json::Value = serde_json::from_str(&file.body).unwrap();
         let configure = doc["configurePresets"].as_array().unwrap();
         let builds = doc["buildPresets"].as_array().unwrap();

@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn every_stack_renders_files_with_no_placeholder_left() {
-        let vars = Vars::new("my-app", "v1.2.3");
+        let vars = Vars::with_tag("my-app", "v1.2.3");
         for stack in every_stack() {
             let files = stack.app().files(&vars);
             assert!(!files.is_empty(), "{}", stack.app().label());
