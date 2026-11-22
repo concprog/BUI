@@ -1,17 +1,10 @@
 //! Render targets: effects that draw into textures, with feedback. Needs a GPU device (Direct3D 11 or
 //! OpenGL 3.3); without one each test says so and passes.
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+mod common;
 
 use blenderui::{GpuTarget, RenderTarget, ShaderEffect, TargetFormat};
-
-/// The native effect registry is not synchronized and the harness runs tests in parallel: every
-/// test takes this first (declared before any GPU object, so it is released after they drop).
-static GPU: Mutex<()> = Mutex::new(());
-
-fn gpu_lock() -> MutexGuard<'static, ()> {
-    GPU.lock().unwrap_or_else(PoisonError::into_inner) // a failed test must not fail the rest
-}
+use common::gpu_lock;
 
 /// state.r += U[0], read back exactly (`input_load`), written to the other target of a pair
 const STEP: &str = "vec4 effect(vec2 p) {

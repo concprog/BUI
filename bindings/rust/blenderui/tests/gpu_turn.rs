@@ -3,13 +3,17 @@
 //! Needs a GPU (Direct3D 11 / OpenGL 3.3); without one the test has nothing
 //! to check and passes.
 
+mod common;
+
 use blenderui::effects::{transform, turn_box, turn_texture, Argb, Pixels, TURN_SHADER};
 use blenderui::{GpuTarget, Image, ShaderEffect};
+use common::gpu_lock;
 
 /// A quarter turn of a 64 x 32 image (left half red, right half blue) about
 /// its centre, on the GPU and on the CPU: the same colours at the same places.
 #[test]
 fn a_gpu_turn_matches_the_cpu_one() {
+    let _lock = gpu_lock();
     let (w, h) = (64usize, 32usize);
     let rgba: Vec<u8> = (0..w * h)
         .flat_map(|i| if i % w < w / 2 { [255, 0, 0, 255] } else { [0, 0, 255, 255] })
@@ -59,6 +63,7 @@ fn a_gpu_turn_matches_the_cpu_one() {
 /// straight, the edge went dark: half red at half alpha drew a quarter red).
 #[test]
 fn a_gpu_turn_mixes_an_alpha_edge_like_the_cpu() {
+    let _lock = gpu_lock();
     let (w, h) = (32usize, 32usize);
     let argb = Argb { w, h, px: (0..w * h).map(|i| if i % w < w / 2 { 0xffff_0000 } else { 0 }).collect() };
     let origin = (0.0, 0.0);
