@@ -767,11 +767,13 @@ BKNode *BK_area_split(BKNode *area, BKScreenAxis axis, float factor)
   if (!newa) {
     return NULL;
   }
+  /* its BK_AREA_NEW handler may close it (and free it): found by its id, which is never reused,
+   * where an address may come back with another area */
+  const unsigned id = AREA(newa)->id;
   api_done(screen_node);
-  /* its BK_AREA_NEW handler may have closed it (and freed it): compared, never read */
   for (int i = 0; i < screen_node->nkids; i++) {
-    if (screen_node->kids[i] == newa) {
-      return newa;
+    if (AREA(screen_node->kids[i])->id == id) {
+      return screen_node->kids[i];
     }
   }
   return NULL;
