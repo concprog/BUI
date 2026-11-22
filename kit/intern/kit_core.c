@@ -2807,20 +2807,28 @@ static bool cancel_drag(BKContext *ctx)
   return true;
 }
 
-static int in_BK_cancel(BKContext *ctx, int mods)
+/* Blender's button_activate_exit with data->cancel: the press ends and nothing is applied (a modal
+ * ends, a drag puts its value back, the release clicks nothing, no menu item is picked). The host
+ * lost the pointer (BK_cancel), or the window manager took it for a move from the press (the window
+ * hosts). The click history ends too: the next press is a fresh click, not a double. */
+void bk_cancel_press(BKContext *ctx, int mods)
 {
   ctx->next_button = 0;
-  /* a lost pointer ends the click history: the next press is a fresh click, not a double */
   ctx->last_click_node = NULL;
   if (ctx->modal) {
     bk_end_modal(ctx);
-    return 1;
   }
-  if (!ctx->grab) {
-    return 0;
+  else if (ctx->grab) {
+    cancel_drag(ctx);
+    end_press(ctx, ctx->pointer_x, ctx->pointer_y, mods, true);
   }
-  cancel_drag(ctx);
-  return end_press(ctx, ctx->pointer_x, ctx->pointer_y, mods, true);
+}
+
+static int in_BK_cancel(BKContext *ctx, int mods)
+{
+  const bool pressed = ctx->modal || ctx->grab;
+  bk_cancel_press(ctx, mods);
+  return pressed;
 }
 
 static void raw_event(BKNode *n, int kind, int mods, const BKEvent *e, int button);

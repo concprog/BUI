@@ -498,6 +498,10 @@ void bk_draw_tree(BKNode *n);
 BKNode *bk_hit(BKNode *n, int x, int y);
 /* Window hosts: the window got or lost the keyboard focus. Calls cb->on_focus. */
 void bk_window_focus(BKContext *ctx, BKWindow *win, const BKWindowCallbacks *cb, int active);
+/* The press ends with nothing applied (BK_cancel; the window hosts, when the window manager takes
+ * the pointer from a press for a move, so its release won't come): no click or BK_EV_RELEASE, a
+ * drag's value back, a modal ended. */
+void bk_cancel_press(BKContext *ctx, int mods);
 bool bk_contains(const BKNode *n, int x, int y);
 BKRect bk_node_rect(const BKNode *n);
 bool bk_hovered(const BKNode *n);
