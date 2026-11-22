@@ -292,9 +292,18 @@ impl Flavour for JsApp {
 
     fn checks(&self, dir: &Path) -> Vec<Check> {
         let manifest = read(dir, "package.json").and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok());
-        if !manifest.is_some_and(|m| depends_on(&m, "@blender-ui/native")) {
-            let add = Fix::run("adds BUI and the tooling at their newest", self.adds(dir).into());
-            return vec![Check::fail("@blender-ui/native", "not a dependency in package.json", Some(add))];
+        // BUI and the tooling apart: a tooling add that failed after BUI's is offered again
+        let (prod, dev) = self.packages();
+        let missing = |pkgs: Vec<&'static str>| pkgs.into_iter().find(|p| !manifest.as_ref().is_some_and(|m| depends_on(m, p)));
+        let [bui, tooling] = self.adds(dir);
+        let add = match (missing(prod), missing(dev)) {
+            (None, None) => None,
+            (Some(p), None) => Some((p, "adds BUI at its newest", vec![bui])),
+            (None, Some(p)) => Some((p, "adds the tooling at its newest", vec![tooling])),
+            (Some(p), Some(_)) => Some((p, "adds BUI and the tooling at their newest", vec![bui, tooling])),
+        };
+        if let Some((package, what, cmds)) = add {
+            return vec![Check::fail(package, "not a dependency in package.json", Some(Fix::run(what, cmds)))];
         }
         let install = Fix::run("installs the packages", vec![Cmd::new(self.pm.bin(), ["install"]).in_dir(dir)]);
         if !dir.join("node_modules").is_dir() {
@@ -382,6 +391,19 @@ mod tests {
         let fix = checks[0].fix().expect("a fix");
         let cmds: Vec<String> = fix.work.iter().map(Work::display).collect();
         assert_eq!(cmds, app().adds(&dir).map(|c| c.display()), "the packages are added, not only installed");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_tooling_add_that_failed_after_buis_is_offered_again() {
+        let dir = scratch("tooling");
+        let (prod, dev) = app().packages();
+        let deps: serde_json::Map<String, serde_json::Value> = prod.iter().map(|p| ((*p).to_owned(), "1".into())).collect();
+        std::fs::write(dir.join("package.json"), serde_json::json!({ "dependencies": deps }).to_string()).unwrap();
+        let checks = app().checks(&dir);
+        assert_eq!(checks[0].name, dev[0], "{:?}", checks[0].name);
+        let cmds: Vec<String> = checks[0].fix().expect("a fix").work.iter().map(Work::display).collect();
+        assert_eq!(cmds, [app().adds(&dir)[1].display()], "only the tooling is added");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
