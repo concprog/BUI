@@ -752,6 +752,7 @@ int main(void)
     g_layout_on_new = three;
     CHECK(BK_set_str(s, "layout", three));
     CHECK(g_layout_on_new == NULL && BK_node_child_count(s) == 3 && g_new == owed + 2);
+    g_layout_on_new = NULL; /* a failed CHECK leaves it set: never past the free */
     free(three);
     free(two);
     free_screen(s);
