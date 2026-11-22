@@ -303,7 +303,8 @@ static VALUE node_strs(VALUE self, VALUE key)
 /** \name Layout managers (children of a "frame": Tk's pack, grid, place)
  * \{ */
 
-/* geometry(manager, key, value): manager 1 pack, 2 grid, 3 place; lib/ names them. */
+/* geometry(manager, key, value): manager 1 pack, 2 grid, 3 place; lib/ names them. A nil
+ * key only selects the manager (pack with no options). */
 static VALUE node_geometry(VALUE self, VALUE manager, VALUE key, VALUE value)
 {
   BKNode *n = bui_node_ptr(self);
@@ -313,6 +314,9 @@ static VALUE node_geometry(VALUE self, VALUE manager, VALUE key, VALUE value)
   }
   if (BK_geom_manager(n) != m) {
     BK_geom_set_manager(n, m);
+  }
+  if (NIL_P(key)) {
+    return self;
   }
   const double v = bui_num(value);
   BK_geom_set(n, bui_cstr(key), v);
