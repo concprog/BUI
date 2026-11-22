@@ -635,31 +635,8 @@ final class Node {
         if (holder is null) {
             holder = wrapperAt(area); // a borrowed wrapper keeps its handlers while unowned
         }
-        if (holder is null || holder.store_.empty) {
-            return;
-        }
-        BKNode*[] gone;
-        Node[] survivors;
-        collectClosing(area, gone, survivors);
-        foreach (survivor; survivors) {
-            survivor.store_.drop();
-            holder.store_.takeSubtree(survivor.handle, &survivor.store_);
-        }
-        foreach (node; gone) {
-            holder.store_.take(node);
-        }
-    }
-
-    private static void collectClosing(BKNode* h, ref BKNode*[] gone, ref Node[] survivors) {
-        gone ~= h;
-        for (int i = 0, n = BK_node_child_count(h); i < n; ++i) {
-            auto child = BK_node_child(h, i);
-            if (BK_node_ref(child) is null) {
-                collectClosing(child, gone, survivors); // freed with the area
-            }
-            else if (auto wrapper = wrapperAt(child)) {
-                survivors ~= wrapper;
-            }
+        if (holder !is null && !holder.store_.empty) {
+            partitionHandlers(area, &holder.store_);
         }
     }
 
