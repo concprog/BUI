@@ -668,6 +668,8 @@ int main(void)
     BKNode *s2 = test_screen(&a2);
     CHECK(BK_set_str(s2, "layout", saved));
     CHECK(BK_node_child_count(s2) == 2);
+    /* the settings of a region the host hasn't made yet are saved too */
+    CHECK(strstr(BK_get_str(s2, "layout"), "\"size\": 250") != NULL);
     BKNode *b2 = BK_node_child(s2, 1);
     BKNode *side_b = BK_node_new("sidebar");
     CHECK(BK_node_add(a2, side_b, -1)); /* the host answers late (the first area) */

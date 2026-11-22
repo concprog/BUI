@@ -88,6 +88,28 @@ static const char *side_name(int alignment)
   }
 }
 
+static const BKRegionRecord *region_record_find(const BKArea *area, int type)
+{
+  const BKRegionRecord *rec = area->pending_regions;
+  while (rec && rec->type != type) {
+    rec = rec->next;
+  }
+  return rec;
+}
+
+/* One entry of an area's "regions"; a record without a side keeps the region's own. */
+static void region_write(Buf *b, int nth, const BKRegionRecord *rec)
+{
+  const char *open = nth ? ", {\"region\": " : "{\"region\": ";
+  buf_add(b, open, strlen(open));
+  buf_str(b, region_type_info(rec->type)->name);
+  if (rec->side[0]) {
+    buf_add(b, ", \"side\": ", 10);
+    buf_str(b, rec->side);
+  }
+  buf_printf(b, ", \"size\": %d, \"hidden\": %d}", rec->size, rec->hidden != 0);
+}
+
 const char *screen_layout_get(BKNode *screen_node)
 {
   BKScreen *screen = SCREEN(screen_node);
@@ -121,17 +143,26 @@ const char *screen_layout_get(BKNode *screen_node)
       if (!r) {
         continue;
       }
-      const char *open = nr++ ? ", {\"region\": " : "{\"region\": ";
-      buf_add(&b, open, strlen(open));
-      buf_str(&b, region_type_info(r->type)->name);
-      buf_add(&b, ", \"side\": ", 10);
-      buf_str(&b, side_name(r->alignment));
-      const int size = (r->alignment == RGN_ALIGN_TOP || r->alignment == RGN_ALIGN_BOTTOM) ?
-                           r->sizey :
-                           r->sizex;
+      const BKRegionRecord *rec = region_record_find(area, r->type);
+      if (rec) { /* restored but not applied yet (the next layout does): the record is its state */
+        region_write(&b, nr++, rec);
+        continue;
+      }
       /* Focus mode hides panels temporarily: save the state to come back to. */
       const short flag = area->full == SCREENFULL ? r->flagfullscreen : r->flag;
-      buf_printf(&b, ", \"size\": %d, \"hidden\": %d}", size, (flag & RGN_FLAG_HIDDEN) != 0);
+      BKRegionRecord cur = {
+          .type = r->type,
+          .size = (r->alignment == RGN_ALIGN_TOP || r->alignment == RGN_ALIGN_BOTTOM) ? r->sizey :
+                                                                                       r->sizex,
+          .hidden = (flag & RGN_FLAG_HIDDEN) != 0};
+      snprintf(cur.side, sizeof(cur.side), "%s", side_name(r->alignment));
+      region_write(&b, nr++, &cur);
+    }
+    /* Records for regions the host hasn't made yet: a host saving on BK_EV_CHANGE keeps them. */
+    for (const BKRegionRecord *rec = area->pending_regions; rec; rec = rec->next) {
+      if (!area_region_find(area->node, rec->type)) {
+        region_write(&b, nr++, rec);
+      }
     }
     buf_add(&b, "]}", 2);
   }
