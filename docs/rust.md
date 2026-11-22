@@ -572,7 +572,7 @@ Application::headless().run(|cx| {
 });
 ```
 
-Also `simulate_mouse_move`, `simulate_scroll`, `simulate_key(text, keysym)`, `simulate_key_with` (Ctrl, Shift), `simulate_click_with`, and `simulate_press`, `simulate_release` and `simulate_drag(from, to)` for a held button.
+Also `simulate_mouse_move`, `simulate_scroll`, `simulate_key(text, keysym)`, `simulate_key_with` (Ctrl, Shift), `simulate_click_with`, and `simulate_press`, `simulate_release`, `simulate_cancel` (the host lost the pointer: no release, no click, a drag goes back) and `simulate_drag(from, to)` for a held button.
 The kit has global state, so one `Application` runs at a time per process
 (`run` takes a lock; parallel tests queue up).
 

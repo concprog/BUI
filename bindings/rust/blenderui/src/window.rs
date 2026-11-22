@@ -293,12 +293,8 @@ impl Application {
         Application { headless: true, gpu: None, slug: None, keep_alive: false, theme: None }
     }
 
-    /// Run `f`, then the event loop until every window is closed.
-    pub fn run(self, f: impl FnOnce(&mut App)) {
-        // the C kit keeps global state: one application at a time per process
-        static KIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = KIT.lock().unwrap_or_else(|e| e.into_inner());
-        let headless = self.headless || unsafe { sys::BK_window_supported() } == 0;
+    /// The kit's global settings for this application (renderer, text, theme, off-screen scale).
+    fn configure(&self, headless: bool) {
         if let Some(on) = self.gpu {
             unsafe { sys::BUI_gpu_set_default(on as c_int) };
         }
@@ -315,7 +311,29 @@ impl Application {
                 unsafe { sys::BK_set_scale(s) };
             }
         }
-        let mut app = App::create(headless);
+    }
+
+    /// Run `f` and hand back the application, off-screen and with a real clock, for a host that has no
+    /// event loop for BUI to run (a web page, which calls back on every animation frame): it feeds the
+    /// events (`simulate_*`) and takes the frames ([`App::frame_if_needed`]). The kit keeps global
+    /// state: one application per process, and the host must not start a second.
+    pub fn start(self, f: impl FnOnce(&mut App)) -> App {
+        self.configure(true);
+        // a page's animations follow its clock, not the virtual one tests step by hand
+        let mut app = App::create(true, true);
+        f(&mut app);
+        app.flush();
+        app
+    }
+
+    /// Run `f`, then the event loop until every window is closed.
+    pub fn run(self, f: impl FnOnce(&mut App)) {
+        // the C kit keeps global state: one application at a time per process
+        static KIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = KIT.lock().unwrap_or_else(|e| e.into_inner());
+        let headless = self.headless || unsafe { sys::BK_window_supported() } == 0;
+        self.configure(headless);
+        let mut app = App::create(headless, !headless);
         f(&mut app);
         app.flush();
         if headless {
@@ -372,6 +390,7 @@ pub struct App {
     windows: Vec<Option<Box<Window>>>,
     entities: Vec<Slot>,
     headless: bool,
+    real_clock: bool,
     globals: HashMap<TypeId, Box<dyn Any>>,
     propagate: bool,
     /// Work sent from other threads ([`UiSender`]).
@@ -414,10 +433,18 @@ unsafe extern "C" fn on_wake() {
     }
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 impl App {
-    fn create(headless: bool) -> App {
-        crate::motion::start_clock(!headless);
-        App { windows: Vec::new(), entities: Vec::new(), headless, globals: HashMap::new(), propagate: true,
+    /// `real_clock`: animations follow the wall clock (native windows, [`Application::start`]); else they
+    /// follow the virtual one tests step with [`App::advance_clock`].
+    fn create(headless: bool, real_clock: bool) -> App {
+        crate::motion::start_clock(real_clock);
+        App { windows: Vec::new(), entities: Vec::new(), headless, real_clock, globals: HashMap::new(), propagate: true,
               remote: None, close_hooks: Vec::new(),
               activation_hooks: Vec::new(), notified: 0 }
     }
@@ -454,7 +481,7 @@ impl App {
         let title = options.titlebar.as_ref().and_then(|t| t.title.clone())
             .map(|t| t.to_string()).unwrap_or_else(|| "BUI".into());
         let id = self.windows.len();
-        let mut w = Window::create(id, &title, bounds.size.width.0, bounds.size.height.0, self.headless)?;
+        let mut w = Window::create(id, &title, bounds.size.width.0, bounds.size.height.0, self.headless, self.real_clock)?;
         if let Some(n) = &w.native {
             unsafe {
                 if let Some(WindowBounds::Maximized(_)) = options.window_bounds {
@@ -519,6 +546,54 @@ impl App {
     pub fn run_pending(&mut self) {
         self.drain();
         self.flush();
+    }
+
+    /// The windows that are open.
+    pub fn window_ids(&self) -> Vec<WindowId> {
+        self.windows.iter().enumerate().filter(|(_, w)| w.as_deref().is_some_and(|w| !w.closed)).map(|(i, _)| WindowId(i)).collect()
+    }
+
+    /// The window's next frame, when something changed in it or it is animating (else `None`: nothing to
+    /// show): the work a host does on each animation frame ([`Application::start`]).
+    pub fn frame_if_needed(&mut self, id: WindowId) -> Option<(usize, usize, Vec<u32>)> {
+        self.run_pending();
+        let ctx = self.windows.get(id.0).and_then(|w| w.as_deref()).map(|w| w.ctx)?;
+        // SAFETY: the window's own context, alive while the window is
+        let due = unsafe { sys::BK_needs_render(ctx) != 0 || sys::BK_animating(ctx) != 0 };
+        due.then(|| self.draw(id))
+    }
+
+    /// Resize an off-screen window to `width` x `height` device pixels at `scale` device pixels per
+    /// logical pixel (a host whose canvas changed size or pixel ratio).
+    pub fn resize_window(&mut self, id: WindowId, width: usize, height: usize, scale: f32) {
+        let Some(w) = self.windows.get_mut(id.0).and_then(|w| w.as_deref_mut()) else {
+            return;
+        };
+        let phys = (width as i32, height as i32);
+        // any positive finite ratio (page zoom out gives 0.75): the window's scale is what the host says
+        if !scale.is_finite() || scale <= 0.0 {
+            return;
+        }
+        if (phys == w.phys && scale == w.scale) || phys.0 <= 0 || phys.1 <= 0 {
+            return;
+        }
+        w.phys = phys;
+        w.dirty = true;
+        if scale != w.scale {
+            // the kit's resolution scale and the text measured at it follow, as when the window is made
+            w.scale = scale;
+            w.caches.text.set_scale(scale);
+            // SAFETY: a plain setter; the kit has one scale and a page one window
+            unsafe { sys::BK_set_scale(scale) };
+        }
+        // SAFETY: the raster was made for the old size and belongs to this window; `draw` makes a new one
+        unsafe {
+            if !w.raster.is_null() {
+                sys::BUI_raster_free(w.raster);
+                w.raster = std::ptr::null_mut();
+            }
+            sys::BK_node_relayout(w.root);
+        }
     }
 
     /// Call `f` whenever the user closes a window.
@@ -633,7 +708,9 @@ impl App {
         }
     }
 
-    fn shutdown(&mut self) {
+    /// Free every window's native and raster resources. Safe to call again (and done on drop): a host
+    /// that took the app from [`Application::start`] calls it when the page is done with it.
+    pub fn shutdown(&mut self) {
         for w in self.windows.iter_mut().flatten() {
             w.destroy();
         }
@@ -664,14 +741,18 @@ impl App {
             let _s = span(Phase::Widgets);
             sys::BK_render(w.ctx, target, pw, ph, 1);
             // decodes this frame asked for: wait, then draw what arrived
-            let mut st = sys::BKImageStats::default();
-            sys::BK_image_stats(&raw mut st);
-            for _ in 0..10_000 {
-                if st.pending == 0 {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_micros(200));
+            // (WebAssembly has no worker threads and no sleeping: there is nothing to wait for)
+            #[cfg(not(target_os = "wasi"))]
+            {
+                let mut st = sys::BKImageStats::default();
                 sys::BK_image_stats(&raw mut st);
+                for _ in 0..10_000 {
+                    if st.pending == 0 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                    sys::BK_image_stats(&raw mut st);
+                }
             }
             if sys::BK_image_poll() > 0 {
                 sys::BK_render(w.ctx, target, pw, ph, 0);
@@ -812,6 +893,15 @@ impl App {
     pub fn simulate_release(&mut self, window: WindowId, x: f32, y: f32) {
         self.input(window, |ctx, s| unsafe {
             sys::BK_release(ctx, (x * s) as c_int, (y * s) as c_int, sys::BK_BUTTON1);
+        });
+    }
+
+    /// The host lost the pointer mid-press (a cancelled touch, a lost pointer capture): a drag goes back
+    /// as Escape puts it back, and the press ends with no motion, no mouse-up and no click.
+    pub fn simulate_cancel(&mut self, window: WindowId) {
+        self.with_window(window.0, |w, _| w.cancel_press());
+        self.input(window, |ctx, _| unsafe {
+            sys::BK_cancel(ctx, 0);
         });
     }
 
@@ -1040,7 +1130,7 @@ pub struct Window {
 }
 
 impl Window {
-    fn create(id: usize, title: &str, w: f32, h: f32, headless: bool) -> Result<Window, String> {
+    fn create(id: usize, title: &str, w: f32, h: f32, headless: bool, real_clock: bool) -> Result<Window, String> {
         // SAFETY: building a fresh kit tree; pointers stay owned by this window.
         unsafe {
             let root = sys::BK_node_new(c"frame".as_ptr());
@@ -1091,7 +1181,7 @@ impl Window {
                 frame_pending: false,
                 animation_frame: false,
                 motion_frame: false,
-                clock: crate::anim::Clock::new(!headless),
+                clock: crate::anim::Clock::new(real_clock),
                 vsync: true,
                 closed: false,
                 title: title.to_owned(),
@@ -1108,7 +1198,7 @@ impl Window {
                 selection_hooks: Vec::new(),
             };
             if headless {
-                win.scale = sys::BK_scale().max(1.0);
+                win.scale = sys::BK_scale().max(0.25);
                 win.phys = ((w * win.scale).round() as i32, (h * win.scale).round() as i32);
             } else {
                 let t = CString::new(title).unwrap_or_default();
@@ -1734,6 +1824,24 @@ impl Window {
         (Modifiers::from_kit(mods), button)
     }
 
+    /// Ends the press of `button` (released or cancelled): the pressed elements stop being `:active` and
+    /// a text selection drag stops. True when the press selected text (which is not a click).
+    fn end_press(&mut self, button: MouseButton) -> bool {
+        self.pressed.clear();
+        self.state.active.clear();
+        self.dirty |= !std::mem::take(&mut self.press_quiet);
+        self.caches.anim.pointer_up();
+        button == MouseButton::Left && self.selector.release()
+    }
+
+    /// The host lost the pointer mid-press: a scrollbar drag stays where it is, the press ends, and
+    /// nothing gets a mouse-up or a click (the kit sends no `BK_EV_RELEASE` for it).
+    fn cancel_press(&mut self) {
+        if self.sb_drag.take().is_none() {
+            self.end_press(self.press_button);
+        }
+    }
+
     /// Focus the element `key` (path: its ancestors, for `:focus-within`).
     fn set_focus(&mut self, path: &[Key]) {
         self.state.focused = path.last().copied();
@@ -1827,12 +1935,8 @@ impl Window {
                 // click: the deepest element under both press and release
                 let common = self.pressed.iter().zip(&path).take_while(|(a, b)| a == b)
                     .map(|(a, _)| *a).last();
-                self.pressed.clear();
-                self.state.active.clear();
-                self.dirty |= !std::mem::take(&mut self.press_quiet);
-                self.caches.anim.pointer_up();
                 // a press that selected text is a selection, not a click (as in a browser)
-                let dragged = button == MouseButton::Left && self.selector.release();
+                let dragged = self.end_press(button);
                 if let (Some(target), MouseButton::Left, false) = (common, button, dragged) {
                     self.toggle_details(target);
                     let down = MouseDownEvent { button, position: point(px(x), px(y)), modifiers, click_count: 1 };

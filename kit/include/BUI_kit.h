@@ -699,6 +699,10 @@ int BK_needs_render(BKContext *ctx);
 int BK_press(BKContext *ctx, int x, int y, int mods);
 int BK_release(BKContext *ctx, int x, int y, int mods);
 int BK_motion(BKContext *ctx, int x, int y, int mods);
+/* The host lost the pointer mid-press (a cancelled touch, a lost pointer capture, a dialog): Blender's
+ * EVT_BUT_CANCEL. A drag is cancelled as Escape cancels it (the value goes back), a modal ends, and the
+ * press ends where the pointer last was, with no click and no BK_EV_RELEASE. */
+int BK_cancel(BKContext *ctx, int mods);
 int BK_wheel(BKContext *ctx, int x, int y, int delta, int mods);
 /* Precise scrolling (touchpads, tilt wheels): dx, dy in wheel notches,
  * dx > 0 right, dy > 0 up. Custom nodes receive the deltas as they are;
