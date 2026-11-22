@@ -27,7 +27,7 @@ module BUI
         use_gpu if gpu
         wm("minsize", *min_size) if min_size
         Builder.new(@context.root).build(&build) if build
-        show if show
+        self.show if show # the keyword hides the method
       rescue Exception # rubocop:disable Lint/RescueException
         free_made
         raise
