@@ -645,6 +645,8 @@ fn box_pass(src: &[[f32; 4]], dst: &mut [[f32; 4]], w: usize, h: usize, r: usize
 pub(crate) const DOWNSAMPLE_FROM: f32 = 6.0;
 /// The sigma the smaller copy is blurred at; the factor follows from it.
 pub(crate) const SMALL_SIGMA: f32 = 3.0;
+/// The largest raster a layer or a transform makes, in device pixels a side.
+pub(crate) const MAX_RASTER: usize = 8192;
 
 /// How many times smaller a blur of `sigma` runs on a `w` x `h` image (for
 /// [`blur`] and [`blur_argb`] alike); `None`: at full size.
@@ -942,7 +944,7 @@ pub fn transform(src: &Pixels, origin: (f32, f32), m: &Affine) -> Option<(Pixels
     let maxx = pts.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max).ceil();
     let maxy = pts.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max).ceil();
     let (w, h) = ((maxx - minx) as usize, (maxy - miny) as usize);
-    if w == 0 || h == 0 || w > 8192 || h > 8192 {
+    if w == 0 || h == 0 || w > MAX_RASTER || h > MAX_RASTER {
         return None;
     }
     let mut out = Pixels::new(w, h);

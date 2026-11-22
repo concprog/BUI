@@ -847,7 +847,7 @@ impl Painter {
     /// image format, kept end to end by a layer that only blurs.
     pub(crate) fn rasterize_argb(&self, scale: f32, x0: f32, y0: f32, w: usize, h: usize)
                                  -> Option<crate::effects::Argb> {
-        if w == 0 || h == 0 || w > 8192 || h > 8192 {
+        if w == 0 || h == 0 || w > crate::effects::MAX_RASTER || h > crate::effects::MAX_RASTER {
             return None;
         }
         let mut coords: Vec<Vec<f32>> = Vec::with_capacity(self.items.len());
@@ -1498,8 +1498,9 @@ fn paint_layer_inner(cx: &mut LayerCx, root: usize, list: &[usize], p: &mut Pain
     // of the device grid): a raster found by its key is the size asked for, and a layer
     // gliding or scrolling a fraction of a pixel a frame reuses it
     // (of its size as the key has it: a moving layer's size wavers in the last bits)
-    let span = |v: f32| (quantize(v) as f32 / 64.0 * scale).ceil() as usize;
-    let (iw, ih) = (span(inner.size.width) + 1, span(inner.size.height) + 1);
+    // (no more than a raster holds: a span of the whole limit is not dropped for its pixel over)
+    let span = |v: f32| ((quantize(v) as f32 / 64.0 * scale).ceil() as usize + 1).min(crate::effects::MAX_RASTER);
+    let (iw, ih) = (span(inner.size.width), span(inner.size.height));
     if w == 0 || h == 0 || iw == 1 || ih == 1 {
         return;
     }

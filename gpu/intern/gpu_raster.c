@@ -3814,6 +3814,14 @@ int BUI_text_add_font(const char *family, int flags, const void *data, int len)
   return 1;
 }
 
+/* The generic families (CSS's, Tk's named fonts), '|'-separated with one around: they name
+ * no installed font, so their substitutes draw them. The default face's are its own. */
+#define FAMILY_KEYWORDS_SANS \
+  "|sans|sans-serif|ui-sans-serif|inter|system-ui|tkdefaultfont|tktextfont|tkheadingfont|" \
+  "tkcaptionfont|tkmenufont|tksmallcaptionfont|tkiconfont|tktooltipfont|"
+#define FAMILY_KEYWORDS_MONO "|mono|monospace|ui-monospace|tkfixedfont|"
+#define FAMILY_KEYWORDS_SERIF "|serif|ui-serif|"
+
 /* File names per generic family and style (regular, bold, italic, both). */
 typedef struct FamilyFiles {
   const char *names; /* '|'-separated aliases */
@@ -3821,8 +3829,7 @@ typedef struct FamilyFiles {
 } FamilyFiles;
 
 static const FamilyFiles g_families[] = {
-    {"|sans|sans-serif|ui-sans-serif|inter|segoe ui|system-ui|helvetica|arial|dejavu sans|liberation sans|noto "
-     "sans|tkdefaultfont|tktextfont|tkheadingfont|tkcaptionfont|tkmenufont|",
+    {FAMILY_KEYWORDS_SANS "segoe ui|helvetica|arial|dejavu sans|liberation sans|noto sans|",
      {"segoeui.ttf|DejaVuSans.ttf|LiberationSans-Regular.ttf|NotoSans-Regular.ttf|Arial.ttf|"
       "arial.ttf|Helvetica.ttc|SFNS.ttf",
       "segoeuib.ttf|DejaVuSans-Bold.ttf|LiberationSans-Bold.ttf|NotoSans-Bold.ttf|Arial "
@@ -3831,15 +3838,14 @@ static const FamilyFiles g_families[] = {
       "Italic.ttf|ariali.ttf",
       "segoeuiz.ttf|DejaVuSans-BoldOblique.ttf|LiberationSans-BoldItalic.ttf|NotoSans-"
       "BoldItalic.ttf|Arial Bold Italic.ttf|arialbi.ttf"}},
-    {"|mono|monospace|ui-monospace|courier|courier new|consolas|menlo|dejavu sans mono|liberation "
-     "mono|tkfixedfont|",
+    {FAMILY_KEYWORDS_MONO "courier|courier new|consolas|menlo|dejavu sans mono|liberation mono|",
      {"consola.ttf|DejaVuSansMono.ttf|LiberationMono-Regular.ttf|NotoSansMono-Regular.ttf|"
       "Menlo.ttc|cour.ttf",
       "consolab.ttf|DejaVuSansMono-Bold.ttf|LiberationMono-Bold.ttf|NotoSansMono-Bold.ttf|"
       "courbd.ttf",
       "consolai.ttf|DejaVuSansMono-Oblique.ttf|LiberationMono-Italic.ttf|couri.ttf",
       "consolaz.ttf|DejaVuSansMono-BoldOblique.ttf|LiberationMono-BoldItalic.ttf|courbi.ttf"}},
-    {"|serif|ui-serif|times|times new roman|georgia|dejavu serif|liberation serif|",
+    {FAMILY_KEYWORDS_SERIF "times|times new roman|georgia|dejavu serif|liberation serif|",
      {"times.ttf|DejaVuSerif.ttf|LiberationSerif-Regular.ttf|NotoSerif-Regular.ttf|Times New "
       "Roman.ttf|Times.ttc",
       "timesbd.ttf|DejaVuSerif-Bold.ttf|LiberationSerif-Bold.ttf|NotoSerif-Bold.ttf|Times New "
@@ -3880,19 +3886,14 @@ static int family_index(const char *family)
  * a named system family. */
 static int family_generic(const char *family)
 {
-  return !family[0] ||
-         family_listed("|sans|sans-serif|inter|system-ui|ui-sans-serif|tkdefaultfont|tktextfont|"
-                       "tkheadingfont|tkcaptionfont|tkmenufont|tksmallcaptionfont|tkiconfont|"
-                       "tktooltipfont|",
-                       family);
+  return !family[0] || family_listed(FAMILY_KEYWORDS_SANS, family);
 }
 
 /* A generic family (CSS's, Tk's), named for no installed font: its substitutes draw it.
  * Any other name is a family of its own ("Arial"), looked for first by that name. */
 static int family_keyword(const char *family)
 {
-  return family_generic(family) ||
-         family_listed("|serif|ui-serif|mono|monospace|ui-monospace|tkfixedfont|", family);
+  return family_generic(family) || family_listed(FAMILY_KEYWORDS_MONO FAMILY_KEYWORDS_SERIF, family);
 }
 
 /* The font file `name` (`n` bytes) from the first font folder that has it. */
