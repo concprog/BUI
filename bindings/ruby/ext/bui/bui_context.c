@@ -12,7 +12,7 @@
 VALUE bui_cContext;
 VALUE bui_cRaster;
 
-static ID id_dispatch, id_request;
+static ID id_dispatch, id_request, id_raster;
 
 /* The kit's BK_EV_* as Symbols, in the enum's order. */
 static const char *const k_event_names[] = {
@@ -188,6 +188,8 @@ static VALUE context_render(int argc, VALUE *argv, VALUE self)
     rb_raise(rb_eArgError, "a frame of %d x %d (1 to 16384 each)", w, h);
   }
   const int n = BK_render(ctx, r, w, h, RTEST(bui_opt(opts, "full")));
+  /* the context keeps the raster as its last frame (the eyedropper reads it): so does this */
+  rb_ivar_set(self, id_raster, raster);
   bui_settle();
   return INT2NUM(n);
 }
@@ -602,6 +604,7 @@ void bui_init_context(void)
 {
   id_dispatch = rb_intern("dispatch");
   id_request = rb_intern("request_render");
+  id_raster = rb_intern("@raster");
   VALUE kinds = rb_ary_new_capa(EVENT_KINDS - 1);
   for (int i = 1; i < EVENT_KINDS; i++) {
     g_event_ids[i] = rb_intern(k_event_names[i]);

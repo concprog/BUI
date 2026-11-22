@@ -51,7 +51,8 @@ module BUI
     end
   end
 
-  # A software frame without a window. The GC frees it; free frees it now.
+  # A software frame without a window. The GC frees it; free frees it now (not while a context
+  # still has it as its last frame: render that context into another raster first).
   class Raster
     def size = [width, height]
 
