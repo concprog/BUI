@@ -373,7 +373,9 @@ int screen_layout_set(BKNode *screen_node, const char *text)
   BKScreen *screen = SCREEN(screen_node);
   const int nareas = json_len(areas);
   const int nverts = json_len(verts);
-  /* before anything changes: out of memory leaves the screen as it was */
+  /* The vertex table is allocated before anything changes, so its failing leaves the screen as
+   * it was. Only it: the vertices, edges and areas made below are not checked (as Blender's
+   * screen_geom_vertex_add, which does not check its MEM_callocN either). */
   ScrVert **vs = (ScrVert **)calloc((size_t)nverts, sizeof(ScrVert *));
   if (!vs) {
     bk_json_free(root);
