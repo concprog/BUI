@@ -644,6 +644,9 @@ int main(void)
     CHECK(BK_set_num(side_a, "size", 250));
     BKNode *b = BK_area_split(a, BK_AXIS_V, 0.5f);
     CHECK(b != NULL);
+    BKNode *side_bs = BK_node_new("sidebar"); /* a size of its own on the second area */
+    CHECK(BK_node_add(b, side_bs, -1));
+    CHECK(BK_set_num(side_bs, "size", 180));
     rect_of(a, r);
     const char *l = BK_get_str(s, "layout");
     CHECK(strstr(l, "\"sidebar\"") && strstr(l, "\"size\": 250"));
@@ -662,17 +665,20 @@ int main(void)
     free(hidden);
     free_screen(s);
 
-    /* a second screen restores the saved one: its new area is filled by the host after the
-     * notification, and still gets the saved sidebar size */
+    /* a second screen restores the saved one: the host answers late, both for the area it had
+     * and for the one the restore made, and each still gets its saved sidebar size */
     BKNode *a2;
     BKNode *s2 = test_screen(&a2);
     CHECK(BK_set_str(s2, "layout", saved));
     CHECK(BK_node_child_count(s2) == 2);
     BKNode *b2 = BK_node_child(s2, 1);
     BKNode *side_b = BK_node_new("sidebar");
-    CHECK(BK_node_add(a2, side_b, -1)); /* the host answers late (the first area) */
+    CHECK(BK_node_add(a2, side_b, -1)); /* the first area: it was there before the restore */
+    BKNode *side_b2 = BK_node_new("sidebar");
+    CHECK(BK_node_add(b2, side_b2, -1)); /* the second: the restore made it */
     { int rr[4]; rect_of(b2, rr); }
     CHECK(BK_get_num(side_b, "size") == 250);
+    CHECK(BK_get_num(side_b2, "size") == 180);
     free_screen(s2);
     free(saved);
   }

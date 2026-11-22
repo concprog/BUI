@@ -102,6 +102,28 @@ def test_splitter_sizes_and_dragging():
     assert left.height() == 160 and left.width() == 400 - 2 * pad, "vertical: the size is the height"
 
 
+def test_splitter_moved_after_set_sizes():
+    """Sizes set once the splitter is placed are the baseline: the first drag reports its move."""
+    split = q.QSplitter(q.Qt.Horizontal)
+    left, right = q.QWidget(), q.QWidget()
+    split.addWidget(left)
+    split.addWidget(right)
+    ctx = buipy.KitContext(split)
+    r = buipy.Raster(400, 100)
+    ctx.render(400, 100, r, True)
+    split.setSizes([100, 200])
+    ctx.render(400, 100, r, True)
+    assert left.width() == 100, left.width()
+    moved = spy(split.splitterMoved)
+    edge = left.x() + left.width() + split.handleWidth() // 2
+    ctx.motion(edge, 50, 0)
+    ctx.press(edge, 50, 0)
+    ctx.motion(edge + 30, 50, 0)  # one step
+    ctx.release(edge + 30, 50, 0)
+    ctx.render(400, 100, r, True)
+    assert left.width() == 130 and moved and moved[0] == (130, 1), (left.width(), moved)
+
+
 def test_toolbar_actions():
     bar = q.QToolBar("Tools")
     hits, triggered = [], spy(bar.actionTriggered)

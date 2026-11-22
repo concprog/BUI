@@ -100,6 +100,9 @@ function areaIdentities (doc, previous) {
   return doc.areas.map((a, i) => ({ id: ids[i] ?? ++fresh, editor: a.editor, rect: rects[i] }))
 }
 
+/** How the kit's layout text begins (screen_layout.c writes it so). */
+const LAYOUT_TAG = '{"bui_screen"'
+
 /**
  * What a `change` event of a screen's elements means: `{ layout, areas }` (the layout changed;
  * `areas` are `{ id, editor, rect }` of the areas in the kit's order, `id` staying with an area as
@@ -109,7 +112,9 @@ function areaIdentities (doc, previous) {
 function screenChange (value, previous = []) {
   if (typeof value !== 'string') return null
   if (value.startsWith('window\t')) return { window: value.slice(7) }
-  if (value[0] !== '{') return null
+  // the kit's layout text opens with its tag; anything else is content's (a text field without a
+  // `change` listener of its own sends its text to the nearest listening ancestor: the screen)
+  if (!value.startsWith(LAYOUT_TAG)) return null
   const doc = JSON.parse(value)
   return { layout: value, areas: areaIdentities(doc, previous) }
 }
@@ -117,6 +122,13 @@ function screenChange (value, previous = []) {
 /** `screenChange` of an event, when `screen` itself sent it (a nested screen's events bubble). */
 function ownScreenChange (e, screen, previous) {
   return e.target === screen ? screenChange(screen.value, previous) : null
+}
+
+/** `{ size, hidden }` of a region's `change` event, when the listening region itself sent it (a
+ *  nested region's events bubble through it); null otherwise. */
+function regionResize (e) {
+  const region = e.currentTarget
+  return e.target === region ? { size: region.valueAsNumber, hidden: region.checked } : null
 }
 
 /** The render function of an editor, by name (the first editor for an unknown name). */
@@ -142,7 +154,8 @@ function editorElement (document, { main, ...regions }) {
     for (const [k, v] of Object.entries(regionAttrs(r))) el.setAttribute(k, v)
     if (typeof r.onResize === 'function') {
       el.addEventListener('change', (e) => {
-        if (e.target === el) r.onResize({ size: el.valueAsNumber, hidden: el.checked })
+        const c = regionResize(e)
+        if (c !== null) r.onResize(c)
       })
     }
     el.appendChild(r.element)
@@ -203,5 +216,5 @@ function createScreen (document, { editors, layout, saved, onChange, onWindow, o
   return screen
 }
 
-module.exports = { AreaSplit, REGIONS, SLOT, REGION_PROPS, REGION_FLAGS, layoutText, regionAttrs, screenChange, ownScreenChange, editorFor,
+module.exports = { AreaSplit, REGIONS, SLOT, REGION_PROPS, REGION_FLAGS, layoutText, regionAttrs, screenChange, ownScreenChange, regionResize, editorFor,
   editorElement, createScreen }

@@ -417,9 +417,12 @@ class Panes:
                                                 "areas": areas}))
         finally:
             self._applying = False
-        if self._placed():
+        placed = self._placed()
+        if placed:
             self._want = None
-        self._seen = []
+        # the baseline the next change is compared with: these sizes once placed (a set_sizes
+        # outside an event; the next drag moves an edge), else the first change sets it
+        self._seen = self._sizes_now() if placed else []
 
     # -- events from the screen node (forwarded by the owner's _on_event) ------------------------
     def on_configure(self) -> None:
@@ -488,10 +491,19 @@ class Screen(Component):
         first = self._new_area(layout if isinstance(layout, str) else "")
         buipy.KitNode.add(self, first)
         self._building = True
-        self._build(layout, first)
-        self._building = False
+        try:
+            if saved is None:
+                self._build(layout, first)
+            else:  # the saved arrangement only: the starting one is never built
+                self.set("layout", saved)  # a malformed layout raises (KeyError)
+                self._sync()
+        finally:
+            self._building = False
         if saved is not None:
-            self.layout = saved
+            # filled after the restore: the saved region settings wait for the regions (the kit's
+            # pending records) and reach them at the next layout
+            for area in self.areas:
+                self._show(area)
 
     # -- areas ----------------------------------------------------------------------------------
     def _new_area(self, editor: str) -> Area:
@@ -545,9 +557,13 @@ class Screen(Component):
         before = {id(a): a.editor for a in self.areas}
         self.set("layout", text)  # a malformed layout raises (KeyError), and nothing changes
         self._sync()
-        for area in self.areas:  # the areas that show another editor now
-            if before.get(id(area), area.editor) != area.editor:
-                self._show(area)
+        changed = [a for a in self.areas if before.get(id(a), a.editor) != a.editor]
+        for area in changed:  # the areas that show another editor now
+            self._show(area)
+        if changed:
+            # the restore gave the saved region settings to the old editors' regions: once more
+            # for the new editors' (the same areas and editors now, so only the settings apply)
+            self.set("layout", text)
 
     def _on_area(self, index: int, what: int) -> None:
         if what == AREA_NEW:

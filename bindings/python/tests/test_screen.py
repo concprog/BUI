@@ -116,6 +116,67 @@ def test_screen():
     assert windows and isinstance(windows[-1], Area), windows
 
 
+def sided(made):
+    """Two editors that both have a sidebar, 220 wide by default."""
+    def make(name):
+        def factory(area):
+            made.append(name)
+            return Editor(Column(Label(name)), header=[],
+                          sidebar=Region(Sidebar(Panel("Item", Label(name))), size=220))
+        return factory
+    return {"A": make("A"), "B": make("B")}
+
+
+def sidebar_width(area):
+    return next(c for c in area.children if c.type == "sidebar").rect[2]
+
+
+def saved_with_sidebar(editor, size):
+    """A one-area layout of `editor` whose sidebar was saved `size` wide."""
+    import json
+    one = Screen(sided([]), editor)
+    App("saved", (W, H), one, padding=0).render_raster()
+    doc = json.loads(one.layout)
+    for r in doc["areas"][0]["regions"]:
+        if r["region"] == "sidebar":
+            r["size"] = size
+    return json.dumps(doc)
+
+
+def test_restore_into_another_editor():
+    """A restored layout that changes an area's editor: the new editor's regions get the saved
+    settings, not their factory's."""
+    text = saved_with_sidebar("B", 350)
+    screen = Screen(sided([]), "A")
+    app = App("restore", (W, H), screen, padding=0)
+    app.render_raster()
+    assert sidebar_width(screen.areas[0]) == round(220 * unit() / 20)
+    screen.layout = text
+    app.render_raster()
+    assert screen.areas[0].editor == "B"
+    assert sidebar_width(screen.areas[0]) == round(350 * unit() / 20), sidebar_width(screen.areas[0])
+
+
+def test_saved_skips_the_starting_layout():
+    """With `saved`, the starting layout is never built: one too deep for the screen still loads
+    the saved one, filled by its factory with its saved regions."""
+    deep = "A"
+    for _ in range(64):
+        deep = AreaSplit("v", 0.5, deep, "A")
+    try:
+        Screen(sided([]), deep)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("the deep layout was built")
+    made = []
+    screen = Screen(sided(made), deep, saved=saved_with_sidebar("B", 350))
+    app = App("saved", (W, H), screen, padding=0)
+    app.render_raster()
+    assert [a.editor for a in screen.areas] == ["B"] and made == ["B"], made
+    assert sidebar_width(screen.areas[0]) == round(350 * unit() / 20), sidebar_width(screen.areas[0])
+
+
 def test_lone_area_and_panels():
     moved, pins = [], []
     panels = [Panel("A", Label("a"), category="Item", on_move=lambda f, t: moved.append((f, t)),

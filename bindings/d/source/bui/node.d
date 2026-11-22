@@ -326,8 +326,13 @@ final class Node {
     /// attached (kit-rooted) child never roots its owning ancestor through a
     /// handler closure, and a borrowed wrapper stays free of closures.
     private Node handlerOwner() {
+        return ownerOf(handle);
+    }
+
+    /// The topmost D-owned wrapper at or above `h`.
+    private static Node ownerOf(BKNode* h) {
         Node owner;
-        for (auto h = handle; h !is null; h = BK_node_parent(h)) {
+        for (; h !is null; h = BK_node_parent(h)) {
             if (auto ref_ = BK_node_ref(h)) {
                 owner = cast(Node) ref_;
             }
@@ -592,7 +597,8 @@ final class Node {
         return wrapNode(BK_area_split(handle, axis, factor));
     }
 
-    /// `gone` joins into this area (they share an edge).
+    /// `gone` joins into this area (they share an edge). D-owned nodes in an area that leaves the
+    /// screen keep their handlers, however it leaves (see `areaLeaving`).
     bool join(Node gone) {
         return gone !is null && BK_area_join(handle, gone.handle) != 0;
     }
@@ -611,33 +617,37 @@ final class Node {
     /// and keep their handlers: they move with the area when it survives (a D-owned area), or to
     /// the survivors themselves when the kit frees the area (one the screen made).
     bool close() {
-        if (handle is null) {
-            return false;
+        return handle !is null && BK_area_close(handle) != 0;
+    }
+
+    /// `BK_AREA_CLOSE`: `area` is leaving its screen (closed, joined, docked away, a layout
+    /// restored over it, or the user's drag), and its own handlers have run. The kit detaches a
+    /// D-owned area, which takes its subtree's handlers along; it frees one the screen made,
+    /// whose D-owned nodes are detached and each takes its own subtree's handlers, while the
+    /// entries of the freed nodes go. Walked now, before the kit removes it: a node a close
+    /// handler freed is no longer in the tree, and freed pointers are compared, never read.
+    package static void areaLeaving(BKNode* area) {
+        if (auto wrapper = cast(Node) BK_node_ref(area)) {
+            wrapper.stashSubtreeHandlers();
+            return;
         }
-        if (owned) {
-            stashSubtreeHandlers();
-            const closed = BK_area_close(handle) != 0;
-            rehomeSubtreeHandlers(); // the area lives on, detached: re-own them (or restore them)
-            return closed;
+        auto holder = ownerOf(area);
+        if (holder is null) {
+            holder = wrapperAt(area); // a borrowed wrapper keeps its handlers while unowned
         }
-        // The kit frees this area and its C-owned nodes: note them and the D-owned survivors now,
-        // as the native tree is gone after. Only pointers of freed nodes are compared, never read.
+        if (holder is null || holder.store_.empty) {
+            return;
+        }
         BKNode*[] gone;
         Node[] survivors;
-        collectClosing(handle, gone, survivors);
-        auto owner = handlerOwner();
-        auto store = owner is null ? &store_ : &owner.store_;
-        if (BK_area_close(handle) == 0) {
-            return false;
-        }
+        collectClosing(area, gone, survivors);
         foreach (survivor; survivors) {
             survivor.store_.drop();
-            store.takeSubtree(survivor.handle, &survivor.store_);
+            holder.store_.takeSubtree(survivor.handle, &survivor.store_);
         }
         foreach (node; gone) {
-            store.take(node);
+            holder.store_.take(node);
         }
-        return true;
     }
 
     private static void collectClosing(BKNode* h, ref BKNode*[] gone, ref Node[] survivors) {
