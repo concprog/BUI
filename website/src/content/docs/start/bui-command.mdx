@@ -18,7 +18,7 @@ sources: ["tools/bui/src/main.rs", "tools/bui/src/cli.rs", "tools/bui/src/create
 curl -LsSf https://bui.preetham.top/install.sh | sh
 ```
 
-It downloads the newest release for your processor (x86_64 or arm64), checks its checksum, puts `bui` in `~/.bui/bin` and adds that folder to your shell's `PATH`. Open a new terminal afterwards.
+It downloads the newest release for your processor (x86_64 or arm64), checks its checksum, puts `bui` in `~/.bui/bin` and adds that folder to your shell's `PATH`: in `~/.profile`, the profiles you already have, and your login shell's own file (`~/.zshrc` for zsh, the macOS default, `~/.bashrc` for bash), which it makes if it is missing. Open a new terminal afterwards.
 
 </Tab>
 <Tab label="Windows">
