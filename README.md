@@ -397,6 +397,7 @@ curl -LsSf https://bui.preetham.top/install.sh | sh     # Linux and macOS
 irm https://bui.preetham.top/install.ps1 | iex           # Windows (PowerShell)
 
 bui new my-app       # asks what to write it in, then makes it
+cd my-app
 bui dev              # run it
 bui doctor           # find what is wrong with the setup, and fix it
 bui update           # update bui and the project's BUI packages
