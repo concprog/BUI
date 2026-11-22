@@ -129,8 +129,12 @@ export async function mount (canvas, source, { fit = true, width = 640, height =
   let laidOut = false
   const store = () => {
     const [w, h] = css()
-    canvas.width = Math.round(w * scale())
-    canvas.height = Math.round(h * scale())
+    // assigning even the same size clears the canvas, and an unchanged size draws no new frame
+    const [pw, ph] = [Math.round(w * scale()), Math.round(h * scale())]
+    if (canvas.width !== pw || canvas.height !== ph) {
+      canvas.width = pw
+      canvas.height = ph
+    }
     laidOut = !fit || canvas.clientWidth > 0
     if (fit && laidOut && (canvas.clientWidth !== w || canvas.clientHeight !== h)) {
       canvas.style.width = `${w}px`

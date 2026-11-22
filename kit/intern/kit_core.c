@@ -2790,6 +2790,8 @@ static bool cancel_drag(BKContext *ctx)
 static int in_BK_cancel(BKContext *ctx, int mods)
 {
   ctx->next_button = 0;
+  /* a lost pointer ends the click history: the next press is a fresh click, not a double */
+  ctx->last_click_node = NULL;
   if (ctx->modal) {
     bk_end_modal(ctx);
     return 1;

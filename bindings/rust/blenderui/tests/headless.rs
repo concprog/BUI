@@ -357,6 +357,35 @@ fn a_cancelled_drag_puts_the_value_back() {
     });
 }
 
+/// A cancelled press ends the click history: the next press on the same spot is a fresh click, not a double.
+#[test]
+fn a_press_after_a_cancel_is_not_a_double_click() {
+    struct Target {
+        clicks: usize,
+    }
+    impl Render for Target {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            body().m_0().child(div().id("t").size(px(40.0)).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, e: &MouseDownEvent, _, _| this.clicks = e.click_count),
+            ))
+        }
+    }
+    Application::headless().run(|cx| {
+        let win = open(cx, 100.0, 100.0, Target { clicks: 0 });
+        let id = win.id;
+        cx.draw(id);
+        cx.simulate_press(id, 20.0, 20.0);
+        cx.simulate_cancel(id);
+        cx.simulate_press(id, 20.0, 20.0);
+        cx.simulate_release(id, 20.0, 20.0);
+        assert_eq!(win.root().read(cx).clicks, 1, "a press after a cancel is a single click");
+        cx.simulate_press(id, 20.0, 20.0);
+        cx.simulate_release(id, 20.0, 20.0);
+        assert_eq!(win.root().read(cx).clicks, 2, "a second press soon after a click is a double click");
+    });
+}
+
 /// Every builder call moves the element: rarely used parts stay out of line.
 #[test]
 fn element_stays_small() {
