@@ -700,7 +700,7 @@ impl ScreenBuilder {
             d = d.on_change(move |e, w, app| {
                 match (e.value.strip_prefix("window\t"), &on_window, &on_change) {
                     (Some(editor), Some(f), _) => f(&AreaEvent { editor: editor.to_owned() }, w, app),
-                    (None, _, Some(f)) if e.value.starts_with('{') => {
+                    (None, _, Some(f)) if is_layout(&e.value) => {
                         f(&ScreenEvent { layout: e.value.clone() }, w, app);
                     }
                     _ => {}
@@ -791,6 +791,16 @@ impl KitScreen {
         // SAFETY: our screen node (and its areas and regions), detached and freed.
         unsafe { sys::BK_node_free(self.node) };
     }
+}
+
+/// What every layout the kit writes starts with (`screen_layout_get`): a
+/// change whose value doesn't is not the screen's (a text field inside it
+/// whose own change nobody handled reaches the screen's handler too).
+const LAYOUT_PREFIX: &str = "{\"bui_screen\"";
+
+/// Whether a change's value is a screen layout.
+fn is_layout(value: &str) -> bool {
+    value.starts_with(LAYOUT_PREFIX)
 }
 
 /// The screens of one window, by element key.
