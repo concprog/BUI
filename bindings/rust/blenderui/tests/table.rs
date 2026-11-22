@@ -2,6 +2,10 @@
 
 use std::ffi::CStr;
 
+unsafe extern "C" {
+    fn free(p: *mut std::ffi::c_void);
+}
+
 use blenderui::prelude::*;
 use blenderui::table::{Cell, CellSource, Column, ColumnSort, DataTable, TableDelegate, TableState};
 
@@ -218,10 +222,12 @@ fn selection_keyboard_and_tsv_copy() {
         assert_eq!(cells[0], "3");
         assert_eq!(cells[1], val(3, 1).to_string());
         // and it reached the clipboard
-        // SAFETY: the kit returns a NUL-terminated malloc'd string (leaked: a test).
+        // SAFETY: the kit returns a NUL-terminated string from malloc, which is ours to free.
         let clip = unsafe {
             let p = blenderui::sys::BK_clipboard_get(std::ptr::null_mut());
-            CStr::from_ptr(p).to_string_lossy().into_owned()
+            let text = CStr::from_ptr(p).to_string_lossy().into_owned();
+            free(p.cast());
+            text
         };
         assert_eq!(clip, text);
         cx.simulate_key(id, "", "Escape");
