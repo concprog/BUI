@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate src/Bui.Interop/Native.g.cs from kit/include/BUI_kit.h.
+# Generate src/Bui/Interop/Native.g.cs from kit/include/BUI_kit.h.
 # Needs ClangSharpPInvokeGenerator on PATH (or in $CLANGSHARP) and clang for
 # its builtin headers (stddef.h, stdint.h).
 #
