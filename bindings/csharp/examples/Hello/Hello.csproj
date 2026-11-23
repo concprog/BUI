@@ -7,7 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../src/Bui.Forms/Bui.Forms.csproj" />
+    <ProjectReference Include="../../src/Bui/Bui.csproj" />
   </ItemGroup>
 
 </Project>

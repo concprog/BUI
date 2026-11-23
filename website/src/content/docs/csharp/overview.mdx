@@ -1,16 +1,16 @@
 ---
 title: BUI for C#
 sidebarLabel: Overview
-description: Blender's widgets from .NET. A Windows Forms-style API (Form, Button, Controls.Add, Click) over C# components, over every BK_* function generated from BUI_kit.h.
+description: Blender's widgets from .NET. C# components (Node, Button, Context, Window) over every BK_* function generated from BUI_kit.h.
 section: C#
 order: 10
 languages: ["csharp"]
-sources: ["bindings/csharp/README.md", "bindings/csharp/CMakeLists.txt", "bindings/csharp/gen/generate.rsp", "bindings/csharp/src/Bui/Node.cs", "bindings/csharp/src/Bui/Context.cs", "bindings/csharp/src/Bui/Window.cs", "bindings/csharp/src/Bui.Forms/Form.cs", "bindings/csharp/tests/Bui.Tests/Program.cs"]
+sources: ["bindings/csharp/README.md", "bindings/csharp/CMakeLists.txt", "bindings/csharp/gen/generate.rsp", "bindings/csharp/src/Bui/Node.cs", "bindings/csharp/src/Bui/Context.cs", "bindings/csharp/src/Bui/Window.cs", "bindings/csharp/tests/Bui.Tests/Program.cs"]
 ---
 
-**`bindings/csharp` gives .NET programs Blender's widget drawing, layout and interaction rules.** It has three layers: every `BK_*` function of `BUI_kit.h`, generated with no marshalling stubs; C# components (`Node`, `Button`, `Context`, `Window`); and a Windows Forms-style API on top.
+**`bindings/csharp` gives .NET programs Blender's widget drawing, layout and interaction rules.** It has two layers: every `BK_*` function of `BUI_kit.h`, generated with no marshalling stubs; and C# components (`Node`, `Button`, `Context`, `Window`) on top.
 
-It is a first slice. It runs on Linux, macOS and Windows, and installs from NuGet: `dotnet add package BlenderUI` (and `BlenderUI.Forms`), with the native kit for Linux x64, macOS arm64 and x64, and Windows x64 in the package.
+It is a first slice. It runs on Linux, macOS and Windows, and installs from NuGet: `dotnet add package BlenderUI`, with the native kit for Linux x64, macOS arm64 and x64, and Windows x64 in the package.
 
 ## Build it
 
@@ -23,21 +23,6 @@ dotnet run --project examples/Hello
 ```
 
 To use a local build in your own project, see [Use BUI in your app](../in-your-app/).
-
-## A form
-
-```csharp
-using System.Drawing;
-using Bui.Forms;
-
-using var form = new Form { Text = "Hello from C#", Size = new Size(320, 120) };
-var button = new Button { Text = "Click me", Location = new Point(110, 40), Size = new Size(100, 24) };
-button.Click += (_, _) => button.Text = "Clicked";
-form.Controls.Add(button);
-Application.Run(form);
-```
-
-`Location` and `Size` place a control absolutely, and `Dock` packs it against a side of its form. `Form.Context` drives a form without a window, for tests. [The Forms page](../forms/) lists every type and member.
 
 ## Components
 

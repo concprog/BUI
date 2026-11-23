@@ -76,12 +76,12 @@ Remove the source tree from `sys.path` and keep `examples/` on it for
 
 No API tokens are stored anywhere.
 
-## NuGet (`BlenderUI`, `BlenderUI.Forms`)
+## NuGet (`BlenderUI`)
 
 The C# binding loads the kit as one shared library. `release.yml` builds it once per platform
 (`nuget-native`: linux-x64 on Ubuntu 22.04, osx-arm64, osx-x64, win-x64 with MSVC), then the
 `nuget` job packs it as `runtimes/<rid>/native/` (the folder .NET takes native assets from) and
-pushes both packages with `--skip-duplicate`. On Windows the export list of `bui_kit.dll` is
+pushes the package with `--skip-duplicate`. On Windows the export list of `bui_kit.dll` is
 generated from the functions the binding imports (`bindings/csharp/CMakeLists.txt`).
 
 One-time setup:

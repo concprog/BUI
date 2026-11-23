@@ -9,7 +9,6 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/Bui/Bui.csproj" />
-    <ProjectReference Include="../../src/Bui.Forms/Bui.Forms.csproj" />
   </ItemGroup>
 
 </Project>

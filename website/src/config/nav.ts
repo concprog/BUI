@@ -15,7 +15,7 @@ export const sections = [
   { label: "C & C++", blurb: "The C kit and embedding BUI in your host", icon: "file-c" },
   { label: "Lua", blurb: "The bui-lua host and the bui module", icon: "moon" },
   { label: "D", blurb: "A DUB package with raw C declarations and D wrappers", icon: "code" },
-  { label: "C#", blurb: "A Windows Forms-style API and C# components", icon: "file-c-sharp" },
+  { label: "C#", blurb: "C# components over every kit function", icon: "file-c-sharp" },
   { label: "Concepts", blurb: "How BUI works under the hood", icon: "lightbulb-filament" },
   { label: "Performance", blurb: "Numbers, and how to measure them yourself", icon: "gauge" },
   { label: "Reference", blurb: "Variables, options, matrices and terms", icon: "books" },

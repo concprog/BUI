@@ -340,7 +340,6 @@ jobs:
         working-directory: bindings/csharp
         run: |
           dotnet pack src/Bui -c Release -p:BuiNatives="$GITHUB_WORKSPACE/natives" -o "$GITHUB_WORKSPACE/nupkg"
-          dotnet pack src/Bui.Forms -c Release -o "$GITHUB_WORKSPACE/nupkg"
           unzip -l "$GITHUB_WORKSPACE"/nupkg/BlenderUI.*.nupkg | grep runtimes/
       - uses: actions/upload-artifact@v4
         with:

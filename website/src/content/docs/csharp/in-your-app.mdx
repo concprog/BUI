@@ -8,7 +8,7 @@ languages: ["csharp"]
 sources: ["bindings/csharp/README.md", "bindings/csharp/Directory.Build.props", "bindings/csharp/src/Bui/Bui.csproj", "bindings/csharp/CMakeLists.txt"]
 ---
 
-**Your app needs two parts: the C# assemblies (`Bui`, `Bui.Forms`) and the native kit.** The native kit is one shared library. .NET loads it by the name `bui_kit`:
+**Your app needs two parts: the C# assembly (`Bui`) and the native kit.** The native kit is one shared library. .NET loads it by the name `bui_kit`:
 
 | Platform | File |
 |---|---|
@@ -29,11 +29,11 @@ The library is in `build/bindings/csharp/`.
 
 Use this while you change BUI itself: a change to the C# code is in your app at the next build, and the debugger steps into the binding.
 
-Add a project reference to your app's `.csproj`. Reference `Bui.Forms` for the Windows Forms-style API, or `Bui` for the components only:
+Add a project reference to your app's `.csproj`:
 
 ```xml
 <ItemGroup>
-  <ProjectReference Include="path/to/BUI/bindings/csharp/src/Bui.Forms/Bui.Forms.csproj" />
+  <ProjectReference Include="path/to/BUI/bindings/csharp/src/Bui/Bui.csproj" />
 </ItemGroup>
 ```
 
@@ -53,16 +53,15 @@ After a change to the C code, build `bui_kit_shared` again. The next build of yo
 
 Use this to give an app a fixed build of BUI, the same as the package from a release.
 
-Put each native library in a folder with the name of its platform (`linux-x64`, `osx-arm64`, `osx-x64` or `win-x64`). Then make the two packages:
+Put each native library in a folder with the name of its platform (`linux-x64`, `osx-arm64`, `osx-x64` or `win-x64`). Then make the package:
 
 ```sh
 mkdir -p natives/linux-x64
 cp build/bindings/csharp/libbui_kit.so natives/linux-x64/
 dotnet pack bindings/csharp/src/Bui -c Release -p:BuiNatives=$PWD/natives -o feed
-dotnet pack bindings/csharp/src/Bui.Forms -c Release -o feed
 ```
 
-The `feed` folder now holds `BlenderUI` and `BlenderUI.Forms`. A package can hold libraries for more than one platform: put each one in its folder before you pack.
+The `feed` folder now holds `BlenderUI`. A package can hold libraries for more than one platform: put each one in its folder before you pack.
 
 Add `feed` as a package source:
 
@@ -78,9 +77,9 @@ Add `feed` as a package source:
   </configuration>
   ```
 
-Then install `BlenderUI.Forms` (or `BlenderUI`) from that source, or run `dotnet add package BlenderUI.Forms`. At build, .NET copies the library for your platform into the output folder.
+Then install `BlenderUI` from that source, or run `dotnet add package BlenderUI`. At build, .NET copies the library for your platform into the output folder.
 
-NuGet keeps each version of a package in its cache. If you pack again with the same version, remove the old copy before you restore: delete `~/.nuget/packages/blenderui` and `~/.nuget/packages/blenderui.forms`.
+NuGet keeps each version of a package in its cache. If you pack again with the same version, remove the old copy before you restore: delete `~/.nuget/packages/blenderui`.
 
 ## Your app
 
@@ -95,20 +94,7 @@ The app's project file. The packages target `net8.0`, so use `net8.0` or later:
 </Project>
 ```
 
-A window with the Windows Forms-style API, in `Program.cs`:
-
-```csharp
-using System.Drawing;
-using Bui.Forms;
-
-using var form = new Form { Text = "My app", Size = new Size(320, 120) };
-var button = new Button { Text = "Click me", Location = new Point(110, 40), Size = new Size(100, 24) };
-button.Click += (_, _) => button.Text = "Clicked";
-form.Controls.Add(button);
-Application.Run(form);
-```
-
-The same window with the components:
+A window, in `Program.cs`:
 
 ```csharp
 using Bui;
