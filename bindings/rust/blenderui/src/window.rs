@@ -18,9 +18,11 @@ use crate::events::*;
 use crate::geometry::{point, px, size, Bounds, Pixels, Size};
 use crate::layout::{id_key, layout, Content, Frame, Key, LayoutCaches, UiState};
 use crate::prof::{self, span, Phase};
-use crate::window_kind::{WindowDecorations, WindowKind};
+use crate::style::AppRegion;
+use crate::window_kind::{WindowControlArea, WindowDecorations, WindowKind};
 use crate::paint::{paint_frame, Painter};
 use crate::selection::{Cx, Selector};
+use crate::style::KeySet;
 use crate::widgets::{WKind, Widgets};
 use blenderui_sys as sys;
 
@@ -186,14 +188,14 @@ impl<V: 'static> WindowHandle<V> {
     /// Update the root view with its window.
     pub fn update<R>(&self, cx: &mut App,
                      f: impl FnOnce(&mut V, &mut Window, &mut Context<V>) -> R) -> Option<R> {
-        let mut w = cx.windows.get_mut(self.id.0)?.take()?;
         let notified = cx.notified;
-        let r = self.entity.update(cx, |v, cx| f(v, &mut w, cx));
-        if cx.notified != notified {
-            w.refresh(); // `cx.notify()` ran while this window was out of the list
-        }
-        cx.windows[self.id.0] = Some(w);
-        Some(r)
+        cx.with_window(self.id.0, |w, cx| {
+            let r = self.entity.update(cx, |v, cx| f(v, w, cx));
+            if cx.notified != notified {
+                w.refresh(); // `cx.notify()` ran while this window was out of the list
+            }
+            r
+        })
     }
 }
 
@@ -293,12 +295,8 @@ impl Application {
         Application { headless: true, gpu: None, slug: None, keep_alive: false, theme: None }
     }
 
-    /// Run `f`, then the event loop until every window is closed.
-    pub fn run(self, f: impl FnOnce(&mut App)) {
-        // the C kit keeps global state: one application at a time per process
-        static KIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = KIT.lock().unwrap_or_else(|e| e.into_inner());
-        let headless = self.headless || unsafe { sys::BK_window_supported() } == 0;
+    /// The kit's global settings for this application (renderer, text, theme, off-screen scale).
+    fn configure(&self, headless: bool) {
         if let Some(on) = self.gpu {
             unsafe { sys::BUI_gpu_set_default(on as c_int) };
         }
@@ -315,7 +313,29 @@ impl Application {
                 unsafe { sys::BK_set_scale(s) };
             }
         }
-        let mut app = App::create(headless);
+    }
+
+    /// Run `f` and hand back the application, off-screen and with a real clock, for a host that has no
+    /// event loop for BUI to run (a web page, which calls back on every animation frame): it feeds the
+    /// events (`simulate_*`) and takes the frames ([`App::frame_if_needed`]). The kit keeps global
+    /// state: one application per process, and the host must not start a second.
+    pub fn start(self, f: impl FnOnce(&mut App)) -> App {
+        self.configure(true);
+        // a page's animations follow its clock, not the virtual one tests step by hand
+        let mut app = App::create(true, true);
+        f(&mut app);
+        app.flush();
+        app
+    }
+
+    /// Run `f`, then the event loop until every window is closed.
+    pub fn run(self, f: impl FnOnce(&mut App)) {
+        // the C kit keeps global state: one application at a time per process
+        static KIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = KIT.lock().unwrap_or_else(|e| e.into_inner());
+        let headless = self.headless || unsafe { sys::BK_window_supported() } == 0;
+        self.configure(headless);
+        let mut app = App::create(headless, !headless);
         f(&mut app);
         app.flush();
         if headless {
@@ -372,16 +392,22 @@ pub struct App {
     windows: Vec<Option<Box<Window>>>,
     entities: Vec<Slot>,
     headless: bool,
+    real_clock: bool,
     globals: HashMap<TypeId, Box<dyn Any>>,
-    propagate: bool,
+    pub(crate) propagate: bool,
     /// Work sent from other threads ([`UiSender`]).
     remote: Option<(std::sync::mpsc::Sender<RemoteJob>, std::sync::mpsc::Receiver<RemoteJob>)>,
     /// Called when the user closes a window.
     close_hooks: Vec<Box<dyn FnMut(WindowId, &mut App)>>,
+    /// While the close hooks run: windows a hook closed, whose hooks run next.
+    closed_later: Option<VecDeque<usize>>,
     /// Called when a window gets or loses the keyboard focus.
     activation_hooks: Vec<Box<dyn FnMut(WindowId, bool, &mut App)>>,
     /// Counts `notify_all` calls (see `WindowHandle::update`).
     notified: u64,
+    /// [`shutdown`](App::shutdown) was asked while a window was lent to a
+    /// callback: it runs once every window is back.
+    shutdown_later: bool,
 }
 
 type RemoteJob = Box<dyn FnOnce(&mut App) + Send>;
@@ -414,12 +440,20 @@ unsafe extern "C" fn on_wake() {
     }
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
 impl App {
-    fn create(headless: bool) -> App {
-        crate::motion::start_clock(!headless);
-        App { windows: Vec::new(), entities: Vec::new(), headless, globals: HashMap::new(), propagate: true,
-              remote: None, close_hooks: Vec::new(),
-              activation_hooks: Vec::new(), notified: 0 }
+    /// `real_clock`: animations follow the wall clock (native windows, [`Application::start`]); else they
+    /// follow the virtual one tests step with [`App::advance_clock`].
+    fn create(headless: bool, real_clock: bool) -> App {
+        crate::motion::start_clock(real_clock);
+        App { windows: Vec::new(), entities: Vec::new(), headless, real_clock, globals: HashMap::new(), propagate: true,
+              remote: None, close_hooks: Vec::new(), closed_later: None,
+              activation_hooks: Vec::new(), notified: 0, shutdown_later: false }
     }
 
     /// Create an entity (gpui's `cx.new`).
@@ -454,11 +488,11 @@ impl App {
         let title = options.titlebar.as_ref().and_then(|t| t.title.clone())
             .map(|t| t.to_string()).unwrap_or_else(|| "BUI".into());
         let id = self.windows.len();
-        let mut w = Window::create(id, &title, bounds.size.width.0, bounds.size.height.0, self.headless)?;
+        let mut w = Window::create(id, &title, bounds.size.width.0, bounds.size.height.0, self.headless, self.real_clock)?;
         if let Some(n) = &w.native {
             unsafe {
                 if let Some(WindowBounds::Maximized(_)) = options.window_bounds {
-                    sys::BK_window_wm(*n, c"state".as_ptr(), 1.0, 0.0);
+                    sys::BK_window_wm(*n, c"state".as_ptr(), 3.0, 0.0);
                 }
                 if options.is_resizable == Some(false) {
                     sys::BK_window_wm(*n, c"resizable".as_ptr(), 0.0, 0.0);
@@ -521,7 +555,31 @@ impl App {
         self.flush();
     }
 
-    /// Call `f` whenever the user closes a window.
+    /// The windows that are open.
+    pub fn window_ids(&self) -> Vec<WindowId> {
+        self.windows.iter().enumerate().filter(|(_, w)| w.as_deref().is_some_and(|w| w.life == Life::Open)).map(|(i, _)| WindowId(i)).collect()
+    }
+
+    /// The window's next frame, when something changed in it or it is animating (else `None`: nothing to
+    /// show): the work a host does on each animation frame ([`Application::start`]).
+    pub fn frame_if_needed(&mut self, id: WindowId) -> Option<(usize, usize, Vec<u32>)> {
+        self.run_pending();
+        let ctx = self.windows.get(id.0).and_then(|w| w.as_deref()).map(|w| w.ctx)?;
+        // SAFETY: the window's own context, alive while the window is
+        let due = unsafe { sys::BK_needs_render(ctx) != 0 || sys::BK_animating(ctx) != 0 };
+        due.then(|| self.draw(id))
+    }
+
+    /// Resize an off-screen window to `width` x `height` device pixels at `scale` device pixels per
+    /// logical pixel (a host whose canvas changed size or pixel ratio).
+    pub fn set_canvas_size(&mut self, id: WindowId, width: usize, height: usize, scale: f32) {
+        if let Some(w) = self.windows.get_mut(id.0).and_then(|w| w.as_deref_mut()) {
+            w.set_device_size((width as i32, height as i32), scale);
+        }
+    }
+
+    /// Call `f` whenever a window closes: by the user, its title bar's Close control or
+    /// [`close_window`](Self::close_window).
     pub fn on_window_closed(&mut self, f: impl FnMut(WindowId, &mut App) + 'static) {
         self.close_hooks.push(Box::new(f));
     }
@@ -532,14 +590,31 @@ impl App {
         self.activation_hooks.push(Box::new(f));
     }
 
-    /// Close a window (as if the user had).
-    pub fn close_window(&mut self, id: WindowId) {
-        if let Some(w) = self.windows.get_mut(id.0).and_then(|w| w.as_deref_mut()) {
-            w.closed = true;
-            if let Some(n) = w.native {
-                unsafe { sys::BK_window_close(n) };
+    /// Resize a window to `size` (logical pixels), as the user dragging its
+    /// edge does: a native window asks the system, a headless one takes the
+    /// size at once (tests and benchmarks of resizing).
+    pub fn resize_window(&mut self, id: WindowId, size: Size<Pixels>) {
+        let Some(w) = self.windows.get_mut(id.0).and_then(|w| w.as_deref_mut()) else { return };
+        let (lw, lh) = (f32::from(size.width), f32::from(size.height));
+        match w.native {
+            // SAFETY: a live native window; the kit reports the new size back (BK_EV_CONFIGURE).
+            Some(n) => unsafe { sys::BK_window_set_size(n, lw.round() as c_int, lh.round() as c_int) },
+            None => {
+                let phys = ((lw * w.scale).round() as i32, (lh * w.scale).round() as i32);
+                w.set_device_size(phys, w.scale);
             }
         }
+        self.flush();
+    }
+
+    /// Close a window (as if the user had).
+    pub fn close_window(&mut self, id: WindowId) {
+        self.with_window(id.0, |w, _| w.remove_window());
+    }
+
+    /// The title-bar part under (x, y) (logical pixels) of a window whose title bar the app draws.
+    pub fn window_control_area(&self, window: WindowId, x: f32, y: f32) -> Option<WindowControlArea> {
+        self.window(window)?.control_area_at(x, y)
     }
 
     /// Stop the event loop.
@@ -575,14 +650,44 @@ impl App {
     fn with_window<R>(&mut self, id: usize, f: impl FnOnce(&mut Window, &mut App) -> R) -> Option<R> {
         let mut w = self.windows.get_mut(id)?.take()?;
         let r = f(&mut w, self);
+        // closed by the app (`remove_window`): its close hooks, now that it is back
+        let closing = w.life == Life::Closing;
+        if closing {
+            w.life = Life::Closed;
+        }
         self.windows[id] = Some(w);
+        if closing {
+            self.window_closed(id);
+        }
+        if self.shutdown_later {
+            self.shutdown();
+        }
         Some(r)
+    }
+
+    /// Window `id` has closed: the close hooks. A window a hook closes (the hooks are out of
+    /// the list then) has its hooks run after this round, once the list is back.
+    fn window_closed(&mut self, id: usize) {
+        if let Some(later) = &mut self.closed_later {
+            later.push_back(id);
+            return;
+        }
+        self.closed_later = Some(VecDeque::new());
+        let mut next = Some(id);
+        while let Some(id) = next {
+            run_hooks(self, |a| &mut a.close_hooks, |h, app| h(WindowId(id), app));
+            next = self.closed_later.as_mut().and_then(VecDeque::pop_front);
+        }
+        self.closed_later = None;
     }
 
     /// Handle queued kit events, then re-render what changed.
     fn drain(&mut self) {
         while let Some(ev) = queue_pop() {
-            self.with_window(ev.window, |w, app| w.dispatch(ev, app));
+            // a closed window's queued events go with it (its handlers and hooks are done)
+            if self.window(WindowId(ev.window)).is_some_and(|w| w.life == Life::Open) {
+                self.with_window(ev.window, |w, app| w.dispatch(ev, app));
+            }
         }
         // work from other threads (UiSender)
         loop {
@@ -609,8 +714,11 @@ impl App {
             }
         }
         for id in 0..self.windows.len() {
-            let Some(w) = self.windows[id].as_deref_mut() else { continue };
-            if !w.dirty && !w.scrolled && !w.motion_frame && !w.sel_repaint {
+            // a render may shut the app down (the windows go once it returns)
+            let Some(slot) = self.windows.get_mut(id) else { break };
+            let Some(w) = slot.as_deref_mut() else { continue };
+            // a closed window draws no more frames (its animations stop with it)
+            if w.life != Life::Open || (!w.dirty && !w.scrolled && !w.motion_frame && !w.sel_repaint && w.glides.is_empty()) {
                 continue;
             }
             match w.native {
@@ -633,7 +741,15 @@ impl App {
         }
     }
 
-    fn shutdown(&mut self) {
+    /// Free every window's native and raster resources. Safe to call again (and done on drop): a host
+    /// that took the app from [`Application::start`] calls it when the page is done with it. Called from
+    /// a window's callback (an event handler, a render), it runs once that callback has returned.
+    pub fn shutdown(&mut self) {
+        // a window lent to a callback is out of its slot: free them all once it is back
+        self.shutdown_later = self.windows.iter().any(Option::is_none);
+        if self.shutdown_later {
+            return;
+        }
         for w in self.windows.iter_mut().flatten() {
             w.destroy();
         }
@@ -661,17 +777,21 @@ impl App {
                 w.raster = sys::BUI_raster_create(pw, ph);
             }
             let target = if own { sys::BUI_raster_create(pw, ph) } else { w.raster };
-            let _s = span(Phase::Widgets);
+            let _s = span(Phase::HeadlessRaster);
             sys::BK_render(w.ctx, target, pw, ph, 1);
             // decodes this frame asked for: wait, then draw what arrived
-            let mut st = sys::BKImageStats::default();
-            sys::BK_image_stats(&raw mut st);
-            for _ in 0..10_000 {
-                if st.pending == 0 {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_micros(200));
+            // (WebAssembly has no worker threads and no sleeping: there is nothing to wait for)
+            #[cfg(not(target_os = "wasi"))]
+            {
+                let mut st = sys::BKImageStats::default();
                 sys::BK_image_stats(&raw mut st);
+                for _ in 0..10_000 {
+                    if st.pending == 0 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                    sys::BK_image_stats(&raw mut st);
+                }
             }
             if sys::BK_image_poll() > 0 {
                 sys::BK_render(w.ctx, target, pw, ph, 0);
@@ -741,10 +861,16 @@ impl App {
     pub fn advance_clock(&mut self, d: std::time::Duration) {
         crate::motion::advance(d.as_secs_f64());
         for w in self.windows.iter_mut().flatten() {
+            if w.life != Life::Open {
+                continue;
+            }
             w.clock.advance(d);
-            if w.caches.anim.any() {
-                w.dirty = true;
-            } else if crate::motion::active() {
+            // as a native window's next frame: a redraw (a full frame when a
+            // CSS value is more than paint)
+            if w.caches.anim.css_running() {
+                w.request_css_frame();
+            }
+            if crate::motion::active() {
                 w.request_motion_frame();
             }
         }
@@ -815,6 +941,17 @@ impl App {
         });
     }
 
+    /// The host lost the pointer mid-press (a cancelled touch, a lost pointer capture): a drag goes back
+    /// as Escape puts it back, and the press ends with no motion, no mouse-up and no click.
+    pub fn simulate_cancel(&mut self, window: WindowId) {
+        self.with_window(window.0, |w, _| {
+            w.end_press(w.press_button);
+        });
+        self.input(window, |ctx, _| unsafe {
+            sys::BK_cancel(ctx, 0);
+        });
+    }
+
     /// Press at `from`, drag to `to` and release there.
     pub fn simulate_drag(&mut self, window: WindowId, from: (f32, f32), to: (f32, f32)) {
         self.simulate_mouse_move(window, from.0, from.1);
@@ -850,6 +987,14 @@ impl App {
         });
     }
 
+    /// A touch drag at (x, y): the content moves `dy` logical pixels down (negative: up), exactly.
+    pub fn simulate_scroll_px(&mut self, window: WindowId, x: f32, y: f32, dy: f32) {
+        self.simulate_mouse_move(window, x, y);
+        self.input(window, |ctx, s| unsafe {
+            sys::BK_scroll_px(ctx, (x * s) as c_int, (y * s) as c_int, 0.0, dy * s, 0);
+        });
+    }
+
     /// Type text / press a key (`keysym` as in Tk: "Return", "BackSpace", "a" ...).
     pub fn simulate_key(&mut self, window: WindowId, text: &str, keysym: &str) {
         let (t, k) = (CString::new(text).unwrap_or_default(), CString::new(keysym).unwrap_or_default());
@@ -864,6 +1009,7 @@ impl App {
 
 unsafe extern "C" fn on_emit(data: *mut c_void, node: *mut sys::BKNode, kind: c_int, ref_: *mut c_void,
                              a: c_double, b: c_double) {
+    crate::screen::kit_event(node, kind, a, b); // areas made and freed: known at once
     let text = if ref_.is_null() || kind < sys::BK_EV_PRESS {
         String::new()
     } else {
@@ -923,9 +1069,9 @@ unsafe extern "C" fn on_close(data: *mut c_void, _win: *mut sys::BKWindow) -> c_
     let id = data as usize;
     with_running_app(|app| {
         if let Some(w) = app.windows.get_mut(id).and_then(|w| w.as_deref_mut()) {
-            w.closed = true;
+            w.life = Life::Closed;
         }
-        run_hooks(app, |a| &mut a.close_hooks, |h, app| h(WindowId(id), app));
+        app.window_closed(id);
     });
     1
 }
@@ -935,6 +1081,23 @@ unsafe extern "C" fn on_focus(data: *mut c_void, _win: *mut sys::BKWindow, activ
     with_running_app(|app| {
         run_hooks(app, |a| &mut a.activation_hooks, |h, app| h(WindowId(id), active != 0, app));
     });
+}
+
+unsafe extern "C" fn on_hit_test(data: *mut c_void, _win: *mut sys::BKWindow, x: c_int, y: c_int) -> c_int {
+    let mut area = sys::BK_WINDOW_AREA_CLIENT;
+    // busy (asked from inside a callback, as a move does): the app's, until the next ask
+    with_running_app(|app| {
+        if let Some(w) = app.window(WindowId(data as usize)) {
+            area = match w.control_area_at(x as f32 / w.scale, y as f32 / w.scale) {
+                None => sys::BK_WINDOW_AREA_CLIENT,
+                Some(WindowControlArea::Drag) => sys::BK_WINDOW_AREA_DRAG,
+                Some(WindowControlArea::Min) => sys::BK_WINDOW_AREA_MIN,
+                Some(WindowControlArea::Max) => sys::BK_WINDOW_AREA_MAX,
+                Some(WindowControlArea::Close) => sys::BK_WINDOW_AREA_CLOSE,
+            };
+        }
+    });
+    area
 }
 
 /// Call each hook; hooks a hook adds run from the next call.
@@ -971,7 +1134,32 @@ unsafe extern "C" {
 // ==========================================================================
 // Windows
 
+/// Where a window is in its life.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Life {
+    Open,
+    /// Closed by the app; its close hooks have not run yet.
+    Closing,
+    Closed,
+}
+
 type ViewFn = Box<dyn Fn(&mut Window, &mut App) -> AnyElement>;
+
+/// An element asked into view: where in its scroll container, and how.
+struct Reveal {
+    key: Key,
+    at: f32,
+    glide: Option<f32>,
+}
+
+/// A scroll container gliding from one offset to another (seconds).
+struct Glide {
+    container: Key,
+    from: (f32, f32),
+    to: (f32, f32),
+    start: f64,
+    duration: f32,
+}
 
 /// A window (gpui's `Window`): its kit context, layout and interaction state.
 pub struct Window {
@@ -991,6 +1179,10 @@ pub struct Window {
     scale: f32,
     view: Option<ViewFn>,
     frame: Option<Frame>,
+    /// While `emit` lends the frame to listeners: the bounds of the event's
+    /// path (the target and its ancestors), so `bounds_of` still answers for
+    /// them. Reused, so an event allocates nothing once it has grown.
+    lent_bounds: Vec<(Key, Bounds<f32>)>,
     /// Styles, text widths, images, the author sheet and the taffy tree:
     /// kept across frames.
     caches: LayoutCaches,
@@ -998,6 +1190,8 @@ pub struct Window {
     painter: Painter,
     state: UiState,
     widgets: Widgets,
+    /// Blender screens (`blenderui::screen`): their kit nodes, by element key.
+    screens: crate::screen::Screens,
     dirty: bool,
     /// Only scroll offsets changed since the last frame: it is placed again, not rendered
     /// (when [`scroll_free`](Self::scroll_free)).
@@ -1012,10 +1206,16 @@ pub struct Window {
     animation_frame: bool,
     /// The next frame is Motion's values alone: a redraw (no render or layout).
     motion_frame: bool,
+    /// The redraw moves CSS animations and transitions too.
+    css_frame: bool,
+    /// The element asked into view this render ([`Window::scroll_into_view`]).
+    reveal: Option<Reveal>,
+    /// Scrolls gliding to an element.
+    glides: Vec<Glide>,
     /// CSS animation time (virtual in headless windows).
     clock: crate::anim::Clock,
     vsync: bool,
-    closed: bool,
+    life: Life,
     title: String,
     cursor: i32,
     pointer: (f32, f32),
@@ -1028,7 +1228,8 @@ pub struct Window {
     /// The text selection (see `selection`).
     selector: Selector,
     /// The press in progress changed only the text selection: nothing answers to it, so it and its
-    /// release render nothing (the selection is drawn on the frame as it is).
+    /// release render nothing (the selection is drawn on the frame as it is). No press: true (its
+    /// end renders nothing).
     press_quiet: bool,
     /// The next `present` shows the frame it already showed (a selection change): its text boxes are
     /// the same, so the selection's index of them stays.
@@ -1040,7 +1241,7 @@ pub struct Window {
 }
 
 impl Window {
-    fn create(id: usize, title: &str, w: f32, h: f32, headless: bool) -> Result<Window, String> {
+    fn create(id: usize, title: &str, w: f32, h: f32, headless: bool, real_clock: bool) -> Result<Window, String> {
         // SAFETY: building a fresh kit tree; pointers stay owned by this window.
         unsafe {
             let root = sys::BK_node_new(c"frame".as_ptr());
@@ -1079,10 +1280,12 @@ impl Window {
                 scale: 1.0,
                 view: None,
                 frame: None,
+                lent_bounds: Vec::new(),
                 caches: LayoutCaches::default(),
                 painter: Painter::new(),
                 state: UiState::default(),
                 widgets: Widgets::new(),
+                screens: crate::screen::Screens::default(),
                 dirty: true,
                 scrolled: false,
                 scroll_free: false,
@@ -1091,9 +1294,12 @@ impl Window {
                 frame_pending: false,
                 animation_frame: false,
                 motion_frame: false,
-                clock: crate::anim::Clock::new(!headless),
+                css_frame: false,
+                reveal: None,
+                glides: Vec::new(),
+                clock: crate::anim::Clock::new(real_clock),
                 vsync: true,
-                closed: false,
+                life: Life::Open,
                 title: title.to_owned(),
                 cursor: 0,
                 pointer: (-1.0, -1.0),
@@ -1102,23 +1308,24 @@ impl Window {
                 sb_drag: None,
                 stuck: HashMap::new(),
                 selector: Selector::default(),
-                press_quiet: false,
+                press_quiet: true,
                 same_frame: false,
                 sel_repaint: false,
                 selection_hooks: Vec::new(),
             };
             if headless {
-                win.scale = sys::BK_scale().max(1.0);
+                win.scale = sys::BK_scale().max(0.25);
                 win.phys = ((w * win.scale).round() as i32, (h * win.scale).round() as i32);
             } else {
                 let t = CString::new(title).unwrap_or_default();
                 let n = sys::BK_window_new(ctx, t.as_ptr(), w.round() as c_int, h.round() as c_int);
                 if n.is_null() {
+                    win.destroy();
                     return Err("could not create a native window".into());
                 }
                 let cb = sys::BKWindowCallbacks { data: id as *mut c_void, on_timer: Some(on_timer),
                                                   on_close: Some(on_close), on_frame: Some(on_frame),
-                                                  on_focus: Some(on_focus) };
+                                                  on_focus: Some(on_focus), hit_test: Some(on_hit_test) };
                 sys::BK_window_set_callbacks(n, &cb);
                 win.scale = sys::BK_scale().max(0.5);
                 win.phys = ((w * win.scale).round() as i32, (h * win.scale).round() as i32);
@@ -1129,12 +1336,22 @@ impl Window {
         }
     }
 
+    /// Free what the window holds of the kit. The order is the kit's: the
+    /// native window gives the context its host back, the context lets go of
+    /// its root (and of the raster it rendered last), then the tree goes
+    /// (with the canvases), then the raster.
     fn destroy(&mut self) {
         self.widgets.free_all();
+        self.screens.free_all();
+        // SAFETY: each pointer is this window's and freed once (nulled after).
         unsafe {
             if let Some(n) = self.native.take() {
                 sys::BK_window_free(n);
             }
+            sys::BK_context_free(std::mem::replace(&mut self.ctx, std::ptr::null_mut()));
+            sys::BK_node_free(std::mem::replace(&mut self.root, std::ptr::null_mut()));
+            self.overlays.clear();
+            self.canvases.clear();
             if !self.raster.is_null() {
                 sys::BUI_raster_free(self.raster);
                 self.raster = std::ptr::null_mut();
@@ -1182,6 +1399,11 @@ impl Window {
         self.dirty = true;
     }
 
+    /// Paint the last frame again (no render, no layout): for state a painted element reads, like a hover highlight.
+    pub fn repaint(&mut self) {
+        self.sel_repaint = true;
+    }
+
     /// Content size in logical pixels.
     pub fn viewport_size(&self) -> Size<Pixels> {
         size(px(self.phys.0 as f32 / self.scale), px(self.phys.1 as f32 / self.scale))
@@ -1211,6 +1433,111 @@ impl Window {
                 unsafe { sys::BK_window_set_title(n, t.as_ptr()) };
             }
         }
+    }
+
+    /// Close this window, as if the user had (gpui's `remove_window`). The close hooks run once
+    /// the event that asked has been handled (`BK_window_close` does not ask `on_close`).
+    pub fn remove_window(&mut self) {
+        if self.life != Life::Open {
+            return;
+        }
+        self.life = Life::Closing;
+        if let Some(n) = self.native {
+            unsafe { sys::BK_window_close(n) };
+        }
+    }
+
+    pub fn minimize_window(&self) {
+        self.wm(c"state", 1.0);
+    }
+
+    /// Maximize the window, or restore it when it is maximized.
+    pub fn zoom_window(&self) {
+        self.wm(c"state", if self.is_maximized() { 0.0 } else { 3.0 });
+    }
+
+    pub fn is_maximized(&self) -> bool {
+        let (mut a, mut b) = (0.0, 0.0);
+        self.native.is_some_and(|n| unsafe { sys::BK_window_wm_get(n, c"state".as_ptr(), &mut a, &mut b) } != 0
+                                    && a == 3.0)
+    }
+
+    /// Let the window manager move the window with the pointer, from a press (what a drag area
+    /// of a title bar the app draws does by itself). The window manager takes the pointer, so the
+    /// press ends here: its release never comes.
+    pub fn start_window_move(&mut self) {
+        self.end_press(self.press_button);
+        self.wm(c"move", 0.0);
+    }
+
+    /// An off-screen window is `phys` device pixels at `scale` device pixels per logical pixel: what
+    /// a headless resize and a host's canvas resize both come to. Any positive finite ratio is kept
+    /// (page zoom out gives 0.75).
+    fn set_device_size(&mut self, phys: (i32, i32), scale: f32) {
+        if !scale.is_finite() || scale <= 0.0 || phys.0 <= 0 || phys.1 <= 0 || (phys == self.phys && scale == self.scale) {
+            return;
+        }
+        self.phys = phys;
+        self.dirty = true;
+        if scale != self.scale {
+            // the kit's resolution scale and the text measured at it follow, as when the window is made
+            self.scale = scale;
+            self.caches.text.set_scale(scale);
+            // SAFETY: a plain setter; the kit has one scale
+            unsafe { sys::BK_set_scale(scale) };
+        }
+        // SAFETY: the raster was made for the old size and belongs to this window; `draw` makes a new one
+        unsafe {
+            if !self.raster.is_null() {
+                sys::BUI_raster_free(self.raster);
+                self.raster = std::ptr::null_mut();
+            }
+            sys::BK_node_relayout(self.root);
+        }
+    }
+
+    fn wm(&self, key: &CStr, a: f64) {
+        if let Some(n) = self.native {
+            unsafe { sys::BK_window_wm(n, key.as_ptr(), a, 0.0) };
+        }
+    }
+
+    /// The title-bar part (`app-region`) of box `hit` and the elements around it: the nearest one
+    /// set, unless an element that answers to presses (a listener, a widget) or `no-drag` comes
+    /// first, as a button inside a drag area does.
+    fn control_area(&self, hit: Option<usize>) -> Option<WindowControlArea> {
+        let f = self.frame.as_ref()?;
+        let mut cur = hit.map(|b| f.nodes[b].owner);
+        while let Some(i) = cur {
+            let n = &f.nodes[i];
+            match self.caches.styles[n.style].app_region {
+                AppRegion::Area(a) => return Some(a),
+                AppRegion::NoDrag => return None,
+                AppRegion::Auto => {}
+            }
+            let pressable = f.el(i).and_then(|e| e.listeners.as_deref()).is_some_and(Listeners::take_presses);
+            if pressable || matches!(n.content, Content::Widget(_)) {
+                return None;
+            }
+            cur = n.parent;
+        }
+        None
+    }
+
+    /// A click on element `key`: what the title-bar control it is part of does.
+    fn run_control_area(&mut self, key: Key) {
+        let hit = self.frame.as_ref().and_then(|f| f.by_key().get(&key).copied());
+        match self.control_area(hit) {
+            Some(WindowControlArea::Min) => self.minimize_window(),
+            Some(WindowControlArea::Max) => self.zoom_window(),
+            Some(WindowControlArea::Close) => self.remove_window(),
+            Some(WindowControlArea::Drag) | None => {}
+        }
+    }
+
+    /// The title-bar part under (x, y), in logical pixels.
+    fn control_area_at(&self, x: f32, y: f32) -> Option<WindowControlArea> {
+        self.control_area(self.frame.as_ref()?.hit_box(x, y, &self.caches.styles))
     }
 
     /// Pointer position in logical pixels.
@@ -1243,6 +1570,61 @@ impl Window {
         self.state.scroll.get(&id_key(id)).copied().unwrap_or((0.0, 0.0))
     }
 
+    /// Scroll the scroll container around the element `.id(id)` so the
+    /// element's top sits `at` of the way down it (0: at its top, 0.5: in its
+    /// middle), as `scrollIntoView` does. It is worked out after this frame's
+    /// layout, so it follows the layout the render makes: ask for it in
+    /// `render`, each render, to keep an element in place as the page changes
+    /// or the window is resized; nothing reads a placement and nothing renders
+    /// twice. `glide`: the seconds the scroll takes to get there (eased out;
+    /// its frames are scroll frames: no render), `None` jumps. A wheel or a
+    /// scrollbar drag on the container stops a glide.
+    pub fn scroll_into_view(&mut self, id: &str, at: f32, glide: Option<f32>) {
+        // validated here, at the boundary: a NaN would reach the scroll state
+        let at = if at.is_finite() { at.clamp(0.0, 1.0) } else { 0.0 };
+        let glide = glide.filter(|d| d.is_finite() && *d > 0.0);
+        self.reveal = Some(Reveal { key: id_key(id), at, glide });
+    }
+
+    /// Carry out the [`scroll_into_view`](Self::scroll_into_view) asked for
+    /// while `frame` was rendered: true when its container jumped (place the
+    /// frame again); a glide moves on in the next frames.
+    fn reveal(&mut self, frame: &crate::layout::Frame) -> bool {
+        let Some(r) = self.reveal.take() else { return false };
+        let Some(&i) = frame.by_key().get(&r.key) else { return false };
+        let nodes = &frame.nodes;
+        // the nearest container that scrolls vertically (a horizontal-only one can't place it)
+        let mut up = nodes[i].parent;
+        while let Some(k) = up.filter(|&k| nodes[k].scroll_range.1 <= 0.0) {
+            up = nodes[k].parent;
+        }
+        let Some(c) = up else { return false };
+        let (n, el) = (&nodes[c], &nodes[i]);
+        let (sx, sy) = n.scroll_pos;
+        let to = (sy + el.bounds.origin.y - n.bounds.origin.y - r.at * n.bounds.size.height).clamp(0.0, n.scroll_range.1);
+        let gliding = self.glides.iter().position(|g| g.container == n.key);
+        if gliding.is_some_and(|g| (self.glides[g].to.1 - to).abs() < 0.5) || (gliding.is_none() && (sy - to).abs() < 0.5) {
+            return false; // there, or on its way there
+        }
+        if let Some(g) = gliding {
+            self.glides.remove(g);
+        }
+        match r.glide {
+            Some(duration) => {
+                // from where it is now (a glide that was on its way included)
+                self.glides.push(Glide { container: n.key, from: (sx, sy), to: (sx, to), start: self.clock.now(),
+                                         duration });
+                self.scrolled = true;
+                self.animation_frame = true;
+                false
+            }
+            None => {
+                self.state.scroll.insert(n.key, (sx, to));
+                true
+            }
+        }
+    }
+
     pub fn set_scroll_offset(&mut self, id: &str, x: f32, y: f32) {
         self.state.scroll.insert(id_key(id), (x, y));
         self.dirty = true;
@@ -1254,8 +1636,12 @@ impl Window {
     /// keeps what it read while rendering.
     pub fn bounds_of(&self, id: &str) -> Option<Bounds<f32>> {
         self.scroll_read.set(true); // placements move with scroll
-        let f = self.frame.as_ref()?;
-        f.by_key().get(&id_key(id)).map(|&i| f.nodes[i].bounds)
+        let key = id_key(id);
+        match self.frame.as_ref() {
+            Some(f) => f.by_key().get(&key).map(|&i| f.nodes[i].bounds),
+            // inside a listener the frame is lent out: the event's path still answers
+            None => self.lent_bounds.iter().find(|(k, _)| *k == key).map(|&(_, b)| b),
+        }
     }
 
     /// Put `text` on the clipboard.
@@ -1426,20 +1812,7 @@ impl Window {
                                crate::widgets::WidgetAsk::Ensure(spec) => widgets.ensure(canvas, key, spec, scale),
                                crate::widgets::WidgetAsk::Height(w) => (0.0, widgets.height_for(key, w, scale)),
                            });
-        // CSS animations / transitions still moving: render again next frame;
-        // Motion's values alone: redraw (nothing running: no frames, so an
-        // idle window costs no CPU)
-        let (css, motion) = self.caches.anim.end();
-        // `@container`: sizes changed under a query, or an element came into
-        // view (`whileInView`): render once more
-        let (in_view, flipped) = self.caches.anim.after_layout(&frame, &self.caches.styles, vp);
-        // useScroll: the values follow the scroll; what they move draws again
-        let scrolled = crate::motion::update_scroll(&frame);
-        if flipped {
-            // a layout animation starts where the element was seen: this frame too
-            self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp);
-        }
-        let container_changed = self.caches.after_layout(&frame) | in_view;
+        crate::vlist::run_after_layout(&frame, self, app);
         // `data-stick="bottom"`: a scroll container that grew goes to its end
         // (`"bottom"`: only if it was at the end; `"always"`: whatever it showed)
         let mut stuck = false;
@@ -1456,7 +1829,31 @@ impl Window {
                 stuck = true;
             }
         }
-        self.scroll_free = !sticks && !self.scroll_read.get() && !self.caches.anim.tracks_placement();
+        // an element asked into view this render: its container scrolls, in
+        // this very frame for a jump (placed before what follows placement:
+        // in-view states, scroll-linked values, screens)
+        if self.reveal(&frame) {
+            crate::layout::replace(&mut frame, vp, &self.state, &mut self.caches);
+        }
+        // CSS animations / transitions still moving: render again next frame;
+        // Motion's values alone: redraw (nothing running: no frames, so an
+        // idle window costs no CPU)
+        let (css, motion) = self.caches.anim.end();
+        // `@container`: sizes changed under a query, or an element came into
+        // view (`whileInView`): render once more
+        let (mut in_view, flipped) = self.caches.anim.after_layout(&frame, &self.caches.styles, vp);
+        // useScroll: the values follow the scroll; what they move draws again
+        let scrolled = crate::motion::update_scroll(&frame);
+        if flipped {
+            // a layout animation starts where the element was seen: this frame too
+            in_view |= self.redraw_motion_placed(&mut frame, vp) == Some(true);
+        }
+        let container_changed = self.caches.after_layout(&frame) | in_view;
+        // screens: their kit nodes go where their elements are (the kit reports what moves)
+        self.screens.after_layout(&frame, self.scale);
+        // a scroll is a placement alone unless the view reads placements or a
+        // container sticks to its end (animations follow it: see scroll_frame)
+        self.scroll_free = !sticks && !self.scroll_read.get();
         self.present(app, frame, None);
         if stuck {
             self.dirty = true;
@@ -1466,30 +1863,77 @@ impl Window {
         if container_changed {
             self.dirty = true;
         }
+        // time alone moves what animates: redraws, not renders (a CSS value
+        // that is more than paint makes its redraw a full frame)
         if css {
-            self.request_animation_frame();
-        } else if motion || scrolled {
+            self.request_css_frame();
+        }
+        if motion || scrolled {
             self.request_motion_frame();
         }
     }
 
-    /// A frame of Motion's values alone: the last frame's elements, with
+    /// A frame of moving values alone (CSS animations', then Motion's): the last frame's elements, with
     /// their values set again and painted (no render, cascade or layout).
     fn redraw(&mut self, app: &mut App) {
-        self.motion_frame = false;
         let Some(mut frame) = self.frame.take() else { return };
-        let vp = self.viewport();
-        if !self.caches.anim.redraw_motion(&mut frame, &mut self.caches.styles, vp) {
+        let Some((css_dirty, css_running)) = self.sample_values(&mut frame) else {
             self.frame = Some(frame);
             self.dirty = true;
             return self.rebuild(app);
-        }
+        };
         // no layout ran: the widgets are the last frame's
         self.widgets.keep();
         // the boxes the values changed: only they are painted again
-        let dirty = self.caches.anim.take_redrawn();
+        let mut dirty = self.caches.anim.take_redrawn();
+        if dirty.len() != frame.nodes.len() {
+            dirty.clear();
+            dirty.resize(frame.nodes.len(), false);
+        }
+        dirty.iter_mut().zip(&css_dirty).for_each(|(d, c)| *d |= *c);
         self.present(app, frame, Some(&dirty));
+        // the marks Motion keeps are its own: drop the CSS ones
+        dirty.iter_mut().zip(&css_dirty).filter(|(_, c)| **c).for_each(|(d, _)| *d = false);
         self.caches.anim.give_redrawn(dirty);
+        self.caches.anim.give_css_dirty(css_dirty);
+        self.request_more_values(css_running);
+    }
+
+    /// The moving values of `frame` set again for now: CSS animations' first,
+    /// Motion's on top (as at a full frame). The boxes CSS changed and whether
+    /// its animations run on; `None` when a value changes layout (a render then).
+    /// A box they moved into view or out of it (`whileInView`) renders next; the
+    /// frame is a redraw still.
+    fn sample_values(&mut self, frame: &mut Frame) -> Option<(Vec<bool>, bool)> {
+        self.motion_frame = false;
+        let css = std::mem::take(&mut self.css_frame);
+        let vp = self.viewport();
+        let moved_css = if css {
+            self.caches.anim.redraw_css(self.clock.now(), frame, &mut self.caches.styles, vp)
+        } else {
+            Some((Vec::new(), false))
+        }?;
+        self.dirty |= self.redraw_motion_placed(frame, vp)?;
+        Some(moved_css)
+    }
+
+    /// Motion's redraw of `frame`, placed again when a redraw moved a clip under one that stays:
+    /// the moved values are in the styles, and the in-view states follow the new clips. `None`: it
+    /// can't be redrawn (render); else whether anything changed.
+    fn redraw_motion_placed(&mut self, frame: &mut Frame, vp: (f32, f32)) -> Option<bool> {
+        let mut changed = self.caches.anim.redraw_motion(frame, &mut self.caches.styles, vp)?;
+        if self.caches.anim.take_reclip() {
+            crate::layout::replace(frame, vp, &self.state, &mut self.caches);
+            changed |= self.caches.anim.in_view(frame, vp);
+        }
+        Some(changed)
+    }
+
+    /// Another frame of values when CSS animations (`css_running`) or Motion's run on.
+    fn request_more_values(&mut self, css_running: bool) {
+        if css_running {
+            self.request_css_frame();
+        }
         if crate::motion::active() {
             self.request_motion_frame();
         }
@@ -1512,10 +1956,39 @@ impl Window {
             self.dirty = true;
             return self.rebuild(app);
         }
-        let Some(frame) = self.frame.take() else { return };
+        let Some(mut frame) = self.frame.take() else { return };
+        self.screens.replace(&frame, self.scale); // a screen inside a scrolled box moved with it
+        // what follows placement: Motion's in-view states (a change renders
+        // next), its layout animations and the scroll-linked values (redraws).
+        // Animations alone don't: their values are in the styles placement reads
+        let (mut in_view, flipped) = self.caches.anim.after_layout(&frame, &self.caches.styles, vp);
+        if flipped {
+            in_view |= self.redraw_motion_placed(&mut frame, vp) == Some(true);
+        }
+        if crate::motion::update_scroll(&frame) {
+            self.request_motion_frame();
+        }
+        if in_view {
+            self.dirty = true;
+        }
+        // what animates moves on under the scroll (a glide scrolls every frame for
+        // as long as it runs): this frame's values, over the new placement
+        let mut sampled = None;
+        if self.motion_frame {
+            let Some((css_dirty, css_running)) = self.sample_values(&mut frame) else {
+                self.frame = Some(frame);
+                self.dirty = true;
+                return self.rebuild(app);
+            };
+            self.caches.anim.give_css_dirty(css_dirty);
+            sampled = Some(css_running);
+        }
         self.widgets.keep(); // no layout ran: the widgets are the last frame's
         self.same_frame = true; // the same boxes: the selection's index of them stays
         self.present(app, frame, None);
+        if let Some(css_running) = sampled {
+            self.request_more_values(css_running);
+        }
     }
 
     /// Draw again on the next display refresh, for Motion's values alone.
@@ -1524,8 +1997,37 @@ impl Window {
         self.animation_frame = true;
     }
 
+    /// Draw again on the next display refresh, for CSS animations and
+    /// transitions: their values move in a redraw ([`Animations::redraw_css`](crate::anim::Animations)).
+    fn request_css_frame(&mut self) {
+        self.css_frame = true;
+        self.request_motion_frame();
+    }
+
+    /// Move the gliding scrolls on (see [`scroll_into_view`](Self::scroll_into_view)):
+    /// each frame of a glide is a scroll frame.
+    fn step_glides(&mut self) {
+        if self.glides.is_empty() {
+            return;
+        }
+        let now = self.clock.now();
+        let ease = crate::anim::Timing::Bezier(0.25, 1.0, 0.5, 1.0);
+        for g in &self.glides {
+            let t = if g.duration > 0.0 { ((now - g.start) as f32 / g.duration).clamp(0.0, 1.0) } else { 1.0 };
+            let k = ease.apply(t, false);
+            let at = (g.from.0 + (g.to.0 - g.from.0) * k, g.from.1 + (g.to.1 - g.from.1) * k);
+            self.state.scroll.insert(g.container, at);
+        }
+        self.glides.retain(|g| ((now - g.start) as f32) < g.duration);
+        self.scrolled = true;
+        if !self.glides.is_empty() {
+            self.animation_frame = true;
+        }
+    }
+
     /// Render the window when it needs it: in full, or a redraw.
     fn update(&mut self, app: &mut App) {
+        self.step_glides();
         if self.dirty {
             self.rebuild(app);
         } else if self.scrolled {
@@ -1631,11 +2133,22 @@ impl Window {
     /// Call the listeners `pick` selects, from element `key` up to the root.
     /// The frame is moved out of the window meanwhile, so listeners can take
     /// `&mut Window` while the frame lends them out: no copies, no `Rc`.
+    /// The element the event its listeners are running for fired on (`None` outside one).
+    pub(crate) fn event_target(&self) -> Option<Key> {
+        self.lent_bounds.first().map(|&(k, _)| k)
+    }
+
     fn emit<E: 'static>(&mut self, app: &mut App, key: Key, e: &E,
                         pick: impl Fn(&Listeners) -> Vec<&Listener<E>>) {
         let Some(frame) = self.frame.take() else { return };
         app.propagate = true;
         let mut cur = frame.by_key().get(&key).copied();
+        self.lent_bounds.clear();
+        let mut node = cur;
+        while let Some(i) = node {
+            self.lent_bounds.push((frame.nodes[i].key, frame.nodes[i].bounds));
+            node = frame.nodes[i].parent;
+        }
         'up: while let Some(i) = cur {
             if let Some(ls) = frame.el(i).and_then(|e| e.listeners.as_deref()) {
                 for l in pick(ls) {
@@ -1648,6 +2161,7 @@ impl Window {
             cur = frame.nodes[i].parent;
         }
         app.propagate = true;
+        self.lent_bounds.clear();
         if self.frame.is_none() {
             self.frame = Some(frame);
         }
@@ -1687,7 +2201,7 @@ impl Window {
     fn update_hover(&mut self, app: &mut App, fire: bool) {
         let (path, over_text) = self.hover_target(fire);
         self.set_cursor(&path, over_text);
-        let now: std::collections::HashSet<Key> = path.iter().copied().collect();
+        let now: KeySet<Key> = path.iter().copied().collect();
         if now == self.state.hovered {
             return;
         }
@@ -1734,6 +2248,19 @@ impl Window {
         (Modifiers::from_kit(mods), button)
     }
 
+    /// The press of `button` ends: released, cancelled by the host or taken by the window manager for
+    /// a move (Blender's `button_activate_exit`). Nothing is pressed or `:active`, a drag (Motion's, a
+    /// selection's, a scrollbar's, which stays where it is) lets go, and a press that rendered renders
+    /// again. True when a left press selected text (which is not a click).
+    fn end_press(&mut self, button: MouseButton) -> bool {
+        self.sb_drag = None;
+        self.pressed.clear();
+        self.state.active.clear();
+        self.dirty |= !std::mem::replace(&mut self.press_quiet, true);
+        self.caches.anim.pointer_up();
+        button == MouseButton::Left && self.selector.release()
+    }
+
     /// Focus the element `key` (path: its ancestors, for `:focus-within`).
     fn set_focus(&mut self, path: &[Key]) {
         self.state.focused = path.last().copied();
@@ -1746,6 +2273,10 @@ impl Window {
 
     fn dispatch(&mut self, ev: RawEvent, app: &mut App) {
         if !self.canvases.contains(&ev.node) {
+            if let Some(target) = self.screens.target(ev.node) {
+                self.screen_event(&target, &ev, app);
+                return;
+            }
             self.widget_event(ev, app);
             return;
         }
@@ -1789,6 +2320,16 @@ impl Window {
             sys::BK_EV_PRESS | sys::BK_EV_DOUBLE => {
                 self.pointer = (x, y);
                 let (modifiers, button) = self.pointer_event(&ev.text);
+                // a title bar's drag area: the window manager moves the window (Windows does it
+                // without the press reaching the app)
+                if button == MouseButton::Left && self.control_area_at(x, y) == Some(WindowControlArea::Drag) {
+                    if ev.kind == sys::BK_EV_DOUBLE {
+                        self.zoom_window();
+                    } else {
+                        self.start_window_move();
+                    }
+                    return;
+                }
                 let path = self.path_at(x, y);
                 if button == MouseButton::Left && self.grab_scrollbar(&path, x, y) {
                     return;
@@ -1827,28 +2368,28 @@ impl Window {
                 // click: the deepest element under both press and release
                 let common = self.pressed.iter().zip(&path).take_while(|(a, b)| a == b)
                     .map(|(a, _)| *a).last();
-                self.pressed.clear();
-                self.state.active.clear();
-                self.dirty |= !std::mem::take(&mut self.press_quiet);
-                self.caches.anim.pointer_up();
                 // a press that selected text is a selection, not a click (as in a browser)
-                let dragged = button == MouseButton::Left && self.selector.release();
+                let dragged = self.end_press(button);
                 if let (Some(target), MouseButton::Left, false) = (common, button, dragged) {
                     self.toggle_details(target);
                     let down = MouseDownEvent { button, position: point(px(x), px(y)), modifiers, click_count: 1 };
                     let e = ClickEvent { down, up };
                     self.emit(app, target, &e, |l| l.click.iter().collect());
+                    self.run_control_area(target);
                 }
             }
             sys::BK_EV_WHEEL => {
                 let (modifiers, _) = self.pointer_event(&ev.text);
                 let (px_, py_) = self.pointer;
-                let e = ScrollWheelEvent { position: point(px(px_), px(py_)), delta: ev.a as f32, modifiers };
+                // `b`: the exact device pixels of a touch drag (BK_scroll_px), 0 for a wheel notch
+                let pixels = (ev.b != 0.0).then(|| ev.b as f32 / self.scale);
+                let e = ScrollWheelEvent { position: point(px(px_), px(py_)), delta: ev.a as f32, pixels, modifiers };
                 let path = self.path_at(px_, py_);
                 if let Some(&deepest) = path.last() {
                     self.emit(app, deepest, &e, |l| l.scroll.iter().collect());
                 }
-                self.scroll_by(&path, -(ev.a as f32) * 40.0, modifiers.shift);
+                // a touch drag follows the finger: it snaps no step (browsers snap such a gesture at its end)
+                self.scroll_by(&path, -pixels.unwrap_or(ev.a as f32 * 40.0), modifiers.shift, pixels.is_none());
             }
             sys::BK_EV_KEY | sys::BK_EV_KEYRELEASE => {
                 let mut parts = ev.text.splitn(2, '\t');
@@ -1911,7 +2452,7 @@ impl Window {
             .find(|n| n.scroll_range.1 > 0.0)
             .map(|n| n.bounds.size.height * 0.9);
         if let Some(page) = page {
-            self.scroll_by(&path, dir * page, false);
+            self.scroll_by(&path, dir * page, false, true);
         }
     }
 
@@ -1921,6 +2462,10 @@ impl Window {
         for key in path.iter().rev() {
             let Some(&i) = f.by_key().get(key) else { continue };
             let n = &f.nodes[i];
+            // `scrollbar-width: none`: no bar to grab
+            if self.caches.styles[n.style].layout.scrollbar_width <= 0.0 {
+                continue;
+            }
             let ry = n.scroll_range.1;
             let b = n.bounds;
             if ry <= 0.0 || x < b.origin.x + b.size.width - 10.0 || x > b.origin.x + b.size.width {
@@ -1954,12 +2499,14 @@ impl Window {
         let free = (h - th).max(1.0);
         let sy = (((y - grab - n.bounds.origin.y) / free) * ry).clamp(0.0, ry);
         let sx = n.scroll_pos.0.clamp(0.0, rx);
+        self.glides.retain(|g| g.container != key);
         self.state.scroll.insert(key, (sx, sy));
         self.scrolled = true;
     }
 
-    /// Scroll the innermost scroll container along `path` that can move.
-    fn scroll_by(&mut self, path: &[Key], dy: f32, horizontal: bool) {
+    /// Scroll the innermost scroll container along `path` that can move; a
+    /// discrete step (`snaps`: a wheel notch, a page) lands on its snap positions.
+    fn scroll_by(&mut self, path: &[Key], dy: f32, horizontal: bool, snaps: bool) {
         let Some(f) = &self.frame else { return };
         for key in path.iter().rev() {
             let Some(&i) = f.by_key().get(key) else { continue };
@@ -1971,12 +2518,33 @@ impl Window {
             } else {
                 (sx, (sy + dy).clamp(0.0, ry))
             };
-            let (nx, ny) = snap(f, &self.caches.styles, i, (sx, sy), (nx, ny));
+            let (nx, ny) = if snaps { snap(f, &self.caches.styles, i, (sx, sy), (nx, ny)) } else { (nx, ny) };
             if (nx, ny) != (sx, sy) {
+                // the user scrolls: a glide there stops
+                self.glides.retain(|g| g.container != *key);
                 self.state.scroll.insert(*key, (nx, ny));
                 self.scrolled = true;
                 return;
             }
+        }
+    }
+
+    /// A screen's kit event: the layout changed, an area wants a window, a region was resized
+    /// (a `change` on its element), or areas and regions moved (the content follows: a render).
+    fn screen_event(&mut self, target: &crate::screen::Target, ev: &RawEvent, app: &mut App) {
+        if let Some((key, e)) = crate::screen::change_event(target, &self.screens, ev.node, ev.kind, ev.a, ev.b) {
+            self.emit(app, key, &e, |l| l.change.iter().collect());
+        }
+        self.dirty = true;
+    }
+
+    /// Syncs a `<bui-screen>` with its kit nodes and places its areas' elements (`screen.rs`).
+    pub(crate) fn sync_screen(&mut self, div: &mut crate::element::Div, spec: &crate::screen::Spec) {
+        if let Some(made) = self.screens.sync(self.canvas, self.scale, div, spec) {
+            // a new screen: its layout reaches `change` listeners as every later one does (the
+            // areas a JavaScript screen renders come from it)
+            queue_push(RawEvent { window: self.id, node: made, kind: sys::BK_EV_CHANGE, text: String::new(),
+                                  a: 0.0, b: 0.0 });
         }
     }
 
@@ -2013,6 +2581,7 @@ impl Window {
                 let up = MouseUpEvent { button: MouseButton::Left, position: point(px(x), px(y)),
                                         modifiers: Modifiers::default() };
                 self.emit(app, key, &ClickEvent { down, up }, |l| l.click.iter().collect());
+                self.run_control_area(key);
                 self.dirty = true;
             }
             _ => {}

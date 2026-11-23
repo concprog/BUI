@@ -83,6 +83,22 @@ void luabui_report_error(lua_State *L) {
   lua_pop(L, 1);
 }
 
+/* The areas whose close handler is running, innermost first (handlers may close other areas). */
+typedef struct CloseNotice {
+  const BKNode *area;
+  const struct CloseNotice *outer;
+} CloseNotice;
+static const CloseNotice *g_closing;
+
+int luabui_in_close_notice(const BKNode *n) {
+  for (const CloseNotice *c = g_closing; c; c = c->outer) {
+    for (const BKNode *p = c->area; p; p = BK_node_parent(p)) {
+      if (p == n) return 1;
+    }
+  }
+  return 0;
+}
+
 static void host_emit(void *data, BKNode *node, int kind, void *ref, double a, double b) {
   lua_State *L = g_host_L;
   if (!L) return;
@@ -112,14 +128,23 @@ static void host_emit(void *data, BKNode *node, int kind, void *ref, double a, d
   lua_rawget(L, -2);
 
   if (lua_isfunction(L, -1)) {
+    /* The screen frees a closed area after this notice: a handler that frees it (or its screen)
+     * would release the node the screen is still using. It is guarded until the handler returns. */
+    const CloseNotice notice = {node, g_closing};
+    const int closing = kind == BK_EV_AREA && (int)b == BK_AREA_CLOSE;
+    if (closing) g_closing = &notice;
     lua_pushvalue(L, -3);
     lua_pushnumber(L, a);
     lua_pushnumber(L, b);
     if (lua_pcall(L, 3, 0, 0) != LUA_OK) {
       luabui_report_error(L);
     }
+    if (closing) g_closing = notice.outer;
   }
   lua_settop(L, top);
+  if (kind == BK_EV_AREA && (int)b == BK_AREA_CLOSE) {
+    luabui_invalidate_subtree(L, node); /* the screen frees a closed area after this */
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -230,19 +255,20 @@ static int l_ctx_render(lua_State *L) {
   int h = (int)luaL_checkinteger(L, 3);
   int full = (int)luaL_optinteger(L, 4, 0);
 
-  /* Create a temporary raster */
-  BuiRaster *r = BUI_raster_create(w, h);
-  if (!r) { lua_pushnil(L); return 1; }
+  /* One raster per context, kept: the context reads its last frame later (the eyedropper),
+   * and BK_render only redraws what changed in it. It takes the new size as it draws. */
+  if (!cud->raster) cud->raster = BUI_raster_create(w, h);
+  if (!cud->raster) { lua_pushnil(L); return 1; }
+  BuiRaster *r = cud->raster;
 
   int regions = BK_render(cud->ctx, r, w, h, full);
 
   /* Return pixel data as a Lua string (BGRA premultiplied) */
-  lua_pushlstring(L, (const char *)BUI_raster_pixels(r), (size_t)w * h * 4);
+  const int rw = BUI_raster_width(r), rh = BUI_raster_height(r);
+  lua_pushlstring(L, (const char *)BUI_raster_pixels(r), (size_t)rw * rh * 4);
   lua_pushinteger(L, regions);
-  lua_pushinteger(L, w);
-  lua_pushinteger(L, h);
-
-  BUI_raster_free(r);
+  lua_pushinteger(L, rw);
+  lua_pushinteger(L, rh);
   return 4;
 }
 
@@ -669,25 +695,28 @@ static void nullify_ctx_nodes(lua_State *L, BKContext *ctx) {
   for (int i = 0; i < ctx->npopups; i++) nullify_popup_subtree(L, ctx->popups[i], 0);
 }
 
-static int l_ctx_free(lua_State *L) {
-  luabui_Context *cud = CHECK_CTX(L, 1);
-  if (cud->ctx) {
-    nullify_ctx_nodes(L, cud->ctx);
-    luabui_unmap_ctx(L, cud->ctx);
-    BK_context_free(cud->ctx); /* releases bind + menu refs via the hooks */
-    cud->ctx = NULL;
-  }
-  return 0;
-}
-
-static int l_ctx_gc(lua_State *L) {
-  luabui_Context *cud = (luabui_Context *)luaL_checkudata(L, 1, LUABUI_CONTEXT_MT);
+/* ctx:free() and the collector: the context (bind and menu refs go through the hooks), then
+ * the raster it rendered into. */
+static void ctx_release(lua_State *L, luabui_Context *cud) {
   if (cud->ctx) {
     nullify_ctx_nodes(L, cud->ctx);
     luabui_unmap_ctx(L, cud->ctx);
     BK_context_free(cud->ctx);
     cud->ctx = NULL;
   }
+  if (cud->raster) {
+    BUI_raster_free(cud->raster);
+    cud->raster = NULL;
+  }
+}
+
+static int l_ctx_free(lua_State *L) {
+  ctx_release(L, CHECK_CTX(L, 1));
+  return 0;
+}
+
+static int l_ctx_gc(lua_State *L) {
+  ctx_release(L, (luabui_Context *)luaL_checkudata(L, 1, LUABUI_CONTEXT_MT));
   return 0;
 }
 

@@ -337,6 +337,55 @@ fn backspace_resets_to_the_value_the_field_was_made_with() {
     });
 }
 
+/// A cancelled press (the host lost the pointer mid-drag) puts a dragged Blender field back, as Escape does.
+#[test]
+fn a_cancelled_drag_puts_the_value_back() {
+    Application::headless().run(|cx| {
+        let win = open(cx, 300.0, 100.0, Number { number: None });
+        let id = win.id;
+        cx.draw(id);
+        let n = cx.element_bounds(id, "n").unwrap();
+        let (x, y) = (n.origin.x + n.size.width / 2.0, n.origin.y + n.size.height / 2.0);
+        cx.simulate_press(id, x, y);
+        cx.simulate_mouse_move(id, x + 30.0, y);
+        cx.simulate_mouse_move(id, x + 60.0, y);
+        let moved = win.root().read(cx).number.expect("the drag changes the value");
+        assert!((moved - 5.0).abs() > 0.01, "the drag should change the value, got {moved}");
+        cx.simulate_cancel(id);
+        let back = win.root().read(cx).number.unwrap();
+        assert!((back - 5.0).abs() < 1e-9, "a cancelled drag should give 5, got {back}");
+    });
+}
+
+/// A cancelled press ends the click history: the next press on the same spot is a fresh click, not a double.
+#[test]
+fn a_press_after_a_cancel_is_not_a_double_click() {
+    struct Target {
+        clicks: usize,
+    }
+    impl Render for Target {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            body().m_0().child(div().id("t").size(px(40.0)).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, e: &MouseDownEvent, _, _| this.clicks = e.click_count),
+            ))
+        }
+    }
+    Application::headless().run(|cx| {
+        let win = open(cx, 100.0, 100.0, Target { clicks: 0 });
+        let id = win.id;
+        cx.draw(id);
+        cx.simulate_press(id, 20.0, 20.0);
+        cx.simulate_cancel(id);
+        cx.simulate_press(id, 20.0, 20.0);
+        cx.simulate_release(id, 20.0, 20.0);
+        assert_eq!(win.root().read(cx).clicks, 1, "a press after a cancel is a single click");
+        cx.simulate_press(id, 20.0, 20.0);
+        cx.simulate_release(id, 20.0, 20.0);
+        assert_eq!(win.root().read(cx).clicks, 2, "a second press soon after a click is a double click");
+    });
+}
+
 /// Every builder call moves the element: rarely used parts stay out of line.
 #[test]
 fn element_stays_small() {
@@ -357,5 +406,177 @@ fn canvas_image_and_video_sources() {
         let img = cx.draw(win.id);
         let s = img.0 / 20;
         assert_eq!(pixel(&img, s, s), 0x0000ff, "the image's pixel shows");
+    });
+}
+
+/// Fixed cells, auto-width chips and a wrapping line, all showing numbers that change.
+#[derive(Clone)]
+struct Cells {
+    cells: Vec<(u32, u32)>,
+    chips: Vec<u32>,
+    line: u32,
+}
+
+impl Render for Cells {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        body().m_0()
+            .child(div().flex().flex_wrap().gap(px(2.0)).children(self.cells.iter().map(|&(color, label)| {
+                div().w(px(40.0)).h(px(20.0)).bg(rgb(color)).flex().items_center().justify_center()
+                    .text_size(px(12.0)).child(label.to_string())
+            })))
+            .child(div().flex().gap(px(4.0)).children(self.chips.iter().map(|n| {
+                div().px(px(3.0)).bg(rgb(0x335577)).text_size(px(12.0)).child(format!("{n}"))
+            })))
+            .child(p().w(px(150.0)).child("word ".repeat(self.line as usize % 9 + 1)))
+    }
+}
+
+/// A fixed-seed generator: the history of a test must repeat.
+fn next(seed: &mut u64) -> u32 {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 7;
+    *seed ^= *seed << 17;
+    (*seed >> 32) as u32
+}
+
+/// Random histories of changes: every incremental frame is the frame a fresh window draws.
+#[test]
+fn random_histories_match_fresh_renders() {
+    Application::headless().run(|cx| {
+        let mut seed = 0x2545_F491_4F6C_DD1D_u64;
+        let mut model = Cells { cells: (0..24).map(|i| (0x203040 + i * 0x010101, i)).collect(), chips: (0..6).collect(), line: 0 };
+        let live = open(cx, 400.0, 200.0, model.clone());
+        cx.draw(live.id);
+        for step in 0..60 {
+            for _ in 0..=next(&mut seed) % 5 {
+                match next(&mut seed) % 4 {
+                    0 => { let i = next(&mut seed) as usize % model.cells.len(); model.cells[i].1 = next(&mut seed) % 2000; }
+                    1 => { let i = next(&mut seed) as usize % model.cells.len(); model.cells[i].0 = next(&mut seed) & 0xffffff; }
+                    2 => { let i = next(&mut seed) as usize % model.chips.len(); model.chips[i] = next(&mut seed) % 100_000; }
+                    _ => model.line = next(&mut seed),
+                }
+            }
+            let next_model = model.clone();
+            live.root().update(cx, |m, _| *m = next_model);
+            cx.notify_all();
+            let incremental = cx.draw(live.id);
+            let fresh = open(cx, 400.0, 200.0, model.clone());
+            let reference = cx.draw(fresh.id);
+            assert!(incremental.2 == reference.2, "step {step}: incremental frame differs from a fresh render");
+        }
+    });
+}
+
+/// Every frame makes new layout styles: the table that holds them is compacted along the way.
+struct Widths {
+    step: u32,
+}
+
+impl Render for Widths {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let step = self.step;
+        body().m_0().children((0..40).map(move |i| {
+            div().w(px(10.0 + ((step * 40 + i) % 300) as f32 * 0.5 + step as f32 * 0.001)).h(px(4.0)).bg(rgb(0x336699))
+        }))
+    }
+}
+
+#[test]
+fn compacting_the_style_table_keeps_frames_equal() {
+    Application::headless().run(|cx| {
+        let live = open(cx, 300.0, 300.0, Widths { step: 0 });
+        cx.draw(live.id);
+        for step in 1..140 {
+            live.root().update(cx, |w, _| w.step = step);
+            cx.notify_all();
+            let incremental = cx.draw(live.id);
+            if step % 20 == 0 || step > 130 {
+                let fresh = open(cx, 300.0, 300.0, Widths { step });
+                assert!(incremental.2 == cx.draw(fresh.id).2, "step {step}: incremental frame differs from a fresh render");
+            }
+        }
+    });
+}
+
+/// Boxes at fixed places, some just outside the view: with shadows, outlines and text that spills in.
+/// `off` moves the page, so a bigger window can show all of it.
+struct Spill {
+    off: i32,
+}
+
+impl Render for Spill {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let off = self.off;
+        let at = move |x: i32, y: i32, css: &str| {
+            div().style(format!("position: absolute; left: {}px; top: {}px; {css}", x + off, y + off))
+        };
+        body().m_0().style(format!("position: relative; width: {}px; height: {}px", 400 + off, 300 + off)).children([
+            at(-60, 10, "width: 50px; height: 20px; background: #c03030; box-shadow: 30px 0 8px #3030c0"),
+            at(210, 40, "width: 40px; height: 20px; background: #30c030; outline: 12px solid #c0c030"),
+            at(10, -30, "width: 30px; height: 20px; background: #3030c0; box-shadow: 0 25px 6px #c03030"),
+            at(-200, 70, "white-space: nowrap; font-size: 14px; color: #202020").child("a long line that runs far to the right"),
+            at(30, 120, "width: 60px; height: 10px; background: #808080"),
+            at(150, 90, "width: 30px; height: 30px; overflow: hidden").child(
+                div().style("position: absolute; left: -40px; top: 5px; width: 80px; height: 8px; background: #309090")),
+        ])
+    }
+}
+
+/// A box outside the view is not painted: the view shows what the same page shows when all of it is in view.
+#[test]
+fn boxes_outside_the_view_leave_the_view_unchanged() {
+    Application::headless().run(|cx| {
+        let small = open(cx, 200.0, 100.0, Spill { off: 0 });
+        let big = open(cx, 700.0, 600.0, Spill { off: 250 });
+        let (s, b) = (cx.draw(small.id), cx.draw(big.id));
+        let o = 250 * s.0 / 200; // the offset in device pixels
+        for y in 0..s.1 {
+            for x in 0..s.0 {
+                assert_eq!(pixel(&s, x, y), pixel(&b, x + o, y + o), "pixel ({x}, {y})");
+            }
+        }
+    });
+}
+
+struct Quitter;
+
+impl Render for Quitter {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        body().m_0().child(div().id("q").size(px(50.0)).bg(rgb(0xff0000)).on_click(|_, _, cx| cx.shutdown()))
+    }
+}
+
+/// `shutdown` from an event handler (its window lent to it) waits for the
+/// handler to return, then frees every window.
+#[test]
+fn shutdown_from_a_handler_waits_for_it() {
+    Application::headless().run(|cx| {
+        let win = open(cx, 100.0, 100.0, Quitter);
+        cx.draw(win.id);
+        let other = open(cx, 100.0, 100.0, Quitter);
+        cx.simulate_click(win.id, 10.0, 10.0);
+        assert!(cx.window(win.id).is_none() && cx.window(other.id).is_none(), "both windows freed");
+        assert!(cx.window_ids().is_empty());
+    });
+}
+
+struct QuitOnRender;
+
+impl Render for QuitOnRender {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        cx.shutdown();
+        body().m_0()
+    }
+}
+
+/// `shutdown` from a render: the windows the flush had still to render are gone.
+#[test]
+fn shutdown_from_a_render_stops_the_flush() {
+    Application::headless().run(|cx| {
+        let win = open(cx, 100.0, 100.0, QuitOnRender);
+        let other = open(cx, 100.0, 100.0, Boxes);
+        cx.draw(win.id);
+        assert!(cx.window(win.id).is_none() && cx.window(other.id).is_none(), "both windows freed");
+        assert!(cx.window_ids().is_empty());
     });
 }

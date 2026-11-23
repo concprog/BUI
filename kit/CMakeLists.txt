@@ -24,6 +24,14 @@ add_library(bui_kit STATIC
   intern/kit_window_null.c
   intern/kit_icons_svg.c
   intern/kit_regions.c
+  # screens, areas and regions (Blender's editors/screen): see intern/screen/screen_intern.h
+  intern/screen/area.c
+  intern/screen/screen_draw.c
+  intern/screen/screen_edit.c
+  intern/screen/screen_geometry.c
+  intern/screen/screen_layout.c
+  intern/screen/screen_node.c
+  intern/screen/screen_ops.c
   intern/kit_nodes.c
   intern/kit_custom.c
   intern/kit_filebrowser.c # without BUI_FILEBROWSER: BK_file_dialog's stub only
@@ -38,6 +46,9 @@ add_library(bui_kit STATIC
   intern/image/draw.c
   intern/image/video.c
   intern/image/movie.c
+  # sound (intern/audio): the player and BK_sound_*; silent without a device backend below
+  intern/audio/audio.c
+  intern/audio/sound.c
   # Blender's UI sources copied and edited for the kit (C++; see blender/bk_blender.h)
   intern/blender/interface_string_search.cc
   intern/blender/interface_utils.cc
@@ -95,7 +106,6 @@ endif()
 # when asked for (they link those libraries). Its sound plays on the OS's
 # audio output (intern/audio), loaded at run time too.
 if(BUI_VIDEO)
-  target_sources(bui_kit PRIVATE intern/audio/audio.c)
   if(WIN32)
     target_sources(bui_kit PRIVATE intern/image/movie_mf.c intern/audio/device_wasapi.c)
     target_compile_definitions(bui_kit PRIVATE BUI_VIDEO_MF BUI_AUDIO_WASAPI)
@@ -161,6 +171,12 @@ elseif(APPLE)
   set_source_files_properties(intern/kit_window_cocoa.m PROPERTIES COMPILE_OPTIONS "-fno-objc-arc")
   target_compile_definitions(bui_kit PRIVATE BUI_WINDOW_COCOA)
   target_link_libraries(bui_kit PUBLIC "-framework Cocoa" "-framework CoreGraphics" objc)
+elseif(ANDROID)
+  # Native window on Android: the activity's surface (android_native_app_glue), software raster.
+  target_sources(bui_kit PRIVATE intern/kit_window_android.c)
+  target_compile_definitions(bui_kit PRIVATE BUI_WINDOW_ANDROID)
+  target_include_directories(bui_kit PRIVATE ${CMAKE_ANDROID_NDK}/sources/android/native_app_glue)
+  target_link_libraries(bui_kit PUBLIC android log)
 elseif(UNIX AND NOT APPLE)
   # Native windows on X11 (Wayland sessions run it through XWayland).
   # Only the headers are needed: libX11 is dlopen()ed at run time, so builds

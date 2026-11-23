@@ -38,6 +38,7 @@ void main() {
     testReviewFixes();
     testReviewRegressions();
     testCapi();
+    testScreen();
     writeln("bindings/d: all tests passed");
 }
 
@@ -1316,4 +1317,95 @@ private void testCapi() {
           patch == BUI_KIT_VERSION_PATCH, "stable C API version");
     check(cslice(bui_version_string()) == "BUI " ~ BUI_KIT_VERSION_STRING,
           "stable C API version string");
+}
+
+/* Screens: a split, an edge dragged, a region sized and refused values, the layout saved. */
+void testScreen() {
+    auto screen = new Node("screen");
+    auto first = new Node("area");
+    first.set("editor", "3D Viewport");
+    screen.add(first);
+    int made;
+    screen.onArea((NodeEvent e) {
+        if (cast(int) e.b == BK_AREA_NEW) {
+            made++;
+        }
+    });
+    auto context = new Context(screen);
+    auto raster = new Raster(800, 600);
+    context.render(raster, true);
+    auto right = first.split('v', 0.75f);
+    check(right !is null && made == 1, "split makes an area");
+    context.render(raster, false);
+    auto r0 = first.rect, r1 = right.rect;
+    check(r1[0] > r0[0] + r0[2], "the new area is on the right");
+    const edge = r0[0] + r0[2] + 1;
+    context.motion(edge, 300, 0);
+    context.press(edge, 300, 0);
+    context.motion(edge - 50, 300, 0);
+    context.motion(edge - 100, 300, 0);
+    context.release(edge - 100, 300, 0);
+    context.render(raster, false);
+    check(first.rect[2] < r0[2] - 90, "the edge moved");
+    check(cslice(BK_get_str(screen.handle, "layout")).length > 0, "the layout as text");
+
+    // A D-owned node in an area the screen made keeps its handlers when that area closes.
+    auto pane = new Node("column");
+    right.add(pane);
+    int clicks;
+    pane.onClick((NodeEvent) { ++clicks; });
+    check(right.close(), "close an area");
+    pane.dispatch(BK_EV_CLICK, null, 0, 0);
+    check(clicks == 1, "a D-owned node keeps its handlers when its area closes");
+
+    // ... and when its area joins into a neighbor (or is docked away: the same notice).
+    auto joining = first.split('v', 0.75f);
+    auto joined = new Node("column");
+    joining.add(joined);
+    int joinedClicks;
+    joined.onClick((NodeEvent) { ++joinedClicks; });
+    check(first.join(joining), "join an area");
+    joined.dispatch(BK_EV_CLICK, null, 0, 0);
+    check(joinedClicks == 1, "a D-owned node keeps its handlers when its area joins");
+
+    // A close handler that frees a D-owned node of the closing area: no walk reaches it.
+    auto closing = first.split('v', 0.75f);
+    auto freed = new Node("column");
+    closing.add(freed);
+    freed.onClick((NodeEvent) {});
+    closing.onArea((NodeEvent e) {
+        if (cast(int) e.b == BK_AREA_CLOSE) {
+            freed.free();
+        }
+    });
+    check(closing.close(), "close an area whose handler frees its node");
+    check(freed.handle is null, "the handler freed it");
+
+    // A D-owned area that closes takes its nodes' handlers, as `remove()` does: its close
+    // button, whose handler holds the area, keeps the handler when the area is freed after.
+    auto other = first.split('v', 0.5f);
+    auto closeButton = new Node("button");
+    first.add(closeButton);
+    int pressed;
+    closeButton.onClick((NodeEvent) {
+        if (first !is null) {
+            ++pressed;
+        }
+    });
+    check(other !is null && first.close(), "close the D-owned area");
+    first.free();
+    closeButton.dispatch(BK_EV_CLICK, null, 0, 0);
+    check(pressed == 1, "the area's nodes keep their handlers once it is freed");
+
+    auto area = new Node("area");
+    auto side = new Node("sidebar");
+    check(BK_set_num(side.handle, "size", 200) == 1, "a sidebar's size");
+    check(BK_set_str(side.handle, "side", "top") == 0, "a sidebar is never on top");
+    area.add(side);
+    area.add(new Node("column"));
+    check(BK_node_add(area.handle, (new Node("column")).handle, -1) == 0, "one main region");
+    auto areaContext = new Context(area);
+    areaContext.render(new Raster(600, 400), true);
+    check(side.rect[2] == 200, "the sidebar is 200 px");
+    writeln("screen: ok");
 }

@@ -28,9 +28,13 @@
   const now = () => host.now()
   const timers = new Map() // id -> { at, fn, args, every }
   let nextTimer = 1
+  // the delay as browsers take it (a WebIDL long): not a number, negative, infinite or past
+  // 2^31-1 ms is 0
+  const MAX_DELAY = 0x7fffffff
   function addTimer (fn, ms, args, every) {
     const id = nextTimer++
-    const delay = Math.max(0, Number(ms) || 0)
+    const d = Number(ms)
+    const delay = d > 0 && d <= MAX_DELAY ? d : 0
     timers.set(id, { at: now() + delay, fn, args, every: every ? Math.max(1, delay) : 0 })
     return id
   }
@@ -42,16 +46,25 @@
   g.queueMicrotask = (fn) => { Promise.resolve().then(fn) }
   g.performance = { now, timeOrigin: Date.now() - now() }
 
-  /** Run the timers that are due; return the next deadline (ms) or -1. */
+  // The timers due when a batch began, in deadline order. The host runs them one task at a
+  // time, with the promise jobs after each (HTML's event loop).
+  let due = []
+  let head = 0
+
+  /** Run the next due timer; true when more of this batch are left. */
   g.__bui_tick = () => {
-    const t = now()
-    const due = []
-    for (const [id, tm] of timers) if (tm.at <= t) due.push(id)
-    due.sort((a, b) => timers.get(a).at - timers.get(b).at || a - b)
-    for (const id of due) {
-      const tm = timers.get(id)
-      if (!tm) continue
-      if (tm.every) tm.at = t + tm.every
+    if (head === due.length) {
+      const t = now()
+      due = []
+      head = 0
+      for (const [id, tm] of timers) if (tm.at <= t) due.push(id)
+      if (due.length === 0) return false
+      due.sort((a, b) => timers.get(a).at - timers.get(b).at || a - b)
+    }
+    const id = due[head++]
+    const tm = timers.get(id)
+    if (tm) {
+      if (tm.every) tm.at = now() + tm.every
       else timers.delete(id)
       try {
         tm.fn(...tm.args)
@@ -59,6 +72,11 @@
         console.error(e)
       }
     }
+    return head < due.length
+  }
+
+  /** The next deadline (ms), or -1 for no timer. */
+  g.__bui_next = () => {
     let next = -1
     for (const tm of timers.values()) if (next < 0 || tm.at < next) next = tm.at
     return next

@@ -318,6 +318,15 @@ The same rule applies to:
   callback through the reference hooks. The D `MenuItem` tree can be
   temporary.
 
+In a screen, an area that leaves (closed, joined, docked away, restored over
+or dragged away by the user) hands its handlers on as `remove()` does: a
+D-owned area takes its nodes' handlers itself, so a close button whose handler
+holds the area does not keep it alive, and each D-owned node in an area the
+screen made and frees takes its own. The kit says an area left through
+`BK_AREA_CLOSE`, which reaches D only through a `Context`: close the areas of
+a screen that has one. Without it nothing reports the close, so the handlers of
+its nodes stay with the screen's owner until that is freed.
+
 `Window` keeps its `Context` alive, and `Context` keeps its root `Node`
 alive. Free them in any order; each `free()` is safe to call more than once.
 

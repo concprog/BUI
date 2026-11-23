@@ -57,3 +57,40 @@ fn clipped_rows_are_not_in_view() {
         assert!((width(cx, w, "low") - 90.0).abs() < 0.6, "scrolled in: {} at {:?}", width(cx, w, "low"), cx.element_bounds(w, "low"));
     });
 }
+
+struct Sliding;
+
+impl Render for Sliding {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        rsx! {
+            <body style="margin: 0">
+                <motion.div id="box" style="position: absolute; top: 400px; height: 40px; width: 10px"
+                    animate={{ y: -300 }} whileInView={{ width: 90 }} transition={{ duration: 0.2, ease: "none" }} />
+            </body>
+        }
+    }
+}
+
+/// A translate that moves an element into view in frames of moving values alone (no render)
+/// switches its in-view state all the same.
+#[test]
+fn a_translate_moves_into_view() {
+    Application::headless().run(|cx| {
+        blenderui::motion::lag_smoothing(0.0, 0.0);
+        let opts = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(300.0), px(300.0)),
+            })),
+            ..Default::default()
+        };
+        let w = cx.open_window(opts, |_, cx| cx.new(|_| Sliding)).unwrap().id;
+        cx.draw(w);
+        assert!((width(cx, w, "box") - 10.0).abs() < 0.6, "below the window: {}", width(cx, w, "box"));
+        for _ in 0..30 {
+            cx.advance_clock(Duration::from_millis(30));
+            cx.draw(w);
+        }
+        assert!((width(cx, w, "box") - 90.0).abs() < 0.6, "slid in: {} at {:?}", width(cx, w, "box"), cx.element_bounds(w, "box"));
+    });
+}

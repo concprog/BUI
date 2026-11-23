@@ -52,6 +52,16 @@ pub const BK_EV_VIEW: c_int = 17;
 pub const BK_EV_SCROLL: c_int = 18;
 pub const BK_EV_CONFIGURE: c_int = 19;
 pub const BK_EV_KEYRELEASE: c_int = 20;
+/// A screen's areas: a = the area's child index, b = `BK_AREA_*`.
+pub const BK_EV_AREA: c_int = 21;
+/// A panel dragged to a new place: a = old index, b = new index.
+pub const BK_EV_MOVE: c_int = 22;
+/// An area's region resized, hidden or shown: a = size, b = hidden.
+pub const BK_EV_RESIZE: c_int = 23;
+/// `BK_EV_AREA`'s b: a new area (on the screen), one leaving or opened in a window (on the area).
+pub const BK_AREA_NEW: c_int = 1;
+pub const BK_AREA_CLOSE: c_int = 2;
+pub const BK_AREA_WINDOW: c_int = 3;
 
 // Modifier bits for input calls.
 pub const BK_SHIFT: c_int = 1;
@@ -80,9 +90,15 @@ pub const BK_ITEM_IMAGE: c_int = 6;
 pub const BK_ITEM_ROUNDRECT: c_int = 7;
 /// A GPU shader over the item's box (`BUI_effect_create`); the item's image is the fallback.
 pub const BK_ITEM_EFFECT: c_int = 8;
+/// A GPU pass into a render target (`BUI_target_create`): see `effect_target`.
+pub const BK_ITEM_PASS: c_int = 9;
 
 /// The most textures an effect samples, the most floats it reads, the longest source (bytes).
 pub const BK_EFFECT_MAX_INPUTS: usize = 8;
+/// Render target formats (`BUI_target_create`).
+pub const BUI_TARGET_RGBA8: c_int = 0;
+pub const BUI_TARGET_RGBA16F: c_int = 1;
+pub const BUI_TARGET_RGBA32F: c_int = 2;
 pub const BK_EFFECT_MAX_FLOATS: usize = 256;
 pub const BK_EFFECT_MAX_SOURCE: usize = 65536;
 
@@ -133,6 +149,10 @@ pub struct BKCanvasItem {
     pub effect_inputs: [c_int; BK_EFFECT_MAX_INPUTS],
     pub effect_floats: *const c_float,
     pub n_effect_floats: c_int,
+    /// `BK_ITEM_IMAGE`: how far the image is faded out, 0 (opaque, the default) to 1.
+    pub fade: c_float,
+    /// `BK_ITEM_PASS`: the render target the effect draws into (`effect` 0: a clear to the floats).
+    pub effect_target: c_int,
 }
 
 /// A `<video>` (`BKVideo`): the kit's player (OS decoders; frames in one GPU
@@ -148,6 +168,21 @@ pub const BK_VIDEO_PLAYING: c_int = 1;
 pub const BK_VIDEO_PAUSED: c_int = 2;
 pub const BK_VIDEO_ENDED: c_int = 3;
 pub const BK_VIDEO_ERROR: c_int = 4;
+
+/// A sound (`BKSound`): an audio file or url on the default output, decoded by
+/// the video backend's audio reader on the output's thread. UI-thread object.
+#[repr(C)]
+pub struct BKSound {
+    _private: [u8; 0],
+}
+
+/// `BK_SOUND_*` states (the same values as `BK_VIDEO_*`).
+pub const BK_SOUND_LOADING: c_int = 0;
+pub const BK_SOUND_PLAYING: c_int = 1;
+pub const BK_SOUND_PAUSED: c_int = 2;
+pub const BK_SOUND_ENDED: c_int = 3;
+pub const BK_SOUND_ERROR: c_int = 4;
+pub const BK_SOUND_NO_OUTPUT: c_int = 5;
 
 /// An animation stepped by the caller (`BKAnim`): GIF, animated WebP.
 #[repr(C)]
@@ -233,7 +268,17 @@ pub struct BKWindowCallbacks {
     pub on_close: Option<unsafe extern "C" fn(data: *mut c_void, win: *mut BKWindow) -> c_int>,
     pub on_frame: Option<unsafe extern "C" fn(data: *mut c_void, win: *mut BKWindow)>,
     pub on_focus: Option<unsafe extern "C" fn(data: *mut c_void, win: *mut BKWindow, active: c_int)>,
+    /// What the app draws at (x, y) (physical pixels) in a window whose title bar it draws: a
+    /// `BK_WINDOW_AREA_*`.
+    pub hit_test: Option<unsafe extern "C" fn(data: *mut c_void, win: *mut BKWindow, x: c_int, y: c_int) -> c_int>,
 }
+
+// Window areas (BK_WINDOW_AREA_*), for `hit_test`.
+pub const BK_WINDOW_AREA_CLIENT: c_int = 0;
+pub const BK_WINDOW_AREA_DRAG: c_int = 1;
+pub const BK_WINDOW_AREA_MIN: c_int = 2;
+pub const BK_WINDOW_AREA_MAX: c_int = 3;
+pub const BK_WINDOW_AREA_CLOSE: c_int = 4;
 
 unsafe extern "C" {
     // look
@@ -269,6 +314,15 @@ unsafe extern "C" {
     pub fn BK_node_child(node: *const BKNode, i: c_int) -> *mut BKNode;
     pub fn BK_node_remove(parent: *mut BKNode, child: *mut BKNode);
     pub fn BK_node_rect(node: *const BKNode, r_rect: *mut c_int);
+    pub fn BK_node_child_count(node: *const BKNode) -> c_int;
+    pub fn BK_node_parent(node: *const BKNode) -> *mut BKNode;
+
+    // screens, areas and regions (Blender's editors/screen); axis: b'h' or b'v', where: BKDock
+    pub fn BK_area_split(area: *mut BKNode, axis: c_int, factor: c_float) -> *mut BKNode;
+    pub fn BK_area_join(keep: *mut BKNode, gone: *mut BKNode) -> c_int;
+    pub fn BK_area_dock(area: *mut BKNode, target: *mut BKNode, where_: c_int, factor: c_float) -> c_int;
+    pub fn BK_area_swap(a: *mut BKNode, b: *mut BKNode) -> c_int;
+    pub fn BK_area_close(area: *mut BKNode) -> c_int;
     pub fn BK_node_natural(node: *mut BKNode, r_size: *mut c_int);
     pub fn BK_node_set_image(node: *mut BKNode, rgba: *const c_uchar, w: c_int, h: c_int);
     pub fn BK_node_set_imbuf(node: *mut BKNode, ib: *const BKImBuf);
@@ -279,6 +333,8 @@ unsafe extern "C" {
     pub fn BK_imbuf_decode(data: *const c_void, len: usize, max_w: c_int, max_h: c_int) -> *mut BKImBuf;
     pub fn BK_imbuf_load(path: *const c_char, max_w: c_int, max_h: c_int) -> *mut BKImBuf;
     pub fn BK_imbuf_from_rgba(rgba: *const c_uchar, w: c_int, h: c_int, stride: c_int) -> *mut BKImBuf;
+    /// An image of premultiplied ARGB words (copied as they are).
+    pub fn BK_imbuf_from_argb(argb: *const u32, w: c_int, h: c_int) -> *mut BKImBuf;
     pub fn BK_imbuf_free(ib: *mut BKImBuf);
     pub fn BK_imbuf_size(ib: *const BKImBuf, r_w: *mut c_int, r_h: *mut c_int) -> c_int;
     pub fn BK_imbuf_pixels(ib: *const BKImBuf, frame: c_int) -> *const u32;
@@ -286,6 +342,8 @@ unsafe extern "C" {
     pub fn BK_imbuf_rgba(ib: *const BKImBuf, frame: c_int, dst: *mut c_uchar) -> c_int;
     pub fn BK_imbuf_texture(ib: *const BKImBuf, frame: c_int) -> c_int;
     pub fn BK_imbuf_texture_update(ib: *const BKImBuf, frame: c_int, tex: c_int) -> c_int;
+    /// A BUI texture of `w` x `h` RGBA bytes (`pitch` 0: `w * 4`; null: transparent); 0 on failure.
+    pub fn BUI_texture_create(w: c_int, h: c_int, rgba: *const c_void, pitch: c_int) -> c_int;
     /// Frees a BUI texture (`BK_imbuf_texture`, Dear ImGui user textures).
     pub fn BUI_texture_free(tex: c_int);
 
@@ -341,6 +399,16 @@ unsafe extern "C" {
     pub fn BK_video_texture(v: *mut BKVideo, tex: c_int, max_w: c_int, max_h: c_int) -> c_int;
     pub fn BK_node_set_video(node: *mut BKNode, v: *mut BKVideo, fit: c_int);
     pub fn BK_video_backends() -> *const c_char;
+    pub fn BK_sound_new(src: *const c_char) -> *mut BKSound;
+    pub fn BK_sound_free(s: *mut BKSound);
+    pub fn BK_sound_play(s: *mut BKSound);
+    pub fn BK_sound_pause(s: *mut BKSound);
+    pub fn BK_sound_seek(s: *mut BKSound, seconds: c_double);
+    pub fn BK_sound_set_volume(s: *mut BKSound, volume: c_double);
+    pub fn BK_sound_volume(s: *const BKSound) -> c_double;
+    pub fn BK_sound_state(s: *const BKSound) -> c_int;
+    pub fn BK_sound_time(s: *const BKSound) -> c_double;
+    pub fn BK_sound_duration(s: *const BKSound) -> c_double;
     /// Allocations made through MEM_* so far (allocations per frame, in benchmarks).
     pub fn MEM_get_allocations_total() -> usize;
     /// Blender's allocator counters (bui_core): bytes and blocks held through MEM_*.
@@ -369,10 +437,10 @@ unsafe extern "C" {
     pub fn BK_canvas_set_item(canvas: *mut BKNode, item: *const BKCanvasItem);
     pub fn BK_canvas_add_item(canvas: *mut BKNode, item: *const BKCanvasItem);
     pub fn BK_canvas_put_item(canvas: *mut BKNode, index: c_int, item: *const BKCanvasItem);
-    /// Offscreen: `items` (device pixels) drawn into a `w` x `h` straight-alpha
-    /// RGBA8 buffer whose top left is at (`x0`, `y0`). 1 on success.
+    /// Offscreen: `items` (device pixels) drawn into a `w` x `h` buffer of
+    /// premultiplied ARGB words whose top left is at (`x0`, `y0`). 1 on success.
     pub fn BK_canvas_rasterize(items: *const BKCanvasItem, n: c_int, x0: f32, y0: f32, w: c_int, h: c_int,
-                               rgba: *mut u8) -> c_int;
+                               argb: *mut u32) -> c_int;
     pub fn BK_canvas_truncate(canvas: *mut BKNode, count: c_int);
     pub fn BK_canvas_delete(canvas: *mut BKNode, id: c_int);
     pub fn BK_canvas_count(canvas: *mut BKNode) -> c_int;
@@ -384,10 +452,14 @@ unsafe extern "C" {
     pub fn BK_render(ctx: *mut BKContext, r: *mut BuiRaster, w: c_int, h: c_int, full: c_int)
         -> c_int;
     pub fn BK_needs_render(ctx: *mut BKContext) -> c_int;
+    pub fn BK_animating(ctx: *mut BKContext) -> c_int;
     pub fn BK_press(ctx: *mut BKContext, x: c_int, y: c_int, mods: c_int) -> c_int;
     pub fn BK_release(ctx: *mut BKContext, x: c_int, y: c_int, mods: c_int) -> c_int;
     pub fn BK_motion(ctx: *mut BKContext, x: c_int, y: c_int, mods: c_int) -> c_int;
+    pub fn BK_cancel(ctx: *mut BKContext, mods: c_int) -> c_int;
     pub fn BK_wheel(ctx: *mut BKContext, x: c_int, y: c_int, delta: c_int, mods: c_int) -> c_int;
+    pub fn BK_scroll_px(ctx: *mut BKContext, x: c_int, y: c_int, dx: f32, dy: f32, mods: c_int)
+        -> c_int;
     pub fn BK_key(ctx: *mut BKContext, text: *const c_char, keysym: *const c_char, mods: c_int)
         -> c_int;
     pub fn BK_key_release(ctx: *mut BKContext, keysym: *const c_char, mods: c_int) -> c_int;
@@ -445,6 +517,13 @@ unsafe extern "C" {
     /// An application shader over a box, on the GPU: 1 when drawn, 0 when it cannot run (the caller draws its fallback).
     pub fn BUI_raster_effect(r: *mut BuiRaster, x: c_float, y: c_float, w: c_float, h: c_float, effect: c_int,
                              inputs: *const c_int, floats: *const c_float, n_floats: c_int) -> c_int;
+    /// A render target (BUI texture id): effects draw into it with `BUI_raster_effect_to`; `format` is `BUI_TARGET_*`.
+    pub fn BUI_target_create(w: c_int, h: c_int, format: c_int) -> c_int;
+    /// An effect over all of a render target: 1 when drawn, 0 when it cannot run here.
+    pub fn BUI_raster_effect_to(r: *mut BuiRaster, target: c_int, effect: c_int, inputs: *const c_int,
+                                floats: *const c_float, n_floats: c_int) -> c_int;
+    /// Fill a whole render target with rgba (4 floats, as given).
+    pub fn BUI_raster_target_clear(r: *mut BuiRaster, target: c_int, rgba: *const c_float) -> c_int;
     pub fn BUI_text_measure(family: *const c_char, flags: c_int, size: c_float,
                             utf8: *const c_char, len: c_int, r_width: *mut c_float) -> c_int;
     /// Registers a TrueType/OpenType font (copied) for `family` + style flags.
@@ -457,4 +536,7 @@ unsafe extern "C" {
     pub fn BK_window_gpu(win: *mut BKWindow) -> c_int;
     pub fn BUI_text_add_font(family: *const c_char, flags: c_int, data: *const c_void,
                              len: c_int) -> c_int;
+    /// Font folder `i` the text engine reads font files from (BUI_FONT_DIR, then the
+    /// platform's), written to `r_dir` (`cap` bytes); its length, 0 past the last.
+    pub fn BUI_text_font_dir(i: c_int, r_dir: *mut c_char, cap: c_int) -> c_int;
 }

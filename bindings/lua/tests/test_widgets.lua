@@ -133,6 +133,8 @@ check(type(cnv.canvas_raise) == "function", "canvas_raise not a function")
 
 local cnv_root = bui.Node("frame")
 cnv_root:add(cnv)
+-- a frame's children need a layout manager to get a box (unpacked, the canvas is 0x0 and draws nothing)
+cnv:geom(bui.GEOM_PACK, {fill = 3, expand = 1})
 local cnv_ctx = bui.Context(cnv_root)
 
 -- Set a canvas item (rectangle)

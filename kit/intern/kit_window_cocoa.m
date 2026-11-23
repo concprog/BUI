@@ -1548,10 +1548,11 @@ int BK_window_timer(BKWindow *win, int ms)
 {
   const int ident = win->next_timer++;
   BKCocoaTimer *t = timer_slot(win, ident);
-  if (t) {
-    t->ident = ident;
-    t->due = now_ms() + BK_MAX(0, ms);
+  if (!t) {
+    return -1; /* every slot is taken: no timer, so no id that would never fire */
   }
+  t->ident = ident;
+  t->due = now_ms() + BK_MAX(0, ms);
   return ident;
 }
 
@@ -1630,6 +1631,13 @@ void BK_window_wm(BKWindow *win, const char *key, double a, double b)
       win->override = a != 0.0;
       [nw setStyleMask:win->override ? NSWindowStyleMaskBorderless : win->style];
       update_size(win);
+    }
+    else if (!strcmp(key, "move")) { /* from the press being handled (macOS 10.11) */
+      NSEvent *ev = [NSApp currentEvent];
+      if (ev.type == NSEventTypeLeftMouseDown) {
+        bk_cancel_press(win->ctx, 0); /* the drag takes the release */
+        [nw performWindowDragWithEvent:ev];
+      }
     }
     else if (!strcmp(key, "state")) {
       switch (BK_CLAMP((int)a, 0, 3)) {

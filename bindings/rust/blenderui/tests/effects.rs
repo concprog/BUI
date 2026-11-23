@@ -195,6 +195,24 @@ fn scroll_snap_mandatory() {
 }
 
 #[test]
+fn a_touch_drag_is_not_snapped_a_step() {
+    Application::headless().run(|cx| {
+        let (w, _) = page(cx, 200.0, 200.0, "
+            body { margin: 0 }
+            #s { height: 100px; overflow-y: scroll; scroll-snap-type: y mandatory }
+            .p { height: 100px; scroll-snap-align: start }
+        ", || {
+            body().child(div().id("s").child(div().class("p")).child(div().id("p2").class("p")).child(div().class("p")))
+        });
+        cx.simulate_scroll_px(w, 50.0, 50.0, -10.0);
+        cx.draw(w);
+        // the content follows the finger 10 px, not a whole page
+        let p2 = cx.element_bounds(w, "p2").unwrap();
+        assert_eq!(p2.origin.y, 90.0, "moved as far as the finger: {p2:?}");
+    });
+}
+
+#[test]
 fn overflow_wrap_in_inline_text() {
     Application::headless().run(|cx| {
         let (w, _) = page(cx, 400.0, 400.0, "

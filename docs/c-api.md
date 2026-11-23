@@ -74,16 +74,16 @@ int main(void)
 
 | Concept | API |
 |---|---|
-| **Nodes** | `BK_node_new(type)`, `BK_node_add(parent, child, index)`, `BK_node_remove`, `BK_node_child(_count)`, `BK_node_parent`, `BK_node_rect`, `BK_node_natural`, `BK_node_invalidate`, `BK_node_relayout`, `BK_node_free` |
+| **Nodes** | `BK_node_new(type)`, `BK_node_add(parent, child, index)` (0 for a node under itself), `BK_node_remove`, `BK_node_child(_count)`, `BK_node_parent`, `BK_node_rect`, `BK_node_natural`, `BK_node_invalidate`, `BK_node_relayout`, `BK_node_free` |
 | **Properties** | `BK_set_num / BK_set_str / BK_set_color / BK_set_strs` and `BK_get_*`, by name (`"value"`, `"text"`, `"label"`, `"min"`, `"items"`, `"enabled"` ...). `"set_value"` sets a value *and* notifies. |
 | **Geometry** | `BK_geom_set_manager(node, BK_GEOM_PACK / GRID / PLACE)`, `BK_geom_set(node, key, v)` (`side`, `fill`, `expand`, `anchor`, `padx0`..., `row`, `column`, `sticky`, `x`, `relx`, `reqwidth` ...), `BK_frame_grid_weight`. Children of `frame` and `canvas` nodes. |
-| **Context** | `BK_context_new(root)`: input state, popups, focus, undo. Input goes in with `BK_press`, `BK_release`, `BK_motion`, `BK_wheel`, `BK_key`, `BK_key_release`, `BK_button`, `BK_context_menu` (input methods: `BK_ime_event`, `BK_ime_state`, see below); frames come out of `BK_render(ctx, raster, w, h, full)`, which returns the number of redrawn regions (0 means nothing changed). `BK_configure(ctx, w, h)` reports a new window size (`BK_EV_CONFIGURE`) without drawing, so a host whose handlers rebuild the tree (the Rust binding) can do that before the first draw at the new size; `BK_render` calls it itself. |
+| **Context** | `BK_context_new(root)`: input state, popups, focus, undo. Input goes in with `BK_press`, `BK_release`, `BK_motion`, `BK_cancel` (the host lost the pointer mid-press: a drag is cancelled as on Escape and the press ends with no click), `BK_wheel`, `BK_key`, `BK_key_release`, `BK_button`, `BK_context_menu` (input methods: `BK_ime_event`, `BK_ime_state`, see below); frames come out of `BK_render(ctx, raster, w, h, full)`, which returns the number of redrawn regions (0 means nothing changed). `BK_configure(ctx, w, h)` reports a new window size (`BK_EV_CONFIGURE`) without drawing, so a host whose handlers rebuild the tree (the Rust binding) can do that before the first draw at the new size; `BK_render` calls it itself. |
 | **Host** | `BKHost`: `request` (schedule a render), `set_cursor`, `warp`, clipboard, `schedule` (timers), `emit` (events). A `BKWindow` provides all of them. |
 | **Events** | `emit(data, node, kind, ref, a, b)`. Kinds: `BK_EV_CHANGE`, `CLICK`, `CALL` (menu item or hotkey), `RENAME`, `ACTIVATE`, `TOGGLE`, `BROWSE`, `SUBMIT`. With the `"events"` property you also get raw `PRESS` / `RELEASE` / `DOUBLE` / `MOTION` / `ENTER` / `LEAVE` / `KEY` / `KEYRELEASE` / `WHEEL` / `CONFIGURE`, plus `VIEW` and `SCROLL` for scrolling. |
-| **Windows** | `BK_window_new`, `show`, `close`, `set_title`, `set_size`, `wm(key, a, b)` (position, topmost, alpha, override, transparent, resizable, minsize, state; on Wayland also layer and anchor for wlr-layer-shell), callbacks `on_timer`, `on_close`, `on_frame`, `on_focus`, `timer`, `run`, `pump`, `quit` |
+| **Windows** | `BK_window_new`, `show`, `close`, `set_title`, `set_size`, `wm(key, a, b)` (position, topmost, alpha, override, transparent, resizable, minsize, state; on Wayland also layer and anchor for wlr-layer-shell), callbacks `on_timer`, `on_close`, `on_frame`, `on_focus`, `hit_test` (the parts of a title bar the app draws: `"override"` 2), `move`, `timer`, `run`, `pump`, `quit` |
 | **GPU rendering** | `BUI_gpu_set_default(1)` (all new windows), `BK_window_set_gpu(win, 1)` (one window), `BK_window_gpu(win)` (1 once frames draw on the GPU). `BUI_GPU=1/0` overrides. For your own rasters: `BUI_raster_gpu_attach(r, hwnd_or_NULL, wait)`, `BUI_raster_gpu_poll`, `BUI_raster_is_gpu`. |
 | **Theme** | `BK_set_theme("dark" / "light")` (Blender's Dark or Light preset; every context relayouts and redraws), `BK_theme_name()`, `BK_theme_color(key, rgba)` (`"region_bg"`, `"text"`, `"regular.inner"`, or the plain-English and Blender keys of a theme file: `"button.background"`, `"user_interface.wcol_regular.inner"`). Your own themes: `BK_theme_load_file(path)` / `BK_theme_load_json(text)` register the themes of a JSON theme file (-1 and `BK_theme_error()` on a mistake), `BK_set_theme(name)` chooses one, `BK_theme_set_color(key, rgba)` / `BK_theme_set_num(key, v)` change one value of the active theme (colors, `roundness`, `border.width`, `corners.top_left`, ...), `BK_set_font_size(points)` sets the UI text size; see [theming.md](theming.md). Without a call, `BUI_THEME=dark\|light` picks the theme. `BK_set_scale` sets the UI scale; `BK_set_text_shadow(0)` turns off Blender's UI text shadows (on by default; Python turns them off). |
-| **Text** | `BUI_text_measure`, `BUI_raster_text`, `BUI_text_add_font(family, flags, data, len)` (register a font; needed on wasm) |
+| **Text** | `BUI_text_measure`, `BUI_raster_text`, `BUI_text_add_font(family, flags, data, len)` (register a font; needed on wasm), `BUI_text_font_dir(i, buf, cap)` (the font folders the engine reads files from) |
 | **Raster alpha** | `BUI_raster_set_alpha(r, 1)` keeps premultiplied alpha in a CPU raster, `BUI_raster_clear` makes it transparent, `BUI_raster_alpha` reads the setting. An opaque raster draws the same bytes as before. |
 | **Specialised** | Canvas display list (`BK_canvas_set_item`), text area (`BK_textarea_*`), trees (`BK_tree_item_*`), menus (`BK_open_menu`, `BK_open_pie`), the hit test (`BK_hit_at`), color ramps and curves, `BK_undo` / `BK_redo` |
 | **Custom nodes** | A `custom` node draws and handles input itself: `BK_custom_set(node, &cls, data)` with `event` (pointer with all three buttons and a grab, precise wheel via `BK_scroll`, keys and text while focused, key releases, focus), `frame` (called by `BK_render` when requested with `BK_custom_request_frame(node, ms)`: immediate-mode UIs build their frame there) and `draw` (raster + rect). `BK_custom_set_cursor`, `BK_node_context`. Dear ImGui runs on it: [../bindings/imgui](../bindings/imgui/README.md). |
@@ -165,6 +165,44 @@ BK_video_free(v);                           /* after nodes / items let go */
 `BK_video_backends()` names what the build has. Optional parts (image formats,
 video, the GPU renderers, the file browser) are CMake options from
 `features.json`; see [Binary size](https://bui.preetham.top/docs/reference/binary-size/).
+
+## Screens, areas and regions
+
+Blender's editor layout (`kit/intern/screen`, ported from `editors/screen`). A `"screen"` holds
+`"area"` nodes on Blender's graph of shared edges; the user drags edges, corners and region
+edges as in Blender, and so can you:
+
+```c
+BKNode *screen = BK_node_new("screen");
+BKNode *view = BK_node_new("area");
+BK_set_str(view, "editor", "3D Viewport");
+BK_node_add(screen, view, -1);                          /* the first area fills the screen */
+BKNode *props = BK_area_split(view, BK_AXIS_V, 0.75f);  /* the right quarter; NULL if too small */
+
+BKNode *side = BK_node_new("sidebar");                  /* a region: areaheader, sidebar, or */
+BK_set_num(side, "size", 280);                          /* any node with a "region" property */
+BK_set_str(side, "hotkey", "n");
+BK_node_add(view, side, -1);
+BK_node_add(view, main_view, -1);                       /* the one child that isn't a region */
+
+BK_area_dock(props, view, BK_DOCK_LEFT, 0.3f);           /* or BK_area_join / _swap / _close */
+BK_set_str(view, "full", "maximized");                  /* "", "maximized", "focus" */
+const char *saved = BK_get_str(screen, "layout");       /* JSON: set it back to restore */
+```
+
+Areas the screen makes (a split, a dock, a restored layout) copy their source's `"editor"` and
+are announced with `BK_EV_AREA` / `BK_AREA_NEW` on the screen (`a`: the child index): fill them.
+The notices come once the edit is done, as Blender queues its notifiers, so a handler may edit
+the screen again; `BK_area_split` returns NULL when the handler closed the new area. A host's
+`BK_node_remove` of an area is told on `BK_EV_CHANGE` once the area has left (the saved
+`"layout"` no longer has it). The `BK_area_*` calls refuse an area that is closing (from its
+`BK_AREA_CLOSE` handler, or one further down the chain), so nested close handlers close it once.
+`BK_AREA_CLOSE` and `BK_AREA_WINDOW` (dragged out of the window) arrive on the area itself;
+`BK_EV_CHANGE` on the screen after every change, `BK_EV_RESIZE` on a region the user resized,
+hid or flipped, `BK_EV_MOVE` on a panel dragged to a new place. Region properties: `"region"`
+(header, tool_header, footer, asset_shelf, channels, nav_bar, toolbar, sidebar, execute, hud),
+`"size"`, `"hidden"`, `"side"`, `"overlap"`, `"resizable"`, `"maxsize"`, `"hotkey"`. Setters
+return 0 for what they refuse. See [Screens, areas and regions](https://bui.preetham.top/docs/concepts/screens/).
 
 ## Versioning and stability
 

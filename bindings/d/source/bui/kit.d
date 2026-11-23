@@ -71,6 +71,9 @@ enum BK_EV_VIEW = 17;
 enum BK_EV_SCROLL = 18;
 enum BK_EV_CONFIGURE = 19;
 enum BK_EV_KEYRELEASE = 20;
+enum BK_EV_AREA = 21;   /* a screen's areas: a = child index, b = BK_AREA_* */
+enum BK_EV_MOVE = 22;   /* a panel moved: a = old index, b = new index */
+enum BK_EV_RESIZE = 23; /* a region resized, hidden or shown: a = size, b = hidden */
 
 /* ---- geometry ------------------------------------------------------------ */
 enum BK_GEOM_NONE = 0;
@@ -253,6 +256,13 @@ struct BKCanvasItem {
     int fit;
     int frame;
     BKVideo* video;
+    int no_hit;
+    int effect;
+    int[8] effect_inputs; // BK_EFFECT_MAX_INPUTS
+    const(float)* effect_floats;
+    int n_effect_floats;
+    float fade = 0; // D's float default is NaN: 0 keeps the opaque default
+    int effect_target; // BK_ITEM_PASS: the render target
 }
 
 struct BKCustomEvent {
@@ -312,6 +322,7 @@ alias BKWindowTimerFn = extern(C) void function(void* data, BKWindow* win, int i
 alias BKWindowCloseFn = extern(C) int function(void* data, BKWindow* win);
 alias BKWindowFrameFn = extern(C) void function(void* data, BKWindow* win);
 alias BKWindowFocusFn = extern(C) void function(void* data, BKWindow* win, int active);
+alias BKWindowHitTestFn = extern(C) int function(void* data, BKWindow* win, int x, int y);
 
 struct BKWindowCallbacks {
     void* data;
@@ -319,6 +330,15 @@ struct BKWindowCallbacks {
     BKWindowCloseFn on_close;
     BKWindowFrameFn on_frame;
     BKWindowFocusFn on_focus;
+    BKWindowHitTestFn hit_test;
+}
+
+enum {
+    BK_WINDOW_AREA_CLIENT = 0,
+    BK_WINDOW_AREA_DRAG = 1,
+    BK_WINDOW_AREA_MIN = 2,
+    BK_WINDOW_AREA_MAX = 3,
+    BK_WINDOW_AREA_CLOSE = 4,
 }
 
 struct BKWidgetDraw {
@@ -377,6 +397,23 @@ int BK_icon_count();
 const(char)* BK_icon_name(int id);
 int BK_icon_list_count();
 const(char)* BK_icon_list_name(int i);
+
+/* -- screens, areas and regions (see BUI_kit.h) ----------------------------- */
+enum BK_AXIS_H = 'h';
+enum BK_AXIS_V = 'v';
+enum BK_DOCK_LEFT = 0;
+enum BK_DOCK_RIGHT = 1;
+enum BK_DOCK_TOP = 2;
+enum BK_DOCK_BOTTOM = 3;
+enum BK_DOCK_CENTER = 4;
+enum BK_AREA_NEW = 1;
+enum BK_AREA_CLOSE = 2;
+enum BK_AREA_WINDOW = 3;
+BKNode* BK_area_split(BKNode* area, int axis, float factor);
+int BK_area_join(BKNode* keep, BKNode* gone);
+int BK_area_dock(BKNode* area, BKNode* target, int where, float factor);
+int BK_area_swap(BKNode* a, BKNode* b);
+int BK_area_close(BKNode* area);
 
 /* -- nodes ----------------------------------------------------------------- */
 BKNode* BK_node_new(const(char)* type);

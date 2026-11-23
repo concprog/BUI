@@ -125,6 +125,28 @@ bool imb_plan(const BKImageFit *t, int iw, int ih, int orient, BKImPlan *r)
   return true;
 }
 
+/* Scale steps of the whole decodes, per doubling: a decode is at most 2^(1/4) (1.19) times the size
+ * drawn, so a box resized within a step draws the same decode (no decoder runs) at a scale the
+ * bilinear draw keeps sharp. */
+#define SCALE_STEPS 4.0
+
+bool imb_whole_fit(const BKImageInfo *info, const BKImageFit *want, BKImageFit *r_whole)
+{
+  float dst[4], src[4];
+  bk_image_fit(want, info->width, info->height, dst, src);
+  if (dst[2] < 0.5f || dst[3] < 0.5f) {
+    return false; /* nothing of it shows */
+  }
+  /* the largest scale it is drawn at (fill stretches), as a step; never above intrinsic, an SVG
+   * too: the decoders never upscale (imb_plan), so a larger step would only be another entry of
+   * the same pixels. Drawing upscales. */
+  const double scale = fmax(dst[2] / src[2], dst[3] / src[3]);
+  const double cap = fmin(1.0, exp2(ceil(log2(scale) * SCALE_STEPS - 1e-6) / SCALE_STEPS));
+  *r_whole = (BKImageFit){BK_FIT_FILL, BK_MAX(1, (int)lround(info->width * cap)),
+                          BK_MAX(1, (int)lround(info->height * cap)), 0.5f, 0.5f, want->frame};
+  return true;
+}
+
 BKImBuf *imb_finish(BKImBuf *ib, const BKImPlan *p)
 {
   const bool swap = p->orient >= 5;

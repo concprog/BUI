@@ -8,7 +8,7 @@
 static const char *g_numeric_keys[] = {
   "value", "min", "max", "step", "precision", "padding", "margin",
   "width", "height", "reqwidth", "reqheight", "fill", "expand",
-  "side", "padx0", "padx1", "pady0", "pady1", "ipadx", "ipady",
+  "padx0", "padx1", "pady0", "pady1", "ipadx", "ipady",
   "row", "column", "rowspan", "columnspan", "sticky",
   "relx", "rely", "relwidth", "relheight",
   "anchor", "scale", "factor", "progress", "value_min", "value_max",
@@ -19,6 +19,7 @@ static const char *g_numeric_keys[] = {
   "x", "y", "w", "h",
   "html", "editable",
   "weight", "scroll", "tile", "current", "default",
+  "size", "overlap", "resizable", "maxsize", "pinned", /* regions and panels */
   "low", "high", "optimum",
   NULL
 };
@@ -644,6 +645,7 @@ static int l_new_context(lua_State *L) {
 
   luabui_Context *cud = (luabui_Context *)lua_newuserdata(L, sizeof(luabui_Context));
   cud->ctx = ctx;
+  cud->raster = NULL;
   luaL_getmetatable(L, LUABUI_CONTEXT_MT);
   lua_setmetatable(L, -2);
   luabui_map_ctx(L, ctx, -1);
@@ -872,6 +874,11 @@ BUI_LUA_ENTRY int luaopen_bui(lua_State *L) {
   lua_pushinteger(L, BK_EV_WHEEL); lua_setfield(L, -2, "EV_WHEEL");    lua_pushinteger(L, BK_EV_SUBMIT); lua_setfield(L, -2, "EV_SUBMIT");
   lua_pushinteger(L, BK_EV_VIEW); lua_setfield(L, -2, "EV_VIEW");     lua_pushinteger(L, BK_EV_SCROLL); lua_setfield(L, -2, "EV_SCROLL");
   lua_pushinteger(L, BK_EV_CONFIGURE); lua_setfield(L, -2, "EV_CONFIGURE");lua_pushinteger(L, BK_EV_KEYRELEASE); lua_setfield(L, -2, "EV_KEYRELEASE");
+  /* screens: areas made / closed / dragged out, panels moved, regions resized */
+  lua_pushinteger(L, BK_EV_AREA); lua_setfield(L, -2, "EV_AREA");       lua_pushinteger(L, BK_EV_MOVE); lua_setfield(L, -2, "EV_MOVE");
+  lua_pushinteger(L, BK_EV_RESIZE); lua_setfield(L, -2, "EV_RESIZE");
+  lua_pushinteger(L, BK_AREA_NEW); lua_setfield(L, -2, "AREA_NEW");     lua_pushinteger(L, BK_AREA_CLOSE); lua_setfield(L, -2, "AREA_CLOSE");
+  lua_pushinteger(L, BK_AREA_WINDOW); lua_setfield(L, -2, "AREA_WINDOW");
 
   /* Cursor constants */
   lua_pushinteger(L, BK_CURSOR_DEFAULT); lua_setfield(L, -2, "CURSOR_DEFAULT");  lua_pushinteger(L, BK_CURSOR_EW); lua_setfield(L, -2, "CURSOR_EW");
