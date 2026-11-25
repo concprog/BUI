@@ -1,6 +1,7 @@
 // The kit's native window host (Win32, X11 / Wayland, Cocoa).
 // SPDX-License-Identifier: GPL-2.0-or-later
 using System;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Bui.Interop;
@@ -12,8 +13,11 @@ namespace Bui;
 public sealed unsafe class Window : IDisposable
 {
     private readonly Context context;
+    private static readonly Queue<Window> Disposed = new(); // freed at the next safe point (UI thread)
+
     private BKWindow* handle;
     private GCHandle self; // BKWindowCallbacks.data, while the window lives
+    private bool disposed;
 
     /// <summary>A window showing <paramref name="context"/>, in logical pixels.</summary>
     /// <exception cref="PlatformNotSupportedException">No window host here (no display, or not the main thread on macOS).</exception>
@@ -39,6 +43,7 @@ public sealed unsafe class Window : IDisposable
         cb.data = (void*)GCHandle.ToIntPtr(self);
         cb.on_frame = &OnFrame;
         BK_window_set_callbacks(handle, &cb);
+        context.Attach();
     }
 
     /// <summary>Raised right before a frame asked for with <see cref="RequestFrame"/> renders:
@@ -80,23 +85,46 @@ public sealed unsafe class Window : IDisposable
     }
 
     /// <summary>True until the window is closed.</summary>
-    public bool IsOpen => handle is not null && BK_window_is_open(handle) != 0;
+    public bool IsOpen => !disposed && handle is not null && BK_window_is_open(handle) != 0;
 
-    private BKWindow* Handle => handle is not null ? handle : throw new ObjectDisposedException(nameof(Window));
+    private BKWindow* Handle => !disposed && handle is not null ? handle : throw new ObjectDisposedException(nameof(Window));
 
     public void Show() => BK_window_show(Handle);
 
     public void Close() => BK_window_close(Handle);
 
+    /// <summary>Disposes the window. From inside a handler the native window is still
+    /// on the stack, so it is freed once the native call has returned.</summary>
     public void Dispose()
     {
-        if (handle is null)
+        if (disposed)
         {
             return;
         }
+        disposed = true;
+        if (Context.InCallback)
+        {
+            Disposed.Enqueue(this);
+            return;
+        }
+        Release();
+    }
+
+    /// <summary>Frees the windows disposed inside a callback, unless one is still on the stack.</summary>
+    internal static void FreeDisposed()
+    {
+        while (!Context.InCallback && Disposed.TryDequeue(out var w))
+        {
+            w.Release();
+        }
+    }
+
+    private void Release()
+    {
         BK_window_free(handle);
         handle = null;
         self.Free();
+        context.Detach();
     }
 
     /// <summary>Runs the message loop until every window is closed. An exception
@@ -114,16 +142,24 @@ public sealed unsafe class Window : IDisposable
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static void OnFrame(void* data, BKWindow* win)
     {
+        Context.EnterCallback();
         try
         {
             var w = (Window?)GCHandle.FromIntPtr((nint)data).Target;
-            w?.Frame?.Invoke(w, EventArgs.Empty);
+            if (w is { disposed: false })
+            {
+                w.Frame?.Invoke(w, EventArgs.Empty);
+            }
         }
 #pragma warning disable CA1031 // held and rethrown from Run, never across native frames
         catch (Exception e)
 #pragma warning restore CA1031
         {
             Context.Hold(e);
+        }
+        finally
+        {
+            Context.LeaveCallback();
         }
     }
 
@@ -135,6 +171,7 @@ public sealed unsafe class Window : IDisposable
         {
             return 1;
         }
+        Window.FreeDisposed();
         Node.FreeCollected();
         return 0;
     }

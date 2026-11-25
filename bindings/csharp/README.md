@@ -87,6 +87,7 @@ Window.Run();
 
 - A `Node` owns its native node. A parent only holds it: while a parent holds a node, the node's wrapper stays alive (the kit's retain and release hooks), so handlers keep working without a reference of your own.
 - `Dispose` removes a node from its parent and frees it. A detached node that is collected is freed on the UI thread at the next input call or loop iteration.
+- A `Window` disposed inside a handler is freed when the native call has returned. A `Context` disposed before its windows is freed when the last window is disposed.
 - The kit is a UI-thread API. Call everything, `Window.Quit` included, from the thread that runs `Window.Run`.
 - An exception in a handler never crosses native frames: it is held and thrown from the input call that caused it, or from `Window.Run`, which then stops.
 

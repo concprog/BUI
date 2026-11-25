@@ -18,8 +18,12 @@ public sealed unsafe class Context : IDisposable
 {
     private static ExceptionDispatchInfo? pending;
 
+    private static int active; // native callbacks on the stack (UI thread)
+
     private readonly Node root;
     private BKContext* handle;
+    private int windows; // windows that still use the handle
+    private bool disposed;
 
     /// <summary>A context showing <paramref name="root"/>; it keeps the root alive.</summary>
     public Context(Node root)
@@ -39,7 +43,27 @@ public sealed unsafe class Context : IDisposable
     /// <summary>The root node.</summary>
     public Node Root => root;
 
-    internal BKContext* Handle => handle is not null ? handle : throw new ObjectDisposedException(nameof(Context));
+    internal BKContext* Handle => !disposed && handle is not null ? handle : throw new ObjectDisposedException(nameof(Context));
+
+    /// <summary>True while a native callback is on the stack: the kit objects it uses must stay allocated.</summary>
+    internal static bool InCallback => active > 0;
+
+    internal static void EnterCallback() => active++;
+
+    internal static void LeaveCallback() => active--;
+
+    /// <summary>A window starts to use this context.</summary>
+    internal void Attach() => windows++;
+
+    /// <summary>A window stops using this context: a context disposed earlier is freed now.</summary>
+    internal void Detach()
+    {
+        windows--;
+        if (disposed && windows == 0)
+        {
+            Free();
+        }
+    }
 
     /// <summary>Lays the tree out at <paramref name="width"/> x <paramref name="height"/>; true when the size changed.</summary>
     public bool Configure(int width, int height) => Done(BK_configure(Handle, width, height));
@@ -63,12 +87,23 @@ public sealed unsafe class Context : IDisposable
     /// <summary>Pointer motion at window pixels; true when something changed.</summary>
     public bool Motion(int x, int y, int mods = 0) => Done(BK_motion(Handle, x, y, mods));
 
+    /// <summary>Disposes the context. While a <see cref="Window"/> still uses it, the native
+    /// context is freed when the last window is disposed.</summary>
     public void Dispose()
     {
-        if (handle is null)
+        if (disposed)
         {
             return;
         }
+        disposed = true;
+        if (windows == 0)
+        {
+            Free();
+        }
+    }
+
+    private void Free()
+    {
         BK_context_free(handle);
         handle = null;
     }
@@ -76,6 +111,7 @@ public sealed unsafe class Context : IDisposable
     /// <summary>Throws the exception a handler raised during the last kit call, if any.</summary>
     internal static void ThrowPending()
     {
+        Window.FreeDisposed();
         Node.FreeCollected();
         ExceptionDispatchInfo? e = pending;
         pending = null;
@@ -96,6 +132,7 @@ public sealed unsafe class Context : IDisposable
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static void Emit(void* data, BKNode* node, int kind, void* r, double a, double b)
     {
+        EnterCallback();
         try
         {
             if (node is null)
@@ -111,6 +148,10 @@ public sealed unsafe class Context : IDisposable
 #pragma warning restore CA1031
         {
             Hold(e);
+        }
+        finally
+        {
+            LeaveCallback();
         }
     }
 }

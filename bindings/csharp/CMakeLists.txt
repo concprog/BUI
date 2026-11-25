@@ -40,7 +40,9 @@ if(MSVC)
   target_sources(bui_kit_shared PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/bui_kit.def)
   target_link_libraries(bui_kit_shared PRIVATE bui_kit)
 else()
-  target_link_libraries(bui_kit_shared PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,bui_kit>")
+  # bui_gpu too: nothing in the kit calls BUI_effect_*, so without BUI_GPU the
+  # linker would drop gpu_effect.o and the binding's imports would not resolve
+  target_link_libraries(bui_kit_shared PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,bui_kit,bui_gpu>")
   if(WIN32)
     # MinGW: export every symbol of the archives
     target_link_options(bui_kit_shared PRIVATE -Wl,--export-all-symbols)

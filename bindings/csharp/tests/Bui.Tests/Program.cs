@@ -135,6 +135,56 @@ Test("a handler's exception is thrown from the input call", () =>
     root.Dispose();
 });
 
+// Window tests need a window host; without a display they report ok and skip.
+static void WithWindow(Context ctx, Action<Window> body)
+{
+    Window w;
+    try
+    {
+        w = new Window(ctx, "test", 200, 100);
+    }
+    catch (Exception e) when (e is PlatformNotSupportedException or InvalidOperationException)
+    {
+        Console.WriteLine($"     (no window host: {e.Message})");
+        return;
+    }
+    body(w);
+}
+
+Test("a context disposed before its window lives until the window is disposed", () =>
+{
+    var root = new Frame();
+    var ctx = new Context(root);
+    WithWindow(ctx, w =>
+    {
+        ctx.Dispose();
+        Throws<ObjectDisposedException>(() => ctx.Configure(10, 10), "context use after Dispose");
+        _ = w.Size; // the native context is still there for the window
+        w.Dispose();
+        Throws<ObjectDisposedException>(() => w.Show(), "window use after Dispose");
+    });
+    ctx.Dispose();
+    root.Dispose();
+});
+
+Test("a window disposed inside a handler is freed after the call returns", () =>
+{
+    var root = new Frame();
+    var button = new Bui.Button("Close me");
+    button.Geometry = GeometryManager.Pack;
+    root.Add(button);
+    using var ctx = new Context(root);
+    ctx.Configure(200, 100);
+    WithWindow(ctx, w =>
+    {
+        button.Click += (_, _) => w.Dispose();
+        Click(ctx, button);
+        Check(!w.IsOpen, "window still open");
+        Throws<ObjectDisposedException>(() => w.Show(), "window use after Dispose");
+    });
+    root.Dispose();
+});
+
 Console.WriteLine(failures.Count == 0 ? "all passed" : $"{failures.Count} failed");
 return failures.Count == 0 ? 0 : 1;
 
