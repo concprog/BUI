@@ -167,6 +167,33 @@ Test("a context disposed before its window lives until the window is disposed", 
     root.Dispose();
 });
 
+Test("a second window on one context is refused", () =>
+{
+    var root = new Frame();
+    using var ctx = new Context(root);
+    WithWindow(ctx, w =>
+    {
+        Throws<InvalidOperationException>(() => _ = new Window(ctx, "second", 100, 100), "second window");
+        w.Dispose();
+        WithWindow(ctx, again => again.Dispose()); // free again after the first is gone
+    });
+    root.Dispose();
+});
+
+Test("a context disposed inside a handler is freed after the call returns", () =>
+{
+    var root = new Frame();
+    var button = new Bui.Button("Dispose me");
+    button.Geometry = GeometryManager.Pack;
+    root.Add(button);
+    var ctx = new Context(root);
+    ctx.Configure(200, 100);
+    button.Click += (_, _) => ctx.Dispose();
+    Click(ctx, button);
+    Throws<ObjectDisposedException>(() => ctx.Configure(10, 10), "context use after Dispose");
+    root.Dispose();
+});
+
 Test("a window disposed inside a handler is freed after the call returns", () =>
 {
     var root = new Frame();

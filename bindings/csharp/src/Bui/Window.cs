@@ -1,7 +1,6 @@
 // The kit's native window host (Win32, X11 / Wayland, Cocoa).
 // SPDX-License-Identifier: GPL-2.0-or-later
 using System;
-using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Bui.Interop;
@@ -13,8 +12,6 @@ namespace Bui;
 public sealed unsafe class Window : IDisposable
 {
     private readonly Context context;
-    private static readonly Queue<Window> Disposed = new(); // freed at the next safe point (UI thread)
-
     private BKWindow* handle;
     private GCHandle self; // BKWindowCallbacks.data, while the window lives
     private bool disposed;
@@ -27,6 +24,10 @@ public sealed unsafe class Window : IDisposable
         if (BK_window_supported() == 0)
         {
             throw new PlatformNotSupportedException("the kit has no window host here");
+        }
+        if (context.HasWindow)
+        {
+            throw new InvalidOperationException("the context already has a window");
         }
         this.context = context;
         using var t = new Utf8Z(title, stackalloc byte[Utf8Z.StackSize]);
@@ -102,21 +103,7 @@ public sealed unsafe class Window : IDisposable
             return;
         }
         disposed = true;
-        if (Context.InCallback)
-        {
-            Disposed.Enqueue(this);
-            return;
-        }
-        Release();
-    }
-
-    /// <summary>Frees the windows disposed inside a callback, unless one is still on the stack.</summary>
-    internal static void FreeDisposed()
-    {
-        while (!Context.InCallback && Disposed.TryDequeue(out var w))
-        {
-            w.Release();
-        }
+        Context.ReleaseWhenSafe(Release);
     }
 
     private void Release()
@@ -171,7 +158,7 @@ public sealed unsafe class Window : IDisposable
         {
             return 1;
         }
-        Window.FreeDisposed();
+        Context.RunDeferred();
         Node.FreeCollected();
         return 0;
     }

@@ -1,6 +1,7 @@
 // One input and render context per window (BKContext).
 // SPDX-License-Identifier: GPL-2.0-or-later
 using System;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
@@ -19,10 +20,11 @@ public sealed unsafe class Context : IDisposable
     private static ExceptionDispatchInfo? pending;
 
     private static int active; // native callbacks on the stack (UI thread)
+    private static readonly Queue<Action> Deferred = new(); // frees waiting for the callbacks to return
 
     private readonly Node root;
     private BKContext* handle;
-    private int windows; // windows that still use the handle
+    private bool attached; // a window uses the handle
     private bool disposed;
 
     /// <summary>A context showing <paramref name="root"/>; it keeps the root alive.</summary>
@@ -52,16 +54,40 @@ public sealed unsafe class Context : IDisposable
 
     internal static void LeaveCallback() => active--;
 
-    /// <summary>A window starts to use this context.</summary>
-    internal void Attach() => windows++;
+    /// <summary>True while a window uses this context: one window per context.</summary>
+    internal bool HasWindow => attached;
 
-    /// <summary>A window stops using this context: a context disposed earlier is freed now.</summary>
+    internal void Attach() => attached = true;
+
+    /// <summary>The window stops using this context: a context disposed earlier is freed now.</summary>
     internal void Detach()
     {
-        windows--;
-        if (disposed && windows == 0)
+        attached = false;
+        if (disposed)
         {
             Free();
+        }
+    }
+
+    /// <summary>Runs <paramref name="release"/> now, or after the outermost native callback has returned.</summary>
+    internal static void ReleaseWhenSafe(Action release)
+    {
+        if (InCallback)
+        {
+            Deferred.Enqueue(release);
+        }
+        else
+        {
+            release();
+        }
+    }
+
+    /// <summary>Runs the releases that waited for a native callback, unless one is still on the stack.</summary>
+    internal static void RunDeferred()
+    {
+        while (!InCallback && Deferred.TryDequeue(out var release))
+        {
+            release();
         }
     }
 
@@ -87,8 +113,8 @@ public sealed unsafe class Context : IDisposable
     /// <summary>Pointer motion at window pixels; true when something changed.</summary>
     public bool Motion(int x, int y, int mods = 0) => Done(BK_motion(Handle, x, y, mods));
 
-    /// <summary>Disposes the context. While a <see cref="Window"/> still uses it, the native
-    /// context is freed when the last window is disposed.</summary>
+    /// <summary>Disposes the context. While its <see cref="Window"/> still uses it, or from inside
+    /// a handler, the native context is freed later, once that is safe.</summary>
     public void Dispose()
     {
         if (disposed)
@@ -96,9 +122,9 @@ public sealed unsafe class Context : IDisposable
             return;
         }
         disposed = true;
-        if (windows == 0)
+        if (!attached)
         {
-            Free();
+            ReleaseWhenSafe(Free);
         }
     }
 
@@ -111,7 +137,7 @@ public sealed unsafe class Context : IDisposable
     /// <summary>Throws the exception a handler raised during the last kit call, if any.</summary>
     internal static void ThrowPending()
     {
-        Window.FreeDisposed();
+        RunDeferred();
         Node.FreeCollected();
         ExceptionDispatchInfo? e = pending;
         pending = null;
